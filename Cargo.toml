@@ -1,0 +1,23 @@
+[workspace]
+resolver = "2"
+members = []
+default-members = []
+
+[workspace.package]
+publish = false
+edition = "2024"
+
+[workspace.dependencies]
+clap = { version = "4.5.31", features = ["derive"] }
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
+tokio = { version = "1.43.0", features = [
+    "macros",
+    "rt-multi-thread",
+    "sync",
+    "signal",
+] }
+
+[profile.profiling]
+inherits = "release"
+debug = true
