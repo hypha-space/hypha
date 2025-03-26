@@ -5,6 +5,44 @@ This guide will help you understand the overall organization of the project. It'
 > [!TIP]
 > The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD","SHOULD NOT", "RECOMMENDED", "MAY", and "OPTIONAL" in this document are to be interpreted as described in [RFC 2119](https://tools.ietf.org/html/rfc2119).
 
+## Principles
+
+These principles guide every aspect of design and implementation, underpinning the core goal to make large-scale machine learning accessible by removing barriers and enabling widespread innovation. Each principle represents a core quality describing how the system SHOULD be:
+
+1. **Secure**
+
+Security, data sovereignty, and privacy are foundational and non-negotiable. Emphasize secure defaults, confidential computing, comprehensive authentication, and strict access controls to responsibly handle data.
+
+2. **Operationally Autonomous**
+
+The system should operate independently and reliably with minimal user intervention. Address resource constraints and operational complexity by automating resource discovery, workload distribution, fault tolerance, and scaling, significantly lowering operational barriers.
+
+3. **Real-world Ready**
+
+Real-world constraints like network limitations, regulatory compliance, and diverse infrastructure challenges should inform design decisions. Proactively accommodate these realities, ensuring seamless integration into existing environments.
+
+4. **Intuitive**
+
+Ensure designs and implementations are coherent, easy to understand, and straightforward, whether at the system level or within individual features and components. Balance "How simple can we make it?" with "How complex does it have to be?"  ([Laws of Simplicity / Reduce](http://lawsofsimplicity.com/los/law-1-reduce.html)) and answer "What goes with what?" ([Laws of Simplicity / Organize](http://lawsofsimplicity.com/los/law-2-organize.html)).
+Prioritize clear structure and streamlined interactions to reduce cognitive load and foster trust.
+
+5. **Performant**
+
+Ensure efficient and optimized training and inference capabilities. Performance is essential for practical usability, enabling demanding real-world applications to meet high standards for scale, latency, and reliability.
+
+6. **Compatible**
+
+Seamlessly integrate diverse, heterogeneous hardware setups commonly found in enterprises and research institutions. Supporting varied infrastructure unlocks the latent potential of underutilized hardware, enabling innovative ideas previously hindered by infrastructure limitations.
+
+### Examples
+
+The following are illustrative scenarios showing how these principles can be applied, especially when principles might conflict:
+
+- *Operationally Autonomous and Intuitive*: Integrate and implement services, when possible instead of relying on separate services which would come with extra operetational cost and complexities.
+- *Secure vs. Performant*: Even if bypassing encryption significantly enhances performance, security must never be compromised. Always choose secure defaults, such as encryption and authentication, despite potential performance trade-offs.
+- *Real-world Ready vs. Performant*: While certain network protocols like QUIC might offer better performance, ensure there's a fallback mechanism (e.g., WebRTC or WebSockets) to handle realistic network constraints, such as environments blocking UDP traffic.
+- *Intuitive vs. Performant*: Avoid overly complex configurations—even if they deliver maximum performance—if they compromise usability. Prioritize straightforward, intuitive setups to ensure users don't require extensive system knowledge for effective operation.
+
 ## Setup
 
 <!-- Setup rust  -->
