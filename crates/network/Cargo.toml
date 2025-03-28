@@ -1,0 +1,21 @@
+[package]
+name = "hypha-network"
+version = "0.0.0"
+publish.workspace = true
+edition.workspace = true
+license = "Apache-2.0"
+
+[dependencies]
+async-trait.workspace = true
+futures-util.workspace = true
+libp2p.workspace = true
+libp2p-stream.workspace = true
+serde.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tokio-stream.workspace = true
+
+[dev-dependencies]
+mockall.workspace = true
+proptest.workspace = true
