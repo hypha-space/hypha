@@ -1,14 +1,45 @@
 [workspace]
 resolver = "2"
-members = []
-default-members = []
+members = [
+    "crates/network",
+    "crates/gateway",
+    "crates/worker",
+    "crates/scheduler",
+]
+default-members = ["crates/gateway", "crates/worker", "crates/scheduler"]
+
+[profile.profiling]
+inherits = "release"
+debug = true
+
 
 [workspace.package]
 publish = false
 edition = "2024"
 
 [workspace.dependencies]
+async-trait = "0.1.88"
 clap = { version = "4.5.31", features = ["derive"] }
+futures = { version = "0.3.31", features = ["std"] }
+libp2p = { version = "0.55.0", features = [
+    "cbor",
+    "dcutr",
+    "identify",
+    "ping",
+    "relay",
+    "request-response",
+    "serde",
+    "tcp",
+    "tls",
+    "tokio",
+    "quic",
+    "yamux",
+    "noise",
+    "kad",
+    "mdns",
+] }
+libp2p-stream = { version = "0.3.0-alpha" }
+serde = { version = "1.0.218", features = ["derive"] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 tokio = { version = "1.43.0", features = [
@@ -17,7 +48,7 @@ tokio = { version = "1.43.0", features = [
     "sync",
     "signal",
 ] }
+tokio-stream = "0.1.17"
 
-[profile.profiling]
-inherits = "release"
-debug = true
+# Hypha
+hypha-network = { path = "crates/network" }
