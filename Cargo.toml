@@ -1,17 +1,16 @@
 [workspace]
-resolver = "2"
+resolver = "3"
 members = [
-    "crates/network",
     "crates/gateway",
-    "crates/worker",
+    "crates/network",
     "crates/scheduler",
+    "crates/worker",
 ]
-default-members = ["crates/gateway", "crates/worker", "crates/scheduler"]
+default-members = ["crates/gateway", "crates/network", "crates/scheduler", "crates/worker"]
 
 [profile.profiling]
 inherits = "release"
 debug = true
-
 
 [workspace.package]
 publish = false

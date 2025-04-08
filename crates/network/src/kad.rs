@@ -1,8 +1,9 @@
-use std::collections::HashMap;
-use std::collections::HashSet;
-use std::error::Error;
-use std::fmt::Display;
-use std::sync::Arc;
+use std::{
+    collections::{HashMap, HashSet},
+    error::Error,
+    fmt::Display,
+    sync::Arc,
+};
 
 use libp2p::{
     PeerId,
@@ -298,13 +299,70 @@ pub trait KademliaInterface {
     }
 }
 
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
+#[cfg(test)]
+mod tests {
+    use mockall::mock;
 
-//     // #[test]
-//     // fn it_works() {
-//     //     let result = add(2, 2);
-//     //     assert_eq!(result, 4);
-//     // }
-// }
+    use super::*;
+
+    mock! {
+        TestInterface {}
+
+        impl KademliaInterface for TestInterface {
+            async fn send(&self, action: KademliaAction);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_kademlia_interface_store() {
+        let mut mock = MockTestInterface::new();
+
+        mock.expect_send()
+            .withf(|action| matches!(action, KademliaAction::PutRecord(_, _)))
+            .times(1)
+            .returning(|action| {
+                match action {
+                    KademliaAction::PutRecord(_, tx) => {
+                        tokio::spawn(async move {
+                            // Simulate a successful store operation
+                            let _ = tx.send(Ok(KademliaOk::PutRecord(()))).await;
+                        });
+                    }
+                    _ => {}
+                }
+                ()
+            });
+
+        let record = kad::Record::new(kad::RecordKey::new(&"foo"), vec![1, 2, 3]);
+        let result = mock.store(record).await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_kademlia_interface_get() {
+        let mut mock = MockTestInterface::new();
+
+        mock.expect_send()
+            .withf(|action| matches!(action, KademliaAction::GetRecord(_, _)))
+            .times(1)
+            .returning(|action| {
+                match action {
+                    KademliaAction::GetRecord(key, tx) => {
+                        tokio::spawn(async move {
+                            // Create a mock record and send it back
+                            let record = kad::Record::new(kad::RecordKey::new(&key), vec![1, 2, 3]);
+                            let _ = tx.send(Ok(KademliaOk::GetRecord(record))).await;
+                        });
+                    }
+                    _ => {}
+                }
+                ()
+            });
+
+        let result = mock.get("foo").await.unwrap();
+
+        assert!(result.key == kad::RecordKey::new(&"foo"));
+        assert_eq!(result.value, &[1, 2, 3]);
+    }
+}
