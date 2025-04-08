@@ -20,23 +20,23 @@ edition = "2024"
 [workspace.dependencies]
 async-trait = "0.1.88"
 clap = { version = "4.5.31", features = ["derive"] }
-futures = { version = "0.3.31", features = ["std"] }
+futures-util = "0.3"
 libp2p = { version = "0.55.0", features = [
     "cbor",
     "dcutr",
+    "gossipsub",
     "identify",
+    "kad",
+    "mdns",
     "ping",
+    "quic",
     "relay",
     "request-response",
     "serde",
     "tcp",
     "tls",
     "tokio",
-    "quic",
     "yamux",
-    "noise",
-    "kad",
-    "mdns",
 ] }
 libp2p-stream = { version = "0.3.0-alpha" }
 serde = { version = "1.0.218", features = ["derive"] }

@@ -4,49 +4,46 @@ use std::error::Error;
 use std::fmt::Display;
 use std::sync::Arc;
 
-use libp2p::kad::PutRecordResult;
-use tokio::sync::Mutex;
-use tokio::sync::mpsc::Sender;
-use tokio::sync::mpsc::channel;
-use tokio_stream::StreamExt;
-use tokio_stream::wrappers::ReceiverStream;
-
-use libp2p::PeerId;
-use libp2p::kad;
-use libp2p::kad::QueryId;
-use libp2p::kad::store;
-use libp2p::kad::store::MemoryStore;
-use libp2p::swarm::NetworkBehaviour;
+use libp2p::{
+    PeerId,
+    kad::{
+        self, QueryId,
+        store::{self, MemoryStore},
+    },
+    swarm::NetworkBehaviour,
+};
+use tokio::sync::{Mutex, mpsc};
+use tokio_stream::{StreamExt, wrappers::ReceiverStream};
 
 use crate::swarm::SwarmDriver;
-use crate::swarm::SwarmInterface;
+
+pub type PendingQueries = Arc<Mutex<HashMap<kad::QueryId, mpsc::Sender<KademliaResult>>>>;
 
 pub trait KademliaBehavior {
     fn kademlia(&mut self) -> &mut kad::Behaviour<MemoryStore>;
 }
 
 pub enum KademliaAction {
-    GetProvider(String, Sender<KademliaResult>),
-    GetRecord(String, Sender<KademliaResult>),
-    PutRecord(kad::Record, Sender<KademliaResult>),
-    // TODO: Consider removing
-    PutProvider(String, Sender<KademliaResult>),
+    GetProvider(String, mpsc::Sender<KademliaResult>),
+    GetRecord(String, mpsc::Sender<KademliaResult>),
+    PutRecord(kad::Record, mpsc::Sender<KademliaResult>),
+    StartProviding(String, mpsc::Sender<KademliaResult>),
 }
 
 pub type KademliaResult = Result<KademliaOk, KademliaError>;
 
 pub enum KademliaOk {
-    GetProvidersOk(kad::GetProvidersOk),
-    PutProviderOk(()),
-    PutRecordOk(()),
-    GetRecordOk(kad::Record),
+    GetProviders(kad::GetProvidersOk),
+    StartProviding(()),
+    PutRecord(()),
+    GetRecord(kad::Record),
 }
 
 #[derive(Debug)]
 pub enum KademliaError {
-    GetProvidersError(kad::GetProvidersError),
-    StoreError(store::Error),
-    GetRecordError(kad::GetRecordError),
+    GetProviders(kad::GetProvidersError),
+    Store(store::Error),
+    GetRecord(kad::GetRecordError),
     Other(String),
 }
 
@@ -59,9 +56,9 @@ impl Error for KademliaError {
 impl Display for KademliaError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::GetProvidersError(msg) => write!(f, "Get Providers error: {}", msg),
-            Self::GetRecordError(msg) => write!(f, "Get Record error: {}", msg),
-            Self::StoreError(msg) => write!(f, "Store error: {}", msg),
+            Self::GetProviders(msg) => write!(f, "Get Providers error: {}", msg),
+            Self::GetRecord(msg) => write!(f, "Get Record error: {}", msg),
+            Self::Store(msg) => write!(f, "Store error: {}", msg),
             Self::Other(msg) => write!(f, "Other error: {}", msg),
         }
     }
@@ -72,7 +69,9 @@ pub trait KademliaDriver<TBehavior>: SwarmDriver<TBehavior>
 where
     TBehavior: NetworkBehaviour + KademliaBehavior,
 {
-    fn pending_queries(&self) -> Arc<Mutex<HashMap<QueryId, Sender<KademliaResult>>>>;
+    // Within Kademlia, a single query can result in multiple events.
+    // Instead of using a 'oneshot' channel, we use a 'mpsc' channel to allow for multiple events to be sent.
+    fn pending_queries(&self) -> PendingQueries;
 
     async fn process_kademlia_action(&mut self, action: KademliaAction) {
         match action {
@@ -96,9 +95,7 @@ where
                         self.pending_queries().lock().await.insert(query_id, tx);
                     }
                     Err(err) => {
-                        tx.send(Err(KademliaError::StoreError(err).into()))
-                            .await
-                            .ok();
+                        let _ = tx.send(Err(KademliaError::Store(err))).await;
                     }
                 }
             }
@@ -111,7 +108,7 @@ where
 
                 self.pending_queries().lock().await.insert(query_id, tx);
             }
-            KademliaAction::PutProvider(key, tx) => {
+            KademliaAction::StartProviding(key, tx) => {
                 match self
                     .swarm()
                     .behaviour_mut()
@@ -122,9 +119,7 @@ where
                         self.pending_queries().lock().await.insert(query_id, tx);
                     }
                     Err(err) => {
-                        tx.send(Err(KademliaError::StoreError(err).into()))
-                            .await
-                            .ok();
+                        let _ = tx.send(Err(KademliaError::Store(err))).await;
                     }
                 }
             }
@@ -137,70 +132,105 @@ where
         result: kad::QueryResult,
         step: kad::ProgressStep,
     ) {
-        let tx = match self.pending_queries().lock().await.get(&query_id).cloned() {
-            Some(tx) => tx,
-            None => return,
-        };
-
         match result {
             kad::QueryResult::PutRecord(Ok(_)) => {
-                let _ = tx.send(Ok(KademliaOk::PutRecordOk(()))).await;
+                send_kademlia_result(
+                    &self.pending_queries(),
+                    query_id,
+                    step,
+                    Ok(KademliaOk::PutRecord(())),
+                )
+                .await;
             }
             kad::QueryResult::GetRecord(Ok(kad::GetRecordOk::FoundRecord(kad::PeerRecord {
                 record,
                 ..
             }))) => {
-                let _ = tx.send(Ok(KademliaOk::GetRecordOk(record))).await;
+                send_kademlia_result(
+                    &self.pending_queries(),
+                    query_id,
+                    step,
+                    Ok(KademliaOk::GetRecord(record)),
+                )
+                .await;
             }
             kad::QueryResult::GetRecord(Err(err)) => {
-                let _ = tx.send(Err(KademliaError::GetRecordError(err))).await;
+                send_kademlia_result(
+                    &self.pending_queries(),
+                    query_id,
+                    step,
+                    Err(KademliaError::GetRecord(err)),
+                )
+                .await;
             }
             kad::QueryResult::GetProviders(Ok(providers)) => {
                 tracing::info!(providers=?providers, "GetProviders");
-                let _ = tx.send(Ok(KademliaOk::GetProvidersOk(providers))).await;
+                send_kademlia_result(
+                    &self.pending_queries(),
+                    query_id,
+                    step,
+                    Ok(KademliaOk::GetProviders(providers)),
+                )
+                .await;
             }
             kad::QueryResult::GetProviders(Err(err)) => {
                 tracing::info!(err=?err, "GetProviders");
-                let _ = tx.send(Err(KademliaError::GetProvidersError(err))).await;
+                send_kademlia_result(
+                    &self.pending_queries(),
+                    query_id,
+                    step,
+                    Err(KademliaError::GetProviders(err)),
+                )
+                .await;
             }
 
             kad::QueryResult::StartProviding(Ok(_)) => {
-                let _ = tx.send(Ok(KademliaOk::PutProviderOk(()))).await;
+                send_kademlia_result(
+                    &self.pending_queries(),
+                    query_id,
+                    step,
+                    Ok(KademliaOk::StartProviding(())),
+                )
+                .await
             }
             _ => {
                 tracing::debug!("Unhandled Kademlia Queryresult.")
             }
         }
+    }
+}
 
-        // Drop channel
-        if step.last {
-            if let Some(tx) = self.pending_queries().lock().await.remove(&query_id) {
-                drop(tx);
-            }
-        }
+async fn send_kademlia_result(
+    pending_queries: &PendingQueries,
+    query_id: QueryId,
+    step: kad::ProgressStep,
+    result: KademliaResult,
+) {
+    let tx = match pending_queries.lock().await.get(&query_id).cloned() {
+        Some(tx) => tx,
+        None => return,
+    };
+
+    let _ = tx.send(result).await;
+
+    if step.last {
+        let _ = pending_queries.lock().await.remove(&query_id);
     }
 }
 
 #[allow(async_fn_in_trait)]
-pub trait KademliaInterface<TBehavior>: SwarmInterface<TBehavior>
-where
-    TBehavior: NetworkBehaviour + KademliaBehavior,
-    Self::Driver: KademliaDriver<TBehavior>,
-{
-    fn kademlia_action_sender(&self) -> Sender<KademliaAction>;
+pub trait KademliaInterface {
+    async fn send(&self, action: KademliaAction);
 
     async fn store(&self, record: kad::Record) -> Result<(), KademliaError> {
-        let (tx, rx) = channel(1);
+        let (tx, rx) = mpsc::channel(1);
         tracing::info!(record=?record,"Store record", );
 
-        self.kademlia_action_sender()
-            .send(KademliaAction::PutRecord(record, tx))
-            .await
-            .map_err(|_| KademliaError::Other("Failed to send PutRecord action".to_string()))?;
+        self.send(KademliaAction::PutRecord(record, tx)).await;
 
         ReceiverStream::new(rx)
             .fold(Ok(()), |acc, result| match result {
-                Ok(KademliaOk::PutRecordOk(_)) => acc,
+                Ok(KademliaOk::PutRecord(_)) => acc,
                 Err(err) => Err(err),
                 _ => Err(KademliaError::Other("Unexpected response".to_string())),
             })
@@ -208,38 +238,33 @@ where
     }
 
     async fn get(&self, key: &str) -> Result<kad::Record, KademliaError> {
-        let (tx, mut rx) = channel(1);
+        let (tx, mut rx) = mpsc::channel(1);
         tracing::info!(key=%key,"Get key", );
 
-        self.kademlia_action_sender()
-            .send(KademliaAction::GetRecord(key.to_string(), tx))
-            .await
-            .map_err(|_| KademliaError::Other("Failed to send GetRecord action".to_string()))?;
+        self.send(KademliaAction::GetRecord(key.to_string(), tx))
+            .await;
 
-        // Get the firt record from the stream
         let result = rx.recv().await.ok_or_else(|| {
             KademliaError::Other("No response received from the network".to_string())
         })?;
 
         match result {
-            Ok(KademliaOk::GetRecordOk(record)) => Ok(record),
+            Ok(KademliaOk::GetRecord(record)) => Ok(record),
             Err(err) => Err(err),
             _ => Err(KademliaError::Other("Unexpected response".to_string())),
         }
     }
 
     async fn provide(&self, key: &str) -> Result<(), KademliaError> {
-        let (tx, rx) = channel(1);
-        tracing::info!(key=%key,"Provide key", );
+        let (tx, rx) = mpsc::channel(1);
+        tracing::info!(key=%key, "Provide key");
 
-        self.kademlia_action_sender()
-            .send(KademliaAction::PutProvider(key.to_string(), tx))
-            .await
-            .map_err(|_| KademliaError::Other("Failed to send Provide action".to_string()))?;
+        self.send(KademliaAction::StartProviding(key.to_string(), tx))
+            .await;
 
         ReceiverStream::new(rx)
             .fold(Ok(()), |acc, result| match result {
-                Ok(KademliaOk::PutProviderOk(_)) => acc,
+                Ok(KademliaOk::StartProviding(_)) => acc,
                 Err(err) => Err(err),
                 _ => Err(KademliaError::Other("Unexpected response".to_string())),
             })
@@ -248,31 +273,26 @@ where
 
     async fn find_provider(&self, key: &str) -> Result<HashSet<PeerId>, KademliaError> {
         // TODO: Determine rigth channel size, I suspect a small size like 5 is already sufficient.
-        let (tx, rx) = channel(5);
-        tracing::info!(key=%key,"Find key providers",);
+        let (tx, rx) = mpsc::channel(5);
+        tracing::info!(key=%key, "Find key providers");
 
-        self.kademlia_action_sender()
-            .send(KademliaAction::GetProvider(key.to_string(), tx))
-            .await
-            .map_err(|_| KademliaError::Other("Failed to send GetProvider action".to_string()))?;
+        self.send(KademliaAction::GetProvider(key.to_string(), tx))
+            .await;
 
         ReceiverStream::new(rx)
             .fold(Ok(HashSet::new()), |acc, result| match result {
-                Ok(KademliaOk::GetProvidersOk(kad::GetProvidersOk::FoundProviders {
+                Ok(KademliaOk::GetProviders(kad::GetProvidersOk::FoundProviders {
                     providers,
                     ..
                 })) => acc.map(|mut acc| {
                     acc.extend(providers);
                     acc
                 }),
-                Ok(KademliaOk::GetProvidersOk(
+                Ok(KademliaOk::GetProviders(
                     kad::GetProvidersOk::FinishedWithNoAdditionalRecord { .. },
                 )) => acc,
                 Err(err) => Err(err),
-                // We're using one pending action map thus need to handle the whole `KademliaResult` though any reulst other then `GetProviders` related ones would be unexpected and an error.
-                _ => Err(KademliaError::Other(
-                    "Received unexpected response".to_string(),
-                )),
+                _ => Err(KademliaError::Other("Unexpected response".to_string())),
             })
             .await
     }

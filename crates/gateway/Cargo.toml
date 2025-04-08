@@ -7,11 +7,12 @@ license = "Apache-2.0"
 
 [dependencies]
 clap.workspace = true
-futures.workspace = true
+futures-util.workspace = true
 libp2p.workspace = true
 libp2p-stream.workspace = true
 serde.workspace = true
 tokio.workspace = true
+tokio-stream.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 hypha-network.workspace = true

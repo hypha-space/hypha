@@ -2,23 +2,14 @@ mod network;
 
 use std::error::Error;
 
-use futures::{AsyncReadExt, StreamExt};
-
-use hypha_network::kad::KademliaInterface;
-use tokio::sync::oneshot;
-use tokio::task;
-use tokio::task::JoinHandle;
-use tokio::task::LocalSet;
-
 use clap::Parser;
-
+use futures_util::{AsyncReadExt, StreamExt};
+use hypha_network::{
+    kad::KademliaInterface, listen::ListenInterface, stream::StreamReceiverInterface,
+    swarm::SwarmDriver, utils::generate_ed25519,
+};
+use tokio::{sync::oneshot, task::LocalSet};
 use tracing_subscriber::EnvFilter;
-
-use hypha_network::listen::ListenInterface;
-use hypha_network::stream::StreamReceiverInterface;
-use hypha_network::swarm::SwarmDriver;
-use hypha_network::swarm::SwarmInterface;
-use hypha_network::utils::generate_ed25519;
 
 use crate::network::Network;
 
@@ -83,11 +74,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
             let mut streams = network.streams()?;
 
             while let Some((peer, mut stream)) = streams.next().await {
-                let _: JoinHandle<Result<(), std::io::Error>> = task::spawn(async move {
+                tokio::spawn(async move {
                     let mut buf = [0u8; 100];
                     let mut total = 0;
                     loop {
-                        let read = stream.read(&mut buf).await?;
+                        let read = stream.read(&mut buf).await.unwrap();
                         if read == 0 {
                             break;
                         }
@@ -98,8 +89,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         // stream.write_all(&buf[..read]).await?;
                     }
 
-                    tracing::info!(bytes=total, peer=%peer, "Recieved");
-                    Ok(())
+                    tracing::info!(bytes=total, peer=%peer, "Received");
                 });
             }
 

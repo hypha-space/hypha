@@ -1,30 +1,14 @@
 mod network;
 
-use std::error::Error;
-use std::sync::Arc;
-use std::time::Instant;
-
-use futures::AsyncWriteExt;
-use futures::future::join_all;
-
-use hypha_network::kad::KademliaInterface;
-use tokio::sync::oneshot;
-use tokio::task;
-use tokio::task::JoinHandle;
-use tokio::task::LocalSet;
-use tokio::time::Duration;
+use std::{error::Error, sync::Arc};
 
 use clap::Parser;
-
+use hypha_network::{
+    dial::DialInterface, kad::KademliaInterface, swarm::SwarmDriver, utils::generate_ed25519,
+};
 use libp2p::Multiaddr;
-
+use tokio::{sync::oneshot, task::LocalSet};
 use tracing_subscriber::EnvFilter;
-
-use hypha_network::dial::DialInterface;
-use hypha_network::stream::StreamSenderInterface;
-use hypha_network::swarm::SwarmDriver;
-use hypha_network::swarm::SwarmInterface;
-use hypha_network::utils::generate_ed25519;
 
 use crate::network::Network;
 
@@ -37,8 +21,6 @@ struct Opt {
     gateway_address: String,
 }
 
-const GIGABYTE: usize = 1024 * 1024 * 1024 * 5;
-const TASKS: usize = 20;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let _ = tracing_subscriber::fmt()
@@ -83,7 +65,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let main_task = tokio::spawn(async move {
         // Dial the gatewaty address
-        let peer_id = match network
+        let _peer_id = match network
             .dial(opt.gateway_address.parse::<Multiaddr>()?)
             .await
         {

@@ -1,19 +1,16 @@
-use std::collections::HashMap;
-use std::io::Error as IoError;
-use std::io::ErrorKind as IoErrorKind;
-use std::sync::Arc;
+use std::{
+    collections::HashMap,
+    io::{Error as IoError, ErrorKind as IoErrorKind},
+    sync::Arc,
+};
 
-use libp2p::TransportError;
-use tokio::sync::Mutex;
-use tokio::sync::mpsc::Sender;
-use tokio::sync::oneshot;
-
-use libp2p::Multiaddr;
-use libp2p::core::transport::ListenerId;
-use libp2p::swarm::NetworkBehaviour;
+use libp2p::{Multiaddr, TransportError, core::transport::ListenerId, swarm::NetworkBehaviour};
+use tokio::sync::{Mutex, oneshot};
 
 use crate::swarm::SwarmDriver;
-use crate::swarm::SwarmInterface;
+
+pub type PendingListens =
+    Arc<Mutex<HashMap<ListenerId, oneshot::Sender<Result<(), TransportError<IoError>>>>>>;
 
 pub enum ListenAction {
     Listen(
@@ -27,9 +24,7 @@ pub trait ListenDriver<TBehavior>: SwarmDriver<TBehavior>
 where
     TBehavior: NetworkBehaviour,
 {
-    fn pending_listens(
-        &self,
-    ) -> Arc<Mutex<HashMap<ListenerId, oneshot::Sender<Result<(), TransportError<IoError>>>>>>;
+    fn pending_listens(&self) -> PendingListens;
 
     async fn process_listen_action(&mut self, action: ListenAction) {
         match action {
@@ -56,26 +51,14 @@ where
 }
 
 #[allow(async_fn_in_trait)]
-pub trait ListenInterface<TBehavior>: SwarmInterface<TBehavior>
-where
-    TBehavior: NetworkBehaviour,
-    Self::Driver: ListenDriver<TBehavior>,
-{
-    fn listen_action_sender(&self) -> Sender<ListenAction>;
+pub trait ListenInterface {
+    async fn send(&self, action: ListenAction);
 
     async fn listen(&self, address: Multiaddr) -> Result<(), TransportError<IoError>> {
         let (tx, rx) = oneshot::channel();
         tracing::info!(address=%address.clone(),"Listening");
 
-        self.listen_action_sender()
-            .send(ListenAction::Listen(address, tx))
-            .await
-            .map_err(|err| {
-                TransportError::Other(IoError::new(
-                    IoErrorKind::Other,
-                    format!("Failed to send listen action: {}", err),
-                ))
-            })?;
+        self.send(ListenAction::Listen(address, tx)).await;
 
         rx.await.map_err(|err| {
             TransportError::Other(IoError::new(

@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use tokio::sync::Mutex;
-use tokio::sync::mpsc::Sender;
 use tokio::sync::oneshot;
 
 use libp2p::Multiaddr;
@@ -13,7 +12,9 @@ use libp2p::swarm::NetworkBehaviour;
 use libp2p::swarm::dial_opts::DialOpts;
 
 use crate::swarm::SwarmDriver;
-use crate::swarm::SwarmInterface;
+
+pub type PendingDials =
+    Arc<Mutex<HashMap<ConnectionId, oneshot::Sender<Result<PeerId, DialError>>>>>;
 
 pub enum DialAction {
     Dial(Multiaddr, oneshot::Sender<Result<PeerId, DialError>>),
@@ -24,9 +25,7 @@ pub trait DialDriver<TBehavior>: SwarmDriver<TBehavior>
 where
     TBehavior: NetworkBehaviour,
 {
-    fn pending_dials(
-        &self,
-    ) -> Arc<Mutex<HashMap<ConnectionId, oneshot::Sender<Result<PeerId, DialError>>>>>;
+    fn pending_dials(&self) -> PendingDials;
 
     async fn process_dial_action(&mut self, action: DialAction) {
         match action {
@@ -57,21 +56,14 @@ where
 }
 
 #[allow(async_fn_in_trait)]
-pub trait DialInterface<TBehavior>: SwarmInterface<TBehavior>
-where
-    TBehavior: NetworkBehaviour,
-    Self::Driver: DialDriver<TBehavior>,
-{
-    fn dial_action_sender(&self) -> Sender<DialAction>;
+pub trait DialInterface {
+    async fn send(&self, action: DialAction);
 
     async fn dial(&self, address: Multiaddr) -> Result<PeerId, DialError> {
         let (tx, rx) = oneshot::channel();
         tracing::info!(address=%address.clone(),"Dialing");
 
-        self.dial_action_sender()
-            .send(DialAction::Dial(address, tx))
-            .await
-            .map_err(|_| DialError::NoAddresses)?;
+        self.send(DialAction::Dial(address, tx)).await;
 
         rx.await.map_err(|_| DialError::Aborted)?
     }

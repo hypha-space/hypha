@@ -1,49 +1,28 @@
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{collections::HashMap, sync::Arc};
 
-use futures::stream::StreamExt;
-
+use futures_util::stream::StreamExt;
+use hypha_network::{
+    dial::{DialAction, DialDriver, DialInterface, PendingDials},
+    error::HyphaError,
+    kad::{
+        KademliaAction, KademliaBehavior, KademliaDriver, KademliaInterface, KademliaResult,
+        PendingQueries,
+    },
+    stream::{StreamInterface, StreamSenderInterface},
+    swarm::SwarmDriver,
+};
 use libp2p::PeerId;
-use tokio::sync::Mutex;
-use tokio::sync::mpsc::Receiver;
-use tokio::sync::mpsc::Sender;
-use tokio::sync::mpsc::channel;
-use tokio::sync::oneshot;
-
-use libp2p::Swarm;
-use libp2p::SwarmBuilder;
-use libp2p::identify;
-use libp2p::identity;
-use libp2p::kad;
-use libp2p::noise;
-use libp2p::ping;
-use libp2p::swarm::ConnectionId;
-use libp2p::swarm::DialError;
-use libp2p::swarm::NetworkBehaviour;
-use libp2p::swarm::SwarmEvent;
-use libp2p::tcp;
-use libp2p::yamux;
+use libp2p::{
+    Swarm, SwarmBuilder, identify, identity, kad, ping,
+    swarm::{ConnectionId, DialError, NetworkBehaviour, SwarmEvent},
+    tcp, tls, yamux,
+};
 use libp2p_stream as stream;
-
-use hypha_network::dial::DialAction;
-use hypha_network::dial::DialDriver;
-use hypha_network::dial::DialInterface;
-use hypha_network::error::HyphaError;
-use hypha_network::kad::KademliaAction;
-use hypha_network::kad::KademliaBehavior;
-use hypha_network::kad::KademliaDriver;
-use hypha_network::kad::KademliaInterface;
-use hypha_network::kad::KademliaResult;
-use hypha_network::stream::StreamInterface;
-use hypha_network::stream::StreamSenderInterface;
-use hypha_network::swarm::SwarmDriver;
-use hypha_network::swarm::SwarmInterface;
+use tokio::sync::{Mutex, mpsc, oneshot};
 
 #[derive(Clone)]
 pub(crate) struct Network {
-    dial_action_sender: Sender<DialAction>,
-    kademlia_action_sender: Sender<KademliaAction>,
+    action_sender: mpsc::Sender<Action>,
     stream_control: stream::Control,
 }
 
@@ -57,19 +36,19 @@ pub(crate) struct Behaviour {
 
 pub(crate) struct NetworkDriver {
     swarm: Swarm<Behaviour>,
-    pending_dials_map:
-        Arc<Mutex<HashMap<ConnectionId, oneshot::Sender<Result<PeerId, DialError>>>>>,
-    dial_action_receiver: Receiver<DialAction>,
-    pending_queries_map: Arc<Mutex<HashMap<kad::QueryId, Sender<KademliaResult>>>>,
-    kademlia_action_receiver: Receiver<KademliaAction>,
+    pending_dials_map: PendingDials,
+    pending_queries_map: PendingQueries,
+    action_receiver: mpsc::Receiver<Action>,
 }
 
-impl SwarmInterface<Behaviour> for Network {
-    type Driver = NetworkDriver;
+enum Action {
+    Dial(DialAction),
+    Kademlia(KademliaAction),
+}
 
-    fn create(identity: identity::Keypair) -> Result<(Self, Self::Driver), HyphaError> {
-        let (dial_action_sender, dial_action_receiver) = channel(5);
-        let (kademlia_action_sender, kademlia_action_receiver) = channel(5);
+impl Network {
+    pub fn create(identity: identity::Keypair) -> Result<(Self, NetworkDriver), HyphaError> {
+        let (action_sender, action_receiver) = mpsc::channel(5);
         let mut kademlia_config = kad::Config::default();
         kademlia_config.disjoint_query_paths(true);
 
@@ -77,7 +56,7 @@ impl SwarmInterface<Behaviour> for Network {
             .with_tokio()
             .with_tcp(
                 tcp::Config::default(),
-                noise::Config::new,
+                tls::Config::new,
                 yamux::Config::default,
             )
             .map_err(|_| HyphaError::SwarmError("Failed to create TCP transport.".to_string()))?
@@ -105,16 +84,14 @@ impl SwarmInterface<Behaviour> for Network {
 
         Ok((
             Network {
-                dial_action_sender,
+                action_sender,
                 stream_control: swarm.behaviour().stream.new_control(),
-                kademlia_action_sender,
             },
             NetworkDriver {
                 swarm,
-                dial_action_receiver,
                 pending_dials_map: Arc::new(Mutex::new(HashMap::default())),
-                kademlia_action_receiver,
                 pending_queries_map: Arc::new(Mutex::new(HashMap::default())),
+                action_receiver,
             },
         ))
     }
@@ -135,7 +112,7 @@ impl SwarmDriver<Behaviour> for NetworkDriver {
                         SwarmEvent::OutgoingConnectionError { connection_id, error, .. } => {
                             self.process_connection_error(&connection_id, error).await;
                         }
-                        SwarmEvent::Behaviour(BehaviourEvent::Kademlia(kad::Event::OutboundQueryProgressed {id,  result, step,..})) => {
+                        SwarmEvent::Behaviour(BehaviourEvent::Kademlia(kad::Event::OutboundQueryProgressed {id,  result, step, ..})) => {
                              self.process_kademlia_query_result(id, result, step).await;
                          }
                         _ => {
@@ -143,12 +120,16 @@ impl SwarmDriver<Behaviour> for NetworkDriver {
                         }
                     }
                 },
-                Some(action) = self.dial_action_receiver.recv() => {
-                    self.process_dial_action(action).await;
+                Some(action) = self.action_receiver.recv() => {
+                    match action {
+                        Action::Dial(action) => {
+                            self.process_dial_action(action).await;
+                        }
+                        Action::Kademlia(action) => {
+                            self.process_kademlia_action(action).await;
+                        }
+                    }
                 },
-                Some(action) = self.kademlia_action_receiver.recv() => {
-                    self.process_kademlia_action(action).await;
-                }
             }
         }
     }
@@ -158,9 +139,9 @@ impl SwarmDriver<Behaviour> for NetworkDriver {
     }
 }
 
-impl DialInterface<Behaviour> for Network {
-    fn dial_action_sender(&self) -> Sender<DialAction> {
-        self.dial_action_sender.clone()
+impl DialInterface for Network {
+    async fn send(&self, action: DialAction) {
+        self.action_sender.send(Action::Dial(action)).await.unwrap();
     }
 }
 
@@ -172,13 +153,13 @@ impl DialDriver<Behaviour> for NetworkDriver {
     }
 }
 
-impl StreamInterface<Behaviour> for Network {
+impl StreamInterface for Network {
     fn stream_control(&self) -> stream::Control {
         self.stream_control.clone()
     }
 }
 
-impl StreamSenderInterface<Behaviour> for Network {}
+impl StreamSenderInterface for Network {}
 
 impl KademliaBehavior for Behaviour {
     fn kademlia(&mut self) -> &mut kad::Behaviour<kad::store::MemoryStore> {
@@ -187,12 +168,17 @@ impl KademliaBehavior for Behaviour {
 }
 
 impl KademliaDriver<Behaviour> for NetworkDriver {
-    fn pending_queries(&self) -> Arc<Mutex<HashMap<libp2p::kad::QueryId, Sender<KademliaResult>>>> {
+    fn pending_queries(
+        &self,
+    ) -> Arc<Mutex<HashMap<libp2p::kad::QueryId, mpsc::Sender<KademliaResult>>>> {
         self.pending_queries_map.clone()
     }
 }
-impl KademliaInterface<Behaviour> for Network {
-    fn kademlia_action_sender(&self) -> Sender<KademliaAction> {
-        self.kademlia_action_sender.clone()
+impl KademliaInterface for Network {
+    async fn send(&self, action: KademliaAction) {
+        self.action_sender
+            .send(Action::Kademlia(action))
+            .await
+            .unwrap();
     }
 }
