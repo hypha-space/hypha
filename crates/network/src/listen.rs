@@ -1,16 +1,14 @@
 use std::{
     collections::HashMap,
     io::{Error as IoError, ErrorKind as IoErrorKind},
-    sync::Arc,
 };
 
 use libp2p::{Multiaddr, TransportError, core::transport::ListenerId, swarm::NetworkBehaviour};
-use tokio::sync::{Mutex, oneshot};
+use tokio::sync::oneshot;
 
 use crate::swarm::SwarmDriver;
 
-pub type PendingListens =
-    Arc<Mutex<HashMap<ListenerId, oneshot::Sender<Result<(), TransportError<IoError>>>>>>;
+pub type PendingListens = HashMap<ListenerId, oneshot::Sender<Result<(), TransportError<IoError>>>>;
 
 pub enum ListenAction {
     Listen(
@@ -24,7 +22,7 @@ pub trait ListenDriver<TBehavior>: SwarmDriver<TBehavior>
 where
     TBehavior: NetworkBehaviour,
 {
-    fn pending_listens(&self) -> PendingListens;
+    fn pending_listens(&mut self) -> &mut PendingListens;
 
     async fn process_listen_action(&mut self, action: ListenAction) {
         match action {
@@ -33,7 +31,7 @@ where
 
                 match self.swarm().listen_on(address.clone()) {
                     Ok(listener_id) => {
-                        self.pending_listens().lock().await.insert(listener_id, tx);
+                        self.pending_listens().insert(listener_id, tx);
                     }
                     Err(err) => {
                         let _ = tx.send(Err(err));
@@ -43,8 +41,8 @@ where
         }
     }
 
-    async fn process_new_listen_addr(&self, listener_id: &ListenerId) {
-        if let Some(tx) = self.pending_listens().lock().await.remove(listener_id) {
+    async fn process_new_listen_addr(&mut self, listener_id: &ListenerId) {
+        if let Some(tx) = self.pending_listens().remove(listener_id) {
             let _ = tx.send(Ok(()));
         }
     }

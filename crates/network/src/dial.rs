@@ -1,20 +1,14 @@
 use std::collections::HashMap;
-use std::sync::Arc;
 
-use tokio::sync::Mutex;
+use libp2p::{
+    Multiaddr, PeerId,
+    swarm::{ConnectionId, DialError, NetworkBehaviour, dial_opts::DialOpts},
+};
 use tokio::sync::oneshot;
-
-use libp2p::Multiaddr;
-use libp2p::PeerId;
-use libp2p::swarm::ConnectionId;
-use libp2p::swarm::DialError;
-use libp2p::swarm::NetworkBehaviour;
-use libp2p::swarm::dial_opts::DialOpts;
 
 use crate::swarm::SwarmDriver;
 
-pub type PendingDials =
-    Arc<Mutex<HashMap<ConnectionId, oneshot::Sender<Result<PeerId, DialError>>>>>;
+pub type PendingDials = HashMap<ConnectionId, oneshot::Sender<Result<PeerId, DialError>>>;
 
 pub enum DialAction {
     Dial(Multiaddr, oneshot::Sender<Result<PeerId, DialError>>),
@@ -25,7 +19,7 @@ pub trait DialDriver<TBehavior>: SwarmDriver<TBehavior>
 where
     TBehavior: NetworkBehaviour,
 {
-    fn pending_dials(&self) -> PendingDials;
+    fn pending_dials(&mut self) -> &mut PendingDials;
 
     async fn process_dial_action(&mut self, action: DialAction) {
         match action {
@@ -37,19 +31,23 @@ where
                 if let Err(err) = self.swarm().dial(opts) {
                     let _ = tx.send(Err(err));
                 } else {
-                    self.pending_dials().lock().await.insert(connection_id, tx);
+                    self.pending_dials().insert(connection_id, tx);
                 }
             }
         }
     }
 
-    async fn process_connection_established(&self, peer_id: PeerId, connection_id: &ConnectionId) {
-        if let Some(dial) = self.pending_dials().lock().await.remove(connection_id) {
+    async fn process_connection_established(
+        &mut self,
+        peer_id: PeerId,
+        connection_id: &ConnectionId,
+    ) {
+        if let Some(dial) = self.pending_dials().remove(connection_id) {
             let _ = dial.send(Ok(peer_id));
         }
     }
-    async fn process_connection_error(&self, connection_id: &ConnectionId, error: DialError) {
-        if let Some(dial) = self.pending_dials().lock().await.remove(connection_id) {
+    async fn process_connection_error(&mut self, connection_id: &ConnectionId, error: DialError) {
+        if let Some(dial) = self.pending_dials().remove(connection_id) {
             let _ = dial.send(Err(error));
         }
     }

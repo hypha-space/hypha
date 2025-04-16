@@ -1,23 +1,24 @@
-use std::{collections::HashMap, sync::Arc};
+use std::collections::HashMap;
 
 use futures_util::stream::StreamExt;
 use hypha_network::{
     dial::{DialAction, DialDriver, DialInterface, PendingDials},
     error::HyphaError,
-    kad::{
-        KademliaAction, KademliaBehavior, KademliaDriver, KademliaInterface, KademliaResult,
-        PendingQueries,
+    gossipsub::{
+        GossipsubAction, GossipsubBehaviour, GossipsubDriver, GossipsubInterface, Subscriptions,
     },
+    kad::{KademliaAction, KademliaBehavior, KademliaDriver, KademliaInterface, PendingQueries},
+    listen::{ListenAction, ListenDriver, ListenInterface, PendingListens},
     stream::{StreamInterface, StreamSenderInterface},
     swarm::SwarmDriver,
 };
 use libp2p::{
-    PeerId, Swarm, SwarmBuilder, identify, identity, kad, ping,
-    swarm::{ConnectionId, DialError, NetworkBehaviour, SwarmEvent},
+    Swarm, SwarmBuilder, gossipsub, identify, identity, kad, ping,
+    swarm::{NetworkBehaviour, SwarmEvent},
     tcp, tls, yamux,
 };
 use libp2p_stream as stream;
-use tokio::sync::{Mutex, mpsc, oneshot};
+use tokio::sync::mpsc;
 
 #[derive(Clone)]
 pub(crate) struct Network {
@@ -31,25 +32,30 @@ pub(crate) struct Behaviour {
     identify: identify::Behaviour,
     stream: stream::Behaviour,
     kademlia: kad::Behaviour<kad::store::MemoryStore>,
+    gossipsub: gossipsub::Behaviour,
 }
 
 pub(crate) struct NetworkDriver {
     swarm: Swarm<Behaviour>,
     pending_dials_map: PendingDials,
+    pending_listen_map: PendingListens,
     pending_queries_map: PendingQueries,
+    subscriptions: Subscriptions,
     action_receiver: mpsc::Receiver<Action>,
 }
 
 enum Action {
     Dial(DialAction),
+    Listen(ListenAction),
     Kademlia(KademliaAction),
+    Gossipsub(GossipsubAction),
 }
 
 impl Network {
     pub fn create(identity: identity::Keypair) -> Result<(Self, NetworkDriver), HyphaError> {
         let (action_sender, action_receiver) = mpsc::channel(5);
 
-        let mut swarm = SwarmBuilder::with_existing_identity(identity)
+        let swarm = SwarmBuilder::with_existing_identity(identity)
             .with_tokio()
             .with_tcp(
                 tcp::Config::default(),
@@ -69,14 +75,14 @@ impl Network {
                     key.public().to_peer_id(),
                     kad::store::MemoryStore::new(key.public().to_peer_id()),
                 ),
+                gossipsub: gossipsub::Behaviour::new(
+                    gossipsub::MessageAuthenticity::Signed(key.clone()),
+                    gossipsub::Config::default(),
+                )
+                .unwrap(),
             })
             .map_err(|_| HyphaError::SwarmError("Failed to create swarm behavior.".to_string()))?
             .build();
-
-        swarm
-            .behaviour_mut()
-            .kademlia
-            .set_mode(Some(kad::Mode::Client));
 
         Ok((
             Network {
@@ -85,8 +91,10 @@ impl Network {
             },
             NetworkDriver {
                 swarm,
-                pending_dials_map: Arc::new(Mutex::new(HashMap::default())),
-                pending_queries_map: Arc::new(Mutex::new(HashMap::default())),
+                pending_dials_map: HashMap::default(),
+                pending_listen_map: HashMap::default(),
+                pending_queries_map: HashMap::default(),
+                subscriptions: HashMap::default(),
                 action_receiver,
             },
         ))
@@ -99,17 +107,33 @@ impl SwarmDriver<Behaviour> for NetworkDriver {
             tokio::select! {
                 event = self.swarm.select_next_some() => {
                     match event {
-                        SwarmEvent::ConnectionEstablished { peer_id, connection_id, endpoint, .. } => {
-                            // TODO: Move into the kademlia module also I wonder whether we really should add all and instead may just want to add the gateway.
-                            self.swarm.behaviour_mut().kademlia.add_address(&peer_id, endpoint.get_remote_address().clone());
+                        SwarmEvent::ConnectionEstablished { peer_id, connection_id, .. } => {
                             self.process_connection_established(peer_id, &connection_id).await;
                         }
                         SwarmEvent::OutgoingConnectionError { connection_id, error, .. } => {
                             self.process_connection_error(&connection_id, error).await;
                         }
+                        SwarmEvent::NewListenAddr { listener_id, address } => {
+                            tracing::info!(address=%address, "New listen address");
+                            self.process_new_listen_addr(&listener_id).await;
+                        }
+                        SwarmEvent::ExternalAddrConfirmed { address, .. } => {
+                            tracing::info!("External address confirmed: {:?}", address);
+                        }
+                        SwarmEvent::Behaviour(BehaviourEvent::Identify(identify::Event::Received { peer_id, info, .. })) => {
+                            // Add known addresses of peers to the Kademlia routing table
+                            tracing::debug!(peer_id=%peer_id, info=?info, "Adding address to Kademlia routing table");
+                            for addr in info.listen_addrs {
+                                self.swarm.behaviour_mut().kademlia.add_address(&peer_id, addr);
+                            }
+                        }
                         SwarmEvent::Behaviour(BehaviourEvent::Kademlia(kad::Event::OutboundQueryProgressed {id,  result, step, ..})) => {
                              self.process_kademlia_query_result(id, result, step).await;
-                         }
+                        }
+                        SwarmEvent::Behaviour(BehaviourEvent::Gossipsub(event)) => {
+                            self.process_gossipsub_event(event).await;
+                        }
+
                         _ => {
                             tracing::debug!("Unhandled event: {:?}", event);
                         }
@@ -118,11 +142,17 @@ impl SwarmDriver<Behaviour> for NetworkDriver {
                 Some(action) = self.action_receiver.recv() => {
                     match action {
                         Action::Dial(action) => self.process_dial_action(action).await,
+                        Action::Listen(action) => self.process_listen_action(action).await,
                         Action::Kademlia(action) => self.process_kademlia_action(action).await,
+                        Action::Gossipsub(action) =>
+                            self.process_gossipsub_action(action).await,
                     }
                 }
+                else => break
             }
         }
+
+        Ok(())
     }
 
     fn swarm(&mut self) -> &mut Swarm<Behaviour> {
@@ -137,10 +167,23 @@ impl DialInterface for Network {
 }
 
 impl DialDriver<Behaviour> for NetworkDriver {
-    fn pending_dials(
-        &self,
-    ) -> Arc<Mutex<HashMap<ConnectionId, oneshot::Sender<Result<PeerId, DialError>>>>> {
-        self.pending_dials_map.clone()
+    fn pending_dials(&mut self) -> &mut PendingDials {
+        &mut self.pending_dials_map
+    }
+}
+
+impl ListenInterface for Network {
+    async fn send(&self, action: ListenAction) {
+        self.action_sender
+            .send(Action::Listen(action))
+            .await
+            .unwrap();
+    }
+}
+
+impl ListenDriver<Behaviour> for NetworkDriver {
+    fn pending_listens(&mut self) -> &mut PendingListens {
+        &mut self.pending_listen_map
     }
 }
 
@@ -159,10 +202,8 @@ impl KademliaBehavior for Behaviour {
 }
 
 impl KademliaDriver<Behaviour> for NetworkDriver {
-    fn pending_queries(
-        &self,
-    ) -> Arc<Mutex<HashMap<libp2p::kad::QueryId, mpsc::Sender<KademliaResult>>>> {
-        self.pending_queries_map.clone()
+    fn pending_queries(&mut self) -> &mut PendingQueries {
+        &mut self.pending_queries_map
     }
 }
 
@@ -170,6 +211,27 @@ impl KademliaInterface for Network {
     async fn send(&self, action: KademliaAction) {
         self.action_sender
             .send(Action::Kademlia(action))
+            .await
+            .unwrap();
+    }
+}
+
+impl GossipsubBehaviour for Behaviour {
+    fn gossipsub(&mut self) -> &mut gossipsub::Behaviour {
+        &mut self.gossipsub
+    }
+}
+
+impl GossipsubDriver<Behaviour> for NetworkDriver {
+    fn subscriptions(&mut self) -> &mut Subscriptions {
+        &mut self.subscriptions
+    }
+}
+
+impl GossipsubInterface for Network {
+    async fn send(&self, action: GossipsubAction) {
+        self.action_sender
+            .send(Action::Gossipsub(action))
             .await
             .unwrap();
     }

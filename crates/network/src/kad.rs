@@ -2,23 +2,22 @@ use std::{
     collections::{HashMap, HashSet},
     error::Error,
     fmt::Display,
-    sync::Arc,
 };
 
 use libp2p::{
     PeerId,
     kad::{
-        self, QueryId,
+        self, PeerInfo, QueryId,
         store::{self, MemoryStore},
     },
     swarm::NetworkBehaviour,
 };
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::mpsc;
 use tokio_stream::{StreamExt, wrappers::ReceiverStream};
 
 use crate::swarm::SwarmDriver;
 
-pub type PendingQueries = Arc<Mutex<HashMap<kad::QueryId, mpsc::Sender<KademliaResult>>>>;
+pub type PendingQueries = HashMap<kad::QueryId, mpsc::Sender<KademliaResult>>;
 
 pub trait KademliaBehavior {
     fn kademlia(&mut self) -> &mut kad::Behaviour<MemoryStore>;
@@ -29,6 +28,7 @@ pub enum KademliaAction {
     GetRecord(String, mpsc::Sender<KademliaResult>),
     PutRecord(kad::Record, mpsc::Sender<KademliaResult>),
     StartProviding(String, mpsc::Sender<KademliaResult>),
+    GetClosestPeers(PeerId, mpsc::Sender<KademliaResult>),
 }
 
 pub type KademliaResult = Result<KademliaOk, KademliaError>;
@@ -38,13 +38,16 @@ pub enum KademliaOk {
     StartProviding(()),
     PutRecord(()),
     GetRecord(kad::Record),
+    GetClosestPeers(kad::GetClosestPeersOk),
 }
 
 #[derive(Debug)]
 pub enum KademliaError {
     GetProviders(kad::GetProvidersError),
     Store(store::Error),
+    PutRecord(kad::PutRecordError),
     GetRecord(kad::GetRecordError),
+    GetClosestPeers(kad::GetClosestPeersError),
     Other(String),
 }
 
@@ -60,6 +63,8 @@ impl Display for KademliaError {
             Self::GetProviders(msg) => write!(f, "Get Providers error: {}", msg),
             Self::GetRecord(msg) => write!(f, "Get Record error: {}", msg),
             Self::Store(msg) => write!(f, "Store error: {}", msg),
+            Self::PutRecord(msg) => write!(f, "Put Record error: {}", msg),
+            Self::GetClosestPeers(msg) => write!(f, "Get Closest Peers error: {}", msg),
             Self::Other(msg) => write!(f, "Other error: {}", msg),
         }
     }
@@ -72,7 +77,7 @@ where
 {
     // Within Kademlia, a single query can result in multiple events.
     // Instead of using a 'oneshot' channel, we use a 'mpsc' channel to allow for multiple events to be sent.
-    fn pending_queries(&self) -> PendingQueries;
+    fn pending_queries(&mut self) -> &mut PendingQueries;
 
     async fn process_kademlia_action(&mut self, action: KademliaAction) {
         match action {
@@ -83,7 +88,7 @@ where
                     .kademlia()
                     .get_record(kad::RecordKey::new(&key));
 
-                self.pending_queries().lock().await.insert(query_id, tx);
+                self.pending_queries().insert(query_id, tx);
             }
             KademliaAction::PutRecord(record, tx) => {
                 match self
@@ -93,7 +98,7 @@ where
                     .put_record(record, kad::Quorum::One)
                 {
                     Ok(query_id) => {
-                        self.pending_queries().lock().await.insert(query_id, tx);
+                        self.pending_queries().insert(query_id, tx);
                     }
                     Err(err) => {
                         let _ = tx.send(Err(KademliaError::Store(err))).await;
@@ -107,7 +112,7 @@ where
                     .kademlia()
                     .get_providers(kad::RecordKey::new(&key));
 
-                self.pending_queries().lock().await.insert(query_id, tx);
+                self.pending_queries().insert(query_id, tx);
             }
             KademliaAction::StartProviding(key, tx) => {
                 match self
@@ -117,12 +122,21 @@ where
                     .start_providing(kad::RecordKey::new(&key))
                 {
                     Ok(query_id) => {
-                        self.pending_queries().lock().await.insert(query_id, tx);
+                        self.pending_queries().insert(query_id, tx);
                     }
                     Err(err) => {
                         let _ = tx.send(Err(KademliaError::Store(err))).await;
                     }
                 }
+            }
+            KademliaAction::GetClosestPeers(peer, tx) => {
+                let query_id = self
+                    .swarm()
+                    .behaviour_mut()
+                    .kademlia()
+                    .get_closest_peers(peer);
+
+                self.pending_queries().insert(query_id, tx);
             }
         }
     }
@@ -136,10 +150,19 @@ where
         match result {
             kad::QueryResult::PutRecord(Ok(_)) => {
                 send_kademlia_result(
-                    &self.pending_queries(),
+                    self.pending_queries(),
                     query_id,
                     step,
                     Ok(KademliaOk::PutRecord(())),
+                )
+                .await;
+            }
+            kad::QueryResult::PutRecord(Err(err)) => {
+                send_kademlia_result(
+                    self.pending_queries(),
+                    query_id,
+                    step,
+                    Err(KademliaError::PutRecord(err)),
                 )
                 .await;
             }
@@ -148,7 +171,7 @@ where
                 ..
             }))) => {
                 send_kademlia_result(
-                    &self.pending_queries(),
+                    self.pending_queries(),
                     query_id,
                     step,
                     Ok(KademliaOk::GetRecord(record)),
@@ -157,7 +180,7 @@ where
             }
             kad::QueryResult::GetRecord(Err(err)) => {
                 send_kademlia_result(
-                    &self.pending_queries(),
+                    self.pending_queries(),
                     query_id,
                     step,
                     Err(KademliaError::GetRecord(err)),
@@ -165,9 +188,8 @@ where
                 .await;
             }
             kad::QueryResult::GetProviders(Ok(providers)) => {
-                tracing::info!(providers=?providers, "GetProviders");
                 send_kademlia_result(
-                    &self.pending_queries(),
+                    self.pending_queries(),
                     query_id,
                     step,
                     Ok(KademliaOk::GetProviders(providers)),
@@ -175,39 +197,55 @@ where
                 .await;
             }
             kad::QueryResult::GetProviders(Err(err)) => {
-                tracing::info!(err=?err, "GetProviders");
                 send_kademlia_result(
-                    &self.pending_queries(),
+                    self.pending_queries(),
                     query_id,
                     step,
                     Err(KademliaError::GetProviders(err)),
                 )
                 .await;
             }
-
             kad::QueryResult::StartProviding(Ok(_)) => {
                 send_kademlia_result(
-                    &self.pending_queries(),
+                    self.pending_queries(),
                     query_id,
                     step,
                     Ok(KademliaOk::StartProviding(())),
                 )
                 .await
             }
-            _ => {
-                tracing::debug!("Unhandled Kademlia Queryresult.")
+            kad::QueryResult::GetClosestPeers(Ok(closest_peers)) => {
+                send_kademlia_result(
+                    self.pending_queries(),
+                    query_id,
+                    step,
+                    Ok(KademliaOk::GetClosestPeers(closest_peers)),
+                )
+                .await;
+            }
+            kad::QueryResult::GetClosestPeers(Err(err)) => {
+                send_kademlia_result(
+                    self.pending_queries(),
+                    query_id,
+                    step,
+                    Err(KademliaError::GetClosestPeers(err)),
+                )
+                .await;
+            }
+            other => {
+                tracing::debug!("Unhandled Kademlia Queryresult: {:?}", other);
             }
         }
     }
 }
 
 async fn send_kademlia_result(
-    pending_queries: &PendingQueries,
+    pending_queries: &mut PendingQueries,
     query_id: QueryId,
     step: kad::ProgressStep,
     result: KademliaResult,
 ) {
-    let tx = match pending_queries.lock().await.get(&query_id).cloned() {
+    let tx = match pending_queries.get(&query_id).cloned() {
         Some(tx) => tx,
         None => return,
     };
@@ -215,7 +253,7 @@ async fn send_kademlia_result(
     let _ = tx.send(result).await;
 
     if step.last {
-        let _ = pending_queries.lock().await.remove(&query_id);
+        let _ = pending_queries.remove(&query_id);
     }
 }
 
@@ -292,6 +330,27 @@ pub trait KademliaInterface {
                 Ok(KademliaOk::GetProviders(
                     kad::GetProvidersOk::FinishedWithNoAdditionalRecord { .. },
                 )) => acc,
+                Err(err) => Err(err),
+                _ => Err(KademliaError::Other("Unexpected response".to_string())),
+            })
+            .await
+    }
+
+    async fn get_closest_peers(&self, peer_id: PeerId) -> Result<Vec<PeerInfo>, KademliaError> {
+        let (tx, rx) = mpsc::channel(5);
+        tracing::info!(peer_id=?peer_id, "Get closest peers");
+
+        self.send(KademliaAction::GetClosestPeers(peer_id, tx))
+            .await;
+
+        ReceiverStream::new(rx)
+            .fold(Ok(Vec::new()), |acc, result| match result {
+                Ok(KademliaOk::GetClosestPeers(kad::GetClosestPeersOk { peers, .. })) => {
+                    acc.map(|mut acc| {
+                        acc.extend(peers);
+                        acc
+                    })
+                }
                 Err(err) => Err(err),
                 _ => Err(KademliaError::Other("Unexpected response".to_string())),
             })
