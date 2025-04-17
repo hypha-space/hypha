@@ -16,7 +16,7 @@ use libp2p::PeerId;
 use libp2p::{
     Swarm, SwarmBuilder, TransportError,
     core::transport::ListenerId,
-    identify, identity, kad, mdns, ping, relay,
+    identify, identity, kad, ping, relay,
     swarm::{ConnectionId, DialError, NetworkBehaviour, SwarmEvent},
     tcp, tls, yamux,
 };
@@ -32,7 +32,6 @@ pub(crate) struct Network {
 #[derive(NetworkBehaviour)]
 pub(crate) struct Behaviour {
     ping: ping::Behaviour,
-    mdns: mdns::tokio::Behaviour,
     identify: identify::Behaviour,
     relay: relay::Behaviour,
     stream: stream::Behaviour,
@@ -78,11 +77,6 @@ impl Network {
                     key.public(),
                 )),
                 stream: stream::Behaviour::new(),
-                mdns: mdns::tokio::Behaviour::new(
-                    mdns::Config::default(),
-                    key.public().to_peer_id(),
-                )
-                .expect("Failed to create mDNS behavior."),
                 kademlia: kad::Behaviour::with_config(
                     key.public().to_peer_id(),
                     kad::store::MemoryStore::new(key.public().to_peer_id()),
@@ -133,12 +127,6 @@ impl SwarmDriver<Behaviour> for NetworkDriver {
                         }
                         SwarmEvent::Behaviour(BehaviourEvent::Kademlia(kad::Event::OutboundQueryProgressed {id,  result, step, ..})) => {
                              self.process_kademlia_query_result(id, result, step).await;
-                         }
-                         SwarmEvent::Behaviour(BehaviourEvent::Mdns(mdns::Event::Discovered(list))) => {
-                             for (peer_id, multiaddr) in list {
-                                 // TODO: Move into the kademlia module
-                                 self.swarm.behaviour_mut().kademlia.add_address(&peer_id, multiaddr);
-                             }
                          }
                         _ => {
                             tracing::debug!("Unhandled event: {:?}", event);
