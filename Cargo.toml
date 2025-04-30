@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = [
+    "crates/api",
     "crates/gateway",
     "crates/network",
     "crates/scheduler",
@@ -56,4 +57,5 @@ mockall = "0.13.1"
 proptest = "1.6.0"
 
 # Hypha
+hypha-api = { path = "crates/api" }
 hypha-network = { path = "crates/network" }

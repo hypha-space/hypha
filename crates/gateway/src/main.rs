@@ -30,8 +30,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let local_key = generate_ed25519(opt.secret_key_seed).expect("only errors on wrong length");
 
-    let (network, network_driver) = Network::create(local_key)?;
-    let task = tokio::spawn(network_driver.run());
+    let (network, network_driver, mut event_receiver) = Network::create(local_key)?;
+    tokio::spawn(network_driver.run());
 
     network
         .listen("/ip4/0.0.0.0/udp/8888/quic-v1".parse()?)
@@ -39,6 +39,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     network.listen("/ip4/0.0.0.0/tcp/8888".parse()?).await?;
     tracing::info!("Successfully listening");
 
-    let _ = task.await?;
+    while let Some(_event) = event_receiver.recv().await {
+        // At the moment we don't expect any incoming requests that needs application logic to resolve.
+        // All incoming requests can be handled by the default network logic.
+        tracing::warn!("Unexpected event received");
+    }
+
     Ok(())
 }

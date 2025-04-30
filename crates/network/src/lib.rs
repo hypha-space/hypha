@@ -1,8 +1,10 @@
+pub mod cbor_codec;
 pub mod dial;
 pub mod error;
 pub mod gossipsub;
 pub mod kad;
 pub mod listen;
+pub mod request_response;
 pub mod stream;
 pub mod swarm;
 pub mod utils;

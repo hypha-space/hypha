@@ -1,11 +1,12 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use futures_util::stream::StreamExt;
 use hypha_network::{
     dial::{DialAction, DialDriver, DialInterface, PendingDials},
     error::HyphaError,
     gossipsub::{
-        GossipsubAction, GossipsubBehaviour, GossipsubDriver, GossipsubInterface, Subscriptions,
+        GossipsubAction, GossipsubBehaviour, GossipsubDriver, GossipsubEvent, GossipsubInterface,
+        Subscriptions,
     },
     kad::{KademliaAction, KademliaBehavior, KademliaDriver, KademliaInterface, PendingQueries},
     listen::{ListenAction, ListenDriver, ListenInterface, PendingListens},
@@ -20,7 +21,6 @@ use libp2p::{
 use libp2p_stream as stream;
 use tokio::sync::mpsc;
 
-#[derive(Clone)]
 pub(crate) struct Network {
     action_sender: mpsc::Sender<Action>,
     stream_control: stream::Control,
@@ -43,6 +43,7 @@ pub(crate) struct NetworkDriver {
     pending_queries_map: PendingQueries,
     subscriptions: Subscriptions,
     action_receiver: mpsc::Receiver<Action>,
+    event_sender: mpsc::Sender<Event>,
 }
 
 enum Action {
@@ -52,9 +53,17 @@ enum Action {
     Gossipsub(GossipsubAction),
 }
 
+pub enum Event {
+    #[allow(dead_code)]
+    Gossipsub(GossipsubEvent),
+}
+
 impl Network {
-    pub fn create(identity: identity::Keypair) -> Result<(Self, NetworkDriver), HyphaError> {
+    pub fn create(
+        identity: identity::Keypair,
+    ) -> Result<(Self, NetworkDriver, mpsc::Receiver<Event>), HyphaError> {
         let (action_sender, action_receiver) = mpsc::channel(5);
+        let (event_sender, event_receiver) = mpsc::channel(5);
 
         let mut swarm = SwarmBuilder::with_existing_identity(identity)
             .with_tokio()
@@ -104,9 +113,11 @@ impl Network {
                 pending_dials_map: HashMap::default(),
                 pending_listen_map: HashMap::default(),
                 pending_queries_map: HashMap::default(),
-                subscriptions: HashMap::default(),
+                subscriptions: HashSet::default(),
                 action_receiver,
+                event_sender,
             },
+            event_receiver,
         ))
     }
 }
@@ -232,6 +243,13 @@ impl GossipsubBehaviour for Behaviour {
 }
 
 impl GossipsubDriver<Behaviour> for NetworkDriver {
+    async fn send(&mut self, event: GossipsubEvent) {
+        self.event_sender
+            .send(Event::Gossipsub(event))
+            .await
+            .unwrap();
+    }
+
     fn subscriptions(&mut self) -> &mut Subscriptions {
         &mut self.subscriptions
     }

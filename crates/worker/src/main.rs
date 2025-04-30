@@ -3,12 +3,17 @@ mod network;
 use std::{error::Error, time::Duration};
 
 use clap::Parser;
-use futures_util::StreamExt;
 use hypha_network::{
-    dial::DialInterface, gossipsub::GossipsubInterface, kad::KademliaInterface,
-    listen::ListenInterface, swarm::SwarmDriver, utils::generate_ed25519,
+    dial::DialInterface,
+    gossipsub::{GossipsubEvent, GossipsubInterface},
+    kad::KademliaInterface,
+    listen::ListenInterface,
+    request_response::RequestResponseInterface,
+    swarm::SwarmDriver,
+    utils::generate_ed25519,
 };
-use libp2p::Multiaddr;
+use libp2p::{Multiaddr, PeerId};
+use network::Event;
 use tracing_subscriber::EnvFilter;
 
 use crate::network::Network;
@@ -38,7 +43,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let local_key = generate_ed25519(opt.secret_key_seed).expect("only errors on wrong length");
     let gateway_address = opt.gateway_address.parse::<Multiaddr>()?;
 
-    let (network, network_driver) = Network::create(local_key)?;
+    let (network, network_driver, mut event_receiver) = Network::create(local_key)?;
     tokio::spawn(network_driver.run());
 
     network
@@ -65,10 +70,22 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .await?;
     tracing::info!("Stored 'cpu' record");
 
-    let messages = network.subscribe("messages").await?;
-    let mut messages = messages;
-    while let Some(message) = messages.next().await {
-        tracing::info!("Received message: {:?}", message);
+    network.subscribe("messages").await?;
+
+    while let Some(event) = event_receiver.recv().await {
+        match event {
+            Event::Gossipsub(event) => match event {
+                GossipsubEvent::Message(_, data) => {
+                    tracing::info!("Received message: {:?}", data);
+
+                    let peer_id = PeerId::from_bytes(data.as_slice()).unwrap();
+                    tracing::info!("Sending request to peer {}", peer_id);
+                    let response = network.request(peer_id, hypha_api::Request::Work()).await;
+                    tracing::info!("Received response from peer {}: {:?}", peer_id, response);
+                }
+            },
+            _ => tracing::warn!("Unexpected event received"),
+        }
     }
 
     Ok(())

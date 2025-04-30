@@ -4,13 +4,18 @@ use std::{error::Error, time::Duration};
 
 use clap::Parser;
 use hypha_network::{
-    dial::DialInterface, gossipsub::GossipsubInterface, kad::KademliaInterface,
-    listen::ListenInterface, swarm::SwarmDriver, utils::generate_ed25519,
+    dial::DialInterface,
+    gossipsub::GossipsubInterface,
+    kad::KademliaInterface,
+    listen::ListenInterface,
+    request_response::{RequestResponseEvent, RequestResponseInterface},
+    swarm::SwarmDriver,
+    utils::generate_ed25519,
 };
 use libp2p::Multiaddr;
 use tracing_subscriber::EnvFilter;
 
-use crate::network::Network;
+use crate::network::{Event, Network};
 
 #[derive(Debug, Parser)]
 #[clap(name = "hypha")]
@@ -35,9 +40,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     );
 
     let local_key = generate_ed25519(opt.secret_key_seed).expect("only errors on wrong length");
+    let local_peer_id = local_key.public().to_peer_id();
     let gateway_address = opt.gateway_address.parse::<Multiaddr>()?;
 
-    let (network, network_driver) = Network::create(local_key)?;
+    let (network, network_driver, mut event_receiver) = Network::create(local_key)?;
     tokio::spawn(network_driver.run());
 
     network
@@ -58,8 +64,22 @@ async fn main() -> Result<(), Box<dyn Error>> {
     tracing::info!(record=?record,"Found CPU record");
 
     loop {
-        tokio::time::sleep(Duration::from_secs(5)).await;
-        tracing::info!("Publishing message");
-        let _ = network.publish("messages", "test").await;
+        let sleep = tokio::time::sleep(Duration::from_secs(5));
+
+        tokio::select! {
+            Some(event) = event_receiver.recv() => {
+                match event {
+                    Event::RequestResponse(RequestResponseEvent::InboundRequest(request_id, ch, request)) => {
+                        tracing::info!("Received request: {:?}", request);
+                        network.response(request_id, ch, hypha_api::Response::WorkDone()).await?;
+                    }
+                    _ => tracing::warn!("Unexpected event received"),
+                }
+            }
+            _ = sleep => {
+                tracing::info!("Publishing message");
+                let _ = network.publish("messages", local_peer_id).await;
+            }
+        }
     }
 }
