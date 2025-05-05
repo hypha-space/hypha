@@ -27,6 +27,7 @@ htmlcov/
 .cache
 nosetests.xml
 coverage.xml
+.profraw
 
 # Environment and secret files
 .env
