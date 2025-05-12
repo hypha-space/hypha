@@ -6,8 +6,6 @@ use clap::Parser;
 use hypha_network::{
     cert::{load_certs_from_pem, load_crls_from_pem, load_private_key_from_pem},
     dial::DialInterface,
-    gossipsub::GossipsubInterface,
-    kad::KademliaInterface,
     listen::ListenInterface,
     swarm::SwarmDriver,
 };
@@ -72,12 +70,5 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // TODO: Provide a way to wait for this event
     tokio::time::sleep(Duration::from_secs(2)).await;
 
-    let record = network.get("cpu").await?;
-    tracing::info!(record=?record,"Found CPU record");
-
-    loop {
-        tokio::time::sleep(Duration::from_secs(5)).await;
-        tracing::info!("Publishing message");
-        let _ = network.publish("messages", "test").await;
-    }
+    Ok(())
 }

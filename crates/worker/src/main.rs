@@ -1,19 +1,15 @@
 mod network;
 
-use std::{error::Error, path::PathBuf, time::Duration};
+use std::{error::Error, fs, path::PathBuf, time::Duration};
 
 use clap::Parser;
-use futures_util::StreamExt;
 use hypha_network::{
     cert::{load_certs_from_pem, load_crls_from_pem, load_private_key_from_pem},
     dial::DialInterface,
-    gossipsub::GossipsubInterface,
-    kad::KademliaInterface,
     listen::ListenInterface,
     swarm::SwarmDriver,
 };
 use libp2p::Multiaddr;
-use std::fs;
 use tracing_subscriber::EnvFilter;
 
 use crate::network::Network;
@@ -66,7 +62,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     network.listen("/ip4/0.0.0.0/tcp/0".parse()?).await?;
     tracing::info!("Successfully listening");
 
-    // Dial the gatewaty address
+    // Dial the gateway address
     let _gateway_peer_id = network.dial(gateway_address).await?;
 
     tracing::info!(gateway_id = %_gateway_peer_id, "Connected to gateway");
@@ -74,22 +70,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Once we receive an 'Identify' message, bootstrapping will start.
     // TODO: Provide a way to wait for this event
     tokio::time::sleep(Duration::from_secs(2)).await;
-
-    network
-        .store(libp2p::kad::Record {
-            key: libp2p::kad::RecordKey::new(&"cpu"),
-            value: "test".as_bytes().to_vec(),
-            publisher: None,
-            expires: None,
-        })
-        .await?;
-    tracing::info!("Stored 'cpu' record");
-
-    let messages = network.subscribe("messages").await?;
-    let mut messages = messages;
-    while let Some(message) = messages.next().await {
-        tracing::info!("Received message: {:?}", message);
-    }
 
     Ok(())
 }
