@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 
 use futures_util::stream::StreamExt;
+use hypha_api;
 use hypha_network::{
+    cbor_codec,
     dial::{DialAction, DialDriver, DialInterface, PendingDials},
     error::HyphaError,
     gossipsub::{
@@ -9,16 +11,21 @@ use hypha_network::{
     },
     kad::{KademliaAction, KademliaBehavior, KademliaDriver, KademliaInterface, PendingQueries},
     listen::{ListenAction, ListenDriver, ListenInterface, PendingListens},
+    request_response::{
+        InboundRequestSender, OutboundRequests, OutboundResponses, RequestResponseAction,
+        RequestResponseBehaviour, RequestResponseDriver, RequestResponseInterface,
+    },
     stream::{StreamInterface, StreamSenderInterface},
     swarm::SwarmDriver,
 };
 use libp2p::{
-    Swarm, SwarmBuilder, gossipsub, identify, identity, kad, ping,
+    StreamProtocol, Swarm, SwarmBuilder, gossipsub, identify, identity, kad, ping,
+    request_response,
     swarm::{NetworkBehaviour, SwarmEvent},
     tcp, tls, yamux,
 };
 use libp2p_stream as stream;
-use tokio::sync::mpsc;
+use tokio::sync::{OnceCell, mpsc};
 
 #[derive(Clone)]
 pub(crate) struct Network {
@@ -33,6 +40,8 @@ pub(crate) struct Behaviour {
     stream: stream::Behaviour,
     kademlia: kad::Behaviour<kad::store::MemoryStore>,
     gossipsub: gossipsub::Behaviour,
+    request_response:
+        request_response::Behaviour<cbor_codec::Codec<hypha_api::Request, hypha_api::Response>>,
 }
 
 pub(crate) struct NetworkDriver {
@@ -42,6 +51,11 @@ pub(crate) struct NetworkDriver {
     pending_queries_map: PendingQueries,
     subscriptions: Subscriptions,
     action_receiver: mpsc::Receiver<Action>,
+    outbound_requests_map:
+        OutboundRequests<cbor_codec::Codec<hypha_api::Request, hypha_api::Response>>,
+    outbound_responses_map: OutboundResponses,
+    inbound_request_sender:
+        OnceCell<InboundRequestSender<cbor_codec::Codec<hypha_api::Request, hypha_api::Response>>>,
 }
 
 enum Action {
@@ -49,6 +63,9 @@ enum Action {
     Listen(ListenAction),
     Kademlia(KademliaAction),
     Gossipsub(GossipsubAction),
+    RequestResponse(
+        RequestResponseAction<cbor_codec::Codec<hypha_api::Request, hypha_api::Response>>,
+    ),
 }
 
 impl Network {
@@ -80,6 +97,15 @@ impl Network {
                     gossipsub::Config::default(),
                 )
                 .unwrap(),
+                request_response: request_response::Behaviour::<
+                    cbor_codec::Codec<hypha_api::Request, hypha_api::Response>,
+                >::new(
+                    [(
+                        StreamProtocol::new("/hypha-api/0.0.1"),
+                        request_response::ProtocolSupport::Full,
+                    )],
+                    request_response::Config::default(),
+                ),
             })
             .map_err(|_| HyphaError::SwarmError("Failed to create swarm behavior.".to_string()))?
             .build();
@@ -95,6 +121,9 @@ impl Network {
                 pending_listen_map: HashMap::default(),
                 pending_queries_map: HashMap::default(),
                 subscriptions: HashMap::default(),
+                outbound_requests_map: HashMap::default(),
+                outbound_responses_map: HashMap::default(),
+                inbound_request_sender: OnceCell::new(),
                 action_receiver,
             },
         ))
@@ -133,6 +162,9 @@ impl SwarmDriver<Behaviour> for NetworkDriver {
                         SwarmEvent::Behaviour(BehaviourEvent::Gossipsub(event)) => {
                             self.process_gossipsub_event(event).await;
                         }
+                        SwarmEvent::Behaviour(BehaviourEvent::RequestResponse(event)) => {
+                            self.process_request_response_event(event).await;
+                        }
 
                         _ => {
                             tracing::debug!("Unhandled event: {:?}", event);
@@ -146,6 +178,8 @@ impl SwarmDriver<Behaviour> for NetworkDriver {
                         Action::Kademlia(action) => self.process_kademlia_action(action).await,
                         Action::Gossipsub(action) =>
                             self.process_gossipsub_action(action).await,
+                        Action::RequestResponse(action) =>
+                            self.process_request_response_action(action).await,
                     }
                 }
                 else => break
@@ -232,6 +266,53 @@ impl GossipsubInterface for Network {
     async fn send(&self, action: GossipsubAction) {
         self.action_sender
             .send(Action::Gossipsub(action))
+            .await
+            .unwrap();
+    }
+}
+
+impl RequestResponseBehaviour<cbor_codec::Codec<hypha_api::Request, hypha_api::Response>>
+    for Behaviour
+{
+    fn request_response(
+        &mut self,
+    ) -> &mut libp2p::request_response::Behaviour<
+        cbor_codec::Codec<hypha_api::Request, hypha_api::Response>,
+    > {
+        &mut self.request_response
+    }
+}
+
+impl RequestResponseDriver<Behaviour, cbor_codec::Codec<hypha_api::Request, hypha_api::Response>>
+    for NetworkDriver
+{
+    fn outbound_requests(
+        &mut self,
+    ) -> &mut OutboundRequests<cbor_codec::Codec<hypha_api::Request, hypha_api::Response>> {
+        &mut self.outbound_requests_map
+    }
+
+    fn outbound_responses(&mut self) -> &mut OutboundResponses {
+        &mut self.outbound_responses_map
+    }
+
+    fn inbound_request_sender(
+        &self,
+    ) -> &OnceCell<InboundRequestSender<cbor_codec::Codec<hypha_api::Request, hypha_api::Response>>>
+    {
+        &self.inbound_request_sender
+    }
+}
+
+impl RequestResponseInterface<cbor_codec::Codec<hypha_api::Request, hypha_api::Response>>
+    for Network
+{
+    async fn send(
+        &self,
+        action: RequestResponseAction<cbor_codec::Codec<hypha_api::Request, hypha_api::Response>>,
+    ) {
+        self.action_sender
+            .send(Action::RequestResponse(action))
             .await
             .unwrap();
     }

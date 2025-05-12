@@ -2,11 +2,15 @@ mod network;
 
 use std::{error::Error, time::Duration};
 
+use tokio::join;
+
 use clap::Parser;
 use futures_util::StreamExt;
+use hypha_api::Response;
 use hypha_network::{
     dial::DialInterface, gossipsub::GossipsubInterface, kad::KademliaInterface,
-    listen::ListenInterface, swarm::SwarmDriver, utils::generate_ed25519,
+    listen::ListenInterface, request_response::RequestResponseInterface, swarm::SwarmDriver,
+    utils::generate_ed25519,
 };
 use libp2p::Multiaddr;
 use tracing_subscriber::EnvFilter;
@@ -65,11 +69,40 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .await?;
     tracing::info!("Stored 'cpu' record");
 
-    let messages = network.subscribe("messages").await?;
-    let mut messages = messages;
-    while let Some(message) = messages.next().await {
-        tracing::info!("Received message: {:?}", message);
-    }
+    let requests = network
+        .requests()
+        .await?
+        .for_each_concurrent(None, async |req| {
+            tracing::info!("Got a request");
+            match req {
+                Ok(req) => {
+                    let _ = network
+                        .store(libp2p::kad::Record {
+                            key: libp2p::kad::RecordKey::new(&"cpu"),
+                            value: req.request_id.to_string().as_bytes().to_owned(),
+                            publisher: None,
+                            expires: None,
+                        })
+                        .await;
+                    // TODO: We may want to retry sending a response
+                    let _ = network
+                        .respond(req.request_id, req.channel, Response::WorkDone())
+                        .await;
+                }
+                Err(err) => {
+                    tracing::error!("Error processing request: {:?}", err);
+                }
+            }
+        });
+
+    let messages = network
+        .subscribe("messages")
+        .await?
+        .for_each_concurrent(None, async |m| {
+            tracing::info!("Received message: {:?}", m);
+        });
+
+    join!(requests, messages);
 
     Ok(())
 }

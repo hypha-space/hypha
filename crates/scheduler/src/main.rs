@@ -3,9 +3,11 @@ mod network;
 use std::{error::Error, time::Duration};
 
 use clap::Parser;
+use hypha_api::Request;
 use hypha_network::{
     dial::DialInterface, gossipsub::GossipsubInterface, kad::KademliaInterface,
-    listen::ListenInterface, swarm::SwarmDriver, utils::generate_ed25519,
+    listen::ListenInterface, request_response::RequestResponseInterface, swarm::SwarmDriver,
+    utils::generate_ed25519,
 };
 use libp2p::Multiaddr;
 use tracing_subscriber::EnvFilter;
@@ -37,7 +39,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let local_key = generate_ed25519(opt.secret_key_seed).expect("only errors on wrong length");
     let gateway_address = opt.gateway_address.parse::<Multiaddr>()?;
 
-    let (network, network_driver) = Network::create(local_key)?;
+    let (network, network_driver) = Network::create(local_key.clone())?;
     tokio::spawn(network_driver.run());
 
     network
@@ -57,9 +59,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let record = network.get("cpu").await?;
     tracing::info!(record=?record,"Found CPU record");
 
+    let k = local_key.public().to_peer_id().to_base58();
     loop {
-        tokio::time::sleep(Duration::from_secs(5)).await;
-        tracing::info!("Publishing message");
-        let _ = network.publish("messages", "test").await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        tracing::info!("Tick");
+        let _ = network.publish("messages", k.clone()).await;
+
+        let res = network
+            .request(
+                "12D3KooWH3uVF6wv47WnArKHk5p6cvgCJEb74UTmxztmQDc298L3".parse()?,
+                Request::Work(),
+            )
+            .await;
+
+        tracing::info!(response=?res,"Got a response");
     }
 }

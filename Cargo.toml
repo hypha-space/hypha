@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = [
+    "crates/api",
     "crates/gateway",
     "crates/network",
     "crates/scheduler",
@@ -54,6 +55,9 @@ tokio = { version = "1.43.0", features = [
 tokio-stream = { version = "0.1.17", features = ["sync"] }
 mockall = "0.13.1"
 proptest = "1.6.0"
+ciborium = "0.2.2"
+futures = "0.3.31"
 
 # Hypha
+hypha-api = { path = "crates/api" }
 hypha-network = { path = "crates/network" }
