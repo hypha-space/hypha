@@ -16,7 +16,7 @@ Hypha aims to orchestrate ML workloads across diverse, decentral hardware. A key
 General market-oriented resource management has been extensively studied [^1] and found to effectively solve these challenges. Examples include resource allocation in distributed systems like fog/edge computing [^3] [^4], decentralized auction systems for multi-agent task allocation [^2], and earlier P2P market systems like Tycoon [^6].
 
 From the set of reviewed market-based approaches, PeerMart [^5] offers a robust yet simple blueprint for a decentral auction-based market. It implements a simple economic efficient **double auction**, where both buyers and sellers submit bids and asks for well defined _services_, and a clearing price is determined.
-While others approach like combinatorial auctions would provide a more  powerful mechanism for expressing complex preferences (e.g., "I want GPU X and CPU Y, but only if I get both from the same provider"), they are significantly more complex to implement and solve in a decentralized P2P setting compared to multiple double auctions for pre-defined resouce bundles (_services_).
+While other approach like combinatorial auctions would provide a more  powerful mechanism for expressing complex preferences (e.g., "I want GPU X and CPU Y, but only if I get both from the same provider"), they are significantly more complex to implement and solve in a decentralized P2P setting compared to multiple double auctions for pre-defined resource bundles (_services_).
 
 ## Proposal
 
