@@ -114,7 +114,7 @@ When a broker receives offers, it maintains an order book that ranks bids in des
 Matching occurs automatically when the highest bid price equals or exceeds the lowest ask price for the same profile. The transaction price is set as the mean of the matched bid and ask prices, striking a fair balance between buyer and seller preferences. This pricing mechanism helps ensure that neither party can manipulate the market to their exclusive advantage.
 All offers are timestamped and come with a TTL, enabling the system to expire stale offers and potentially prioritize older offers within the same price tier.
 
-NOTE: The initial versiin will not protect the market from spam and denial-of-service attacks. Future iteration should include a proof-of-work (PoW) challenge solution or proof of stake with each offer.
+NOTE: The initial version will not protect the market from spam and denial-of-service attacks. Future iteration should include a proof-of-work (PoW) challenge solution or proof of stake with each offer.
 
 #### Finding Brokers
 
