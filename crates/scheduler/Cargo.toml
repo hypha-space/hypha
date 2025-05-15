@@ -17,3 +17,8 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 hypha-network.workspace = true
 hypha-api.workspace = true
+futures.workspace = true
+tokio-util = { version = "0.7", features = ["codec", "compat"] }
+bytes = "1.4"
+rand = "0.8"
+ciborium.workspace = true

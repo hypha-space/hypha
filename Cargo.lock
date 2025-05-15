@@ -1258,15 +1258,20 @@ dependencies = [
 name = "hypha-scheduler"
 version = "0.1.0"
 dependencies = [
+ "bytes",
+ "ciborium",
  "clap",
+ "futures",
  "futures-util",
  "hypha-api",
  "hypha-network",
  "libp2p",
  "libp2p-stream",
+ "rand 0.8.5",
  "serde",
  "tokio",
  "tokio-stream",
+ "tokio-util",
  "tracing",
  "tracing-subscriber",
 ]
@@ -1275,6 +1280,7 @@ dependencies = [
 name = "hypha-worker"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "clap",
  "futures",
  "futures-util",
@@ -1285,6 +1291,7 @@ dependencies = [
  "serde",
  "tokio",
  "tokio-stream",
+ "tokio-util",
  "tracing",
  "tracing-subscriber",
 ]
@@ -3346,6 +3353,7 @@ checksum = "66a539a9ad6d5d281510d5bd368c973d636c02dbf8a67300bfb6b950696ad7df"
 dependencies = [
  "bytes",
  "futures-core",
+ "futures-io",
  "futures-sink",
  "pin-project-lite",
  "tokio",

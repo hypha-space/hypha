@@ -15,7 +15,7 @@ use hypha_network::{
         InboundRequestSender, OutboundRequests, OutboundResponses, RequestResponseAction,
         RequestResponseBehaviour, RequestResponseDriver, RequestResponseInterface,
     },
-    stream::{StreamInterface, StreamSenderInterface},
+    stream::{StreamInterface, StreamReceiverInterface, StreamSenderInterface},
     swarm::SwarmDriver,
 };
 use libp2p::{
@@ -228,6 +228,7 @@ impl StreamInterface for Network {
 }
 
 impl StreamSenderInterface for Network {}
+impl StreamReceiverInterface for Network {}
 
 impl KademliaBehavior for Behaviour {
     fn kademlia(&mut self) -> &mut kad::Behaviour<kad::store::MemoryStore> {

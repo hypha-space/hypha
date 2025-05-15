@@ -2,14 +2,24 @@ mod network;
 
 use std::{error::Error, time::Duration};
 
-use tokio::join;
+use futures::{SinkExt, StreamExt};
+
+use tokio::{join, task};
+use tokio_util::{
+    codec::{Framed, LengthDelimitedCodec},
+    compat::{FuturesAsyncReadCompatExt, FuturesAsyncWriteCompatExt},
+};
 
 use clap::Parser;
-use futures_util::StreamExt;
 use hypha_api::Response;
 use hypha_network::{
-    dial::DialInterface, gossipsub::GossipsubInterface, kad::KademliaInterface,
-    listen::ListenInterface, request_response::RequestResponseInterface, swarm::SwarmDriver,
+    dial::DialInterface,
+    gossipsub::GossipsubInterface,
+    kad::KademliaInterface,
+    listen::ListenInterface,
+    request_response::RequestResponseInterface,
+    stream::{StreamReceiverInterface, StreamSenderInterface},
+    swarm::SwarmDriver,
     utils::generate_ed25519,
 };
 use libp2p::Multiaddr;
@@ -24,6 +34,8 @@ struct Opt {
     secret_key_seed: u8,
     #[clap(long)]
     gateway_address: String,
+    #[clap(long)]
+    forward_peer: String,
 }
 
 #[tokio::main]
@@ -68,6 +80,42 @@ async fn main() -> Result<(), Box<dyn Error>> {
         })
         .await?;
     tracing::info!("Stored 'cpu' record");
+
+    let mut streams = network.streams()?;
+
+    let forward_peer = opt.forward_peer.parse()?;
+
+    while let Some((peer, stream_in)) = streams.next().await {
+        tracing::info!(peer = %peer, "New incoming stream");
+        let network_clone = network.clone();
+        task::spawn(async move {
+            let stream_out = match network_clone.stream(forward_peer).await {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::error!("Failed to create stream to forward peer: {:?}", e);
+                    return;
+                }
+            };
+
+            let mut message_in = Framed::new(stream_in.compat(), LengthDelimitedCodec::new());
+            let mut message_out = Framed::new(stream_out.compat(), LengthDelimitedCodec::new());
+            let mut count = 0;
+            while let Some(frame_result) = message_in.next().await {
+                match frame_result {
+                    Ok(bytes) => {
+                        count += 1;
+                        tracing::info!(peer = %peer, count, "Received frame, forwarding");
+                        // Do something with the bytes...
+                        let _ = message_out.send(bytes.freeze()).await;
+                    }
+                    Err(e) => {
+                        tracing::error!("Framing error: {:?}", e);
+                        break;
+                    }
+                }
+            }
+        });
+    }
 
     let requests = network
         .requests()

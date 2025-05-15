@@ -1,12 +1,37 @@
 mod network;
 
-use std::{error::Error, time::Duration};
+use std::{
+    error::Error,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
+
+use bytes::Bytes;
+use ciborium;
+use futures::{SinkExt, StreamExt};
+use rand::{RngCore, thread_rng};
+use serde::{Deserialize, Serialize};
+
+// Define a struct to hold timestamped data
+#[derive(Serialize, Deserialize)]
+struct TimestampedMessage {
+    timestamp: u64, // Unix timestamp in milliseconds
+    data: Vec<u8>,  // Random data payload
+}
+
+use tokio::task;
+use tokio_util::{
+    codec::{Framed, LengthDelimitedCodec},
+    compat::FuturesAsyncReadCompatExt,
+};
 
 use clap::Parser;
-use hypha_api::Request;
+
 use hypha_network::{
-    dial::DialInterface, gossipsub::GossipsubInterface, kad::KademliaInterface,
-    listen::ListenInterface, request_response::RequestResponseInterface, swarm::SwarmDriver,
+    dial::DialInterface,
+    kad::KademliaInterface,
+    listen::ListenInterface,
+    stream::{StreamReceiverInterface, StreamSenderInterface},
+    swarm::SwarmDriver,
     utils::generate_ed25519,
 };
 use libp2p::Multiaddr;
@@ -21,6 +46,8 @@ struct Opt {
     secret_key_seed: u8,
     #[clap(long)]
     gateway_address: String,
+    #[clap(long)]
+    forward_peer: String,
 }
 
 #[tokio::main]
@@ -59,19 +86,118 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let record = network.get("cpu").await?;
     tracing::info!(record=?record,"Found CPU record");
 
-    let k = local_key.public().to_peer_id().to_base58();
-    loop {
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        tracing::info!("Tick");
-        let _ = network.publish("messages", k.clone()).await;
+    let network_clone = network.clone();
+    task::spawn(async move {
+        let mut streams = match network_clone.streams() {
+            Ok(s) => s,
+            Err(error) => {
+                tracing::error!(error=?error, "Failed to accept streams");
+                return;
+            }
+        };
 
-        let res = network
-            .request(
-                "12D3KooWH3uVF6wv47WnArKHk5p6cvgCJEb74UTmxztmQDc298L3".parse()?,
-                Request::Work(),
-            )
-            .await;
+        while let Some((peer, stream_in)) = streams.next().await {
+            let mut message_in = Framed::new(stream_in.compat(), LengthDelimitedCodec::new());
 
-        tracing::info!(response=?res,"Got a response");
-    }
+            while let Some(frame_result) = message_in.next().await {
+                match frame_result {
+                    Ok(bytes) => {
+                        // Get current time for latency calculation
+                        let now = SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap()
+                            .as_millis() as u64;
+
+                        // Deserialize the message to get the timestamp
+                        match ciborium::de::from_reader::<TimestampedMessage, _>(&bytes[..]) {
+                            Ok(msg) => {
+                                let latency = now - msg.timestamp;
+                                tracing::info!(
+                                    peer = %peer,
+                                    latency_ms = %latency,
+                                    message_size = %msg.data.len(),
+                                    "Received message from peer {}: latency = {} ms, size = {} bytes",
+                                    peer,
+                                    latency,
+                                    msg.data.len()
+                                );
+                            }
+                            Err(e) => {
+                                tracing::error!(
+                                    "Failed to deserialize message from {}: {:?}",
+                                    peer,
+                                    e
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("Framing error: {:?}", e);
+                        break;
+                    }
+                }
+            }
+        }
+    });
+
+    let forward_peer = opt.forward_peer.parse()?;
+    let mut rng = thread_rng();
+    match network.stream(forward_peer).await {
+        Ok(stream_out) => {
+            let mut message_out = Framed::new(stream_out.compat(), LengthDelimitedCodec::new());
+
+            loop {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+
+                let mut buf = vec![0u8; 2 * 1024 * 1024];
+                rng.fill_bytes(&mut buf);
+
+                // Get current timestamp in milliseconds
+                let timestamp = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as u64;
+
+                // Create and serialize the timestamped message
+                let msg = TimestampedMessage {
+                    timestamp,
+                    data: buf,
+                };
+
+                let mut serialized = Vec::new();
+                ciborium::ser::into_writer(&msg, &mut serialized).unwrap();
+                tracing::info!(
+                    "Sending message with timestamp {}, size {} bytes",
+                    timestamp,
+                    serialized.len()
+                );
+
+                message_out.send(Bytes::from(serialized)).await?;
+            }
+        }
+        Err(e) => {
+            tracing::error!(
+                "Failed to create stream to forward peer {}: {:?}",
+                forward_peer,
+                e
+            );
+        }
+    };
+
+    // loop {
+    //     tokio::time::sleep(Duration::from_millis(500)).await;
+    //     tracing::info!("Tick");
+    //     let _ = network.publish("messages", k.clone()).await;
+
+    //     let res = network
+    //         .request(
+    //             "12D3KooWH3uVF6wv47WnArKHk5p6cvgCJEb74UTmxztmQDc298L3".parse()?,
+    //             Request::Work(),
+    //         )
+    //         .await;
+
+    //     tracing::info!(response=?res,"Got a response");
+    // }
+
+    Ok(())
 }
