@@ -13,6 +13,8 @@ use crate::network::Network;
 struct Opt {
     #[clap(long)]
     secret_key_seed: u8,
+    #[clap(short)]
+    port: String,
 }
 
 #[tokio::main]
@@ -34,9 +36,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let task = tokio::spawn(network_driver.run());
 
     network
-        .listen("/ip4/0.0.0.0/udp/8888/quic-v1".parse()?)
+        .listen(format!("/ip4/0.0.0.0/udp/{}/quic-v1", opt.port).parse()?)
         .await?;
-    network.listen("/ip4/0.0.0.0/tcp/8888".parse()?).await?;
+    network
+        .listen(format!("/ip4/0.0.0.0/tcp/{}", opt.port).parse()?)
+        .await?;
     tracing::info!("Successfully listening");
 
     let _ = task.await?;

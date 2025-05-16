@@ -19,7 +19,7 @@ use hypha_network::{
     swarm::SwarmDriver,
 };
 use libp2p::{
-    StreamProtocol, Swarm, SwarmBuilder, gossipsub, identify, identity, kad, ping,
+    StreamProtocol, Swarm, SwarmBuilder, dcutr, gossipsub, identify, identity, kad, ping, relay,
     request_response,
     swarm::{NetworkBehaviour, SwarmEvent},
     tcp, tls, yamux,
@@ -37,6 +37,8 @@ pub(crate) struct Network {
 pub(crate) struct Behaviour {
     ping: ping::Behaviour,
     identify: identify::Behaviour,
+    relay_client: relay::client::Behaviour,
+    dcutr: dcutr::Behaviour,
     stream: stream::Behaviour,
     kademlia: kad::Behaviour<kad::store::MemoryStore>,
     gossipsub: gossipsub::Behaviour,
@@ -81,12 +83,16 @@ impl Network {
             )
             .map_err(|_| HyphaError::SwarmError("Failed to create TCP transport.".to_string()))?
             .with_quic()
-            .with_behaviour(|key| Behaviour {
+            .with_relay_client(tls::Config::new, yamux::Config::default)
+            .unwrap()
+            .with_behaviour(|key, relay_behaviour| Behaviour {
                 ping: ping::Behaviour::new(ping::Config::new()),
                 identify: identify::Behaviour::new(identify::Config::new(
                     "/hypha-identify/0.0.1".to_string(),
                     key.public(),
                 )),
+                relay_client: relay_behaviour,
+                dcutr: dcutr::Behaviour::new(key.public().to_peer_id()),
                 stream: stream::Behaviour::new(),
                 kademlia: kad::Behaviour::new(
                     key.public().to_peer_id(),
@@ -149,9 +155,21 @@ impl SwarmDriver<Behaviour> for NetworkDriver {
                         SwarmEvent::ExternalAddrConfirmed { address, .. } => {
                             tracing::info!("External address confirmed: {:?}", address);
                         }
+                        SwarmEvent::NewExternalAddrCandidate { address } => {
+                            tracing::info!(address=%address, "New external address candidate");
+                            self.swarm.add_external_address(address);
+                        }
+                        SwarmEvent::Behaviour(BehaviourEvent::Identify(identify::Event::Sent {
+                            ..
+                        })) => {
+                            tracing::info!("Told relay its public address");
+                        }
                         SwarmEvent::Behaviour(BehaviourEvent::Identify(identify::Event::Received { peer_id, info, .. })) => {
                             // Add known addresses of peers to the Kademlia routing table
                             tracing::debug!(peer_id=%peer_id, info=?info, "Adding address to Kademlia routing table");
+
+                            self.swarm.add_external_address(info.observed_addr);
+
                             for addr in info.listen_addrs {
                                 self.swarm.behaviour_mut().kademlia.add_address(&peer_id, addr);
                             }

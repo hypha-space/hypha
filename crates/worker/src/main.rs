@@ -22,8 +22,8 @@ use hypha_network::{
     swarm::SwarmDriver,
     utils::generate_ed25519,
 };
-use libp2p::Multiaddr;
-use tracing_subscriber::EnvFilter;
+use libp2p::multiaddr::{Multiaddr, Protocol};
+use tracing_subscriber::{EnvFilter, fmt::format};
 
 use crate::network::Network;
 
@@ -32,6 +32,8 @@ use crate::network::Network;
 struct Opt {
     #[clap(long)]
     secret_key_seed: u8,
+    #[clap(long, short, default_value = "0")]
+    port: String,
     #[clap(long)]
     gateway_address: String,
     #[clap(long)]
@@ -58,18 +60,32 @@ async fn main() -> Result<(), Box<dyn Error>> {
     tokio::spawn(network_driver.run());
 
     network
-        .listen("/ip4/0.0.0.0/udp/0/quic-v1".parse()?)
+        .listen(format!("/ip4/0.0.0.0/udp/{}/quic-v1", opt.port).parse()?)
         .await?;
-    network.listen("/ip4/0.0.0.0/tcp/0".parse()?).await?;
+    network
+        .listen(format!("/ip4/0.0.0.0/tcp/{}", opt.port).parse()?)
+        .await?;
+
     tracing::info!("Successfully listening");
 
     // Dial the gatewaty address
-    let _gateway_peer_id = network.dial(gateway_address).await?;
+    let gateway_peer_id = network.dial(gateway_address.clone()).await?;
+
+    tracing::info!(gateway_address=%gateway_peer_id, "Dialed Gateway");
 
     // Wait a bit until DHT bootstrapping is done.
     // Once we receive an 'Identify' message, bootstrapping will start.
     // TODO: Provide a way to wait for this event
     tokio::time::sleep(Duration::from_secs(2)).await;
+
+    network
+        .listen(
+            gateway_address
+                .with_p2p(gateway_peer_id)
+                .unwrap()
+                .with(Protocol::P2pCircuit),
+        )
+        .await?;
 
     network
         .store(libp2p::kad::Record {

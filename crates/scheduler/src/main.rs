@@ -11,13 +11,6 @@ use futures::{SinkExt, StreamExt};
 use rand::{RngCore, thread_rng};
 use serde::{Deserialize, Serialize};
 
-// Define a struct to hold timestamped data
-#[derive(Serialize, Deserialize)]
-struct TimestampedMessage {
-    timestamp: u64, // Unix timestamp in milliseconds
-    data: Vec<u8>,  // Random data payload
-}
-
 use tokio::task;
 use tokio_util::{
     codec::{Framed, LengthDelimitedCodec},
@@ -34,7 +27,7 @@ use hypha_network::{
     swarm::SwarmDriver,
     utils::generate_ed25519,
 };
-use libp2p::Multiaddr;
+use libp2p::multiaddr::{Multiaddr, Protocol};
 use tracing_subscriber::EnvFilter;
 
 use crate::network::Network;
@@ -48,6 +41,12 @@ struct Opt {
     gateway_address: String,
     #[clap(long)]
     forward_peer: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct TimestampedMessage {
+    timestamp: u64,
+    data: Vec<u8>, // Random data payload
 }
 
 #[tokio::main]
@@ -73,11 +72,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .listen("/ip4/0.0.0.0/udp/0/quic-v1".parse()?)
         .await?;
     network.listen("/ip4/0.0.0.0/tcp/0".parse()?).await?;
+
     tracing::info!("Successfully listening");
 
     // Dial the gateway address
-    let _gateway_peer_id = network.dial(gateway_address).await?;
+    let gateway_peer_id = network.dial(gateway_address.clone()).await?;
 
+    network
+        .listen(
+            gateway_address
+                .with_p2p(gateway_peer_id)
+                .unwrap()
+                .with(Protocol::P2pCircuit),
+        )
+        .await?;
     // Wait a bit until DHT bootstrapping is done.
     // Once we receive an 'Identify' message, bootstrapping will start.
     // TODO: Provide a way to wait for this event
@@ -142,47 +150,53 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let forward_peer = opt.forward_peer.parse()?;
     let mut rng = thread_rng();
-    match network.stream(forward_peer).await {
-        Ok(stream_out) => {
-            let mut message_out = Framed::new(stream_out.compat(), LengthDelimitedCodec::new());
 
-            loop {
-                tokio::time::sleep(Duration::from_millis(500)).await;
+    loop {
+        match network.stream(forward_peer).await {
+            Ok(stream_out) => {
+                let mut message_out = Framed::new(stream_out.compat(), LengthDelimitedCodec::new());
 
-                let mut buf = vec![0u8; 2 * 1024 * 1024];
-                rng.fill_bytes(&mut buf);
+                loop {
+                    tokio::time::sleep(Duration::from_millis(500)).await;
 
-                // Get current timestamp in milliseconds
-                let timestamp = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_millis() as u64;
+                    let mut buf = vec![0u8; 40 * 1024];
+                    rng.fill_bytes(&mut buf);
 
-                // Create and serialize the timestamped message
-                let msg = TimestampedMessage {
-                    timestamp,
-                    data: buf,
-                };
+                    // Get current timestamp in milliseconds
+                    let timestamp = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap()
+                        .as_millis() as u64;
 
-                let mut serialized = Vec::new();
-                ciborium::ser::into_writer(&msg, &mut serialized).unwrap();
-                tracing::info!(
-                    "Sending message with timestamp {}, size {} bytes",
-                    timestamp,
-                    serialized.len()
-                );
+                    // Create and serialize the timestamped message
+                    let msg = TimestampedMessage {
+                        timestamp,
+                        data: buf,
+                    };
 
-                message_out.send(Bytes::from(serialized)).await?;
+                    let mut serialized = Vec::new();
+                    ciborium::ser::into_writer(&msg, &mut serialized).unwrap();
+                    tracing::info!("Sennding {}", serialized.len());
+                    match message_out.send(Bytes::from(serialized)).await {
+                        Ok(_) => {
+                            tracing::debug!("Sent message with timestamp {}", timestamp);
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to send message: {:?}. Reconnecting...", e);
+                            break; // Break inner loop to reconnect
+                        }
+                    };
+                }
             }
-        }
-        Err(e) => {
-            tracing::error!(
-                "Failed to create stream to forward peer {}: {:?}",
-                forward_peer,
-                e
-            );
-        }
-    };
+            Err(e) => {
+                tracing::error!(
+                    "Failed to create stream to forward peer {}: {:?}",
+                    forward_peer,
+                    e
+                );
+            }
+        };
+    }
 
     // loop {
     //     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -199,5 +213,5 @@ async fn main() -> Result<(), Box<dyn Error>> {
     //     tracing::info!(response=?res,"Got a response");
     // }
 
-    Ok(())
+    // Ok(())
 }
