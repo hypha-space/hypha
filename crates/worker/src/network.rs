@@ -13,7 +13,7 @@ use hypha_network::{
     swarm::SwarmDriver,
 };
 use libp2p::{
-    Swarm, SwarmBuilder, gossipsub, identify, identity, kad, ping,
+    Swarm, SwarmBuilder, dcutr, gossipsub, identify, identity, kad, ping, relay,
     swarm::{NetworkBehaviour, SwarmEvent},
     tcp, tls, yamux,
 };
@@ -30,6 +30,8 @@ pub(crate) struct Network {
 pub(crate) struct Behaviour {
     ping: ping::Behaviour,
     identify: identify::Behaviour,
+    relay_client: relay::client::Behaviour,
+    dcutr: dcutr::Behaviour,
     stream: stream::Behaviour,
     kademlia: kad::Behaviour<kad::store::MemoryStore>,
     gossipsub: gossipsub::Behaviour,
@@ -64,12 +66,16 @@ impl Network {
             )
             .map_err(|_| HyphaError::SwarmError("Failed to create TCP transport.".to_string()))?
             .with_quic()
-            .with_behaviour(|key| Behaviour {
+            .with_relay_client(tls::Config::new, yamux::Config::default)
+            .unwrap()
+            .with_behaviour(|key, relay_client| Behaviour {
                 ping: ping::Behaviour::new(ping::Config::new()),
                 identify: identify::Behaviour::new(identify::Config::new(
                     "/hypha-identify/0.0.1".to_string(),
                     key.public(),
                 )),
+                relay_client,
+                dcutr: dcutr::Behaviour::new(key.public().to_peer_id()),
                 stream: stream::Behaviour::new(),
                 kademlia: kad::Behaviour::new(
                     key.public().to_peer_id(),
