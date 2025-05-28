@@ -10,7 +10,6 @@ clap.workspace = true
 futures-util.workspace = true
 libp2p.workspace = true
 libp2p-stream.workspace = true
-serde.workspace = true
 tokio.workspace = true
 tokio-stream.workspace = true
 tracing.workspace = true

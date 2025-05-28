@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use futures_util::stream::StreamExt;
 use hypha_network::{
+    CertificateDer, CertificateRevocationListDer, PrivateKeyDer, cert,
     dial::{DialAction, DialDriver, DialInterface, PendingDials},
     error::HyphaError,
     gossipsub::{
@@ -9,15 +10,17 @@ use hypha_network::{
     },
     kad::{KademliaAction, KademliaBehavior, KademliaDriver, KademliaInterface, PendingQueries},
     listen::{ListenAction, ListenDriver, ListenInterface, PendingListens},
+    mtls,
     stream::{StreamInterface, StreamReceiverInterface},
     swarm::SwarmDriver,
 };
 use libp2p::{
-    Swarm, SwarmBuilder, gossipsub, identify, identity, kad, ping, relay,
+    Swarm, SwarmBuilder, gossipsub, identify, kad, ping, relay,
     swarm::{NetworkBehaviour, SwarmEvent},
-    tcp, tls, yamux,
+    tcp, yamux,
 };
 use libp2p_stream as stream;
+
 use tokio::sync::mpsc;
 
 #[derive(Clone)]
@@ -53,19 +56,35 @@ enum Action {
 }
 
 impl Network {
-    pub fn create(identity: identity::Keypair) -> Result<(Self, NetworkDriver), HyphaError> {
+    pub fn create(
+        cert_chain: Vec<CertificateDer<'static>>,
+        private_key: PrivateKeyDer<'static>,
+        ca_certs: Vec<CertificateDer<'static>>,
+        crls: Vec<CertificateRevocationListDer<'static>>,
+    ) -> Result<(Self, NetworkDriver), HyphaError> {
         let (action_sender, action_receiver) = mpsc::channel(5);
+
+        // Create a libp2p keypair from the certificate and private key
+        let identity = cert::identity_from_private_key(&private_key)
+            .map_err(|e| HyphaError::SwarmError(format!("Failed to create identity: {}", e)))?;
+
+        // Create mTLS config
+        let mtls_config = mtls::Config::try_new(cert_chain, private_key, ca_certs, crls)
+            .map_err(|e| HyphaError::SwarmError(format!("Failed to create mTLS config: {}", e)))?;
 
         let mut swarm = SwarmBuilder::with_existing_identity(identity)
             .with_tokio()
             .with_tcp(
                 tcp::Config::default(),
-                tls::Config::new,
+                {
+                    let mtls_config = mtls_config.clone();
+                    move |_: &_| Ok(mtls_config)
+                },
                 yamux::Config::default,
             )
-            .map_err(|_| HyphaError::SwarmError("Failed to create TCP transport.".to_string()))?
-            // TODO: tune quic configuration
-            .with_quic_config(|config| config)
+            .map_err(|_: Box<dyn std::error::Error>| {
+                HyphaError::SwarmError("Failed to create TCP transport.".to_string())
+            })?
             .with_behaviour(|key| Behaviour {
                 relay: relay::Behaviour::new(key.public().to_peer_id(), Default::default()),
                 ping: ping::Behaviour::new(ping::Config::new()),

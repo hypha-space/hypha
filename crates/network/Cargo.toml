@@ -8,14 +8,20 @@ license = "Apache-2.0"
 [dependencies]
 async-trait.workspace = true
 futures-util.workspace = true
+futures-rustls.workspace = true
 libp2p.workspace = true
 libp2p-stream.workspace = true
-serde.workspace = true
+rustls.workspace = true
+rustls-pemfile.workspace = true
+thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 tokio-stream.workspace = true
+webpki.workspace = true
+ed25519-dalek = { version = "2.1", features = ["alloc", "pkcs8", "pem"] }
 
 [dev-dependencies]
 mockall.workspace = true
-proptest.workspace = true
+rcgen.workspace = true
+time = "0.3"
