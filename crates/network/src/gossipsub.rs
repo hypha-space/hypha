@@ -1,6 +1,7 @@
-use std::{collections::HashMap, error::Error, fmt::Display};
+use std::collections::HashMap;
 
 use libp2p::{gossipsub, swarm::NetworkBehaviour};
+use thiserror::Error;
 use tokio::sync::{broadcast, oneshot};
 use tokio_stream::wrappers::BroadcastStream;
 
@@ -28,22 +29,12 @@ pub enum GossipsubAction {
     ),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum GossipsubError {
-    Subscription(gossipsub::SubscriptionError),
-    Publish(gossipsub::PublishError),
-}
-
-impl Error for GossipsubError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        None
-    }
-}
-
-impl Display for GossipsubError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Gossipsub error")
-    }
+    #[error("subscription error: {0}")]
+    Subscription(#[from] gossipsub::SubscriptionError),
+    #[error("publish error: {0}")]
+    Publish(#[from] gossipsub::PublishError),
 }
 
 pub trait GossipsubDriver<TBehavior>: SwarmDriver<TBehavior> + Send
@@ -84,7 +75,7 @@ where
                                 .subscriptions()
                                 .get(&topic.hash())
                                 .map(|sub_tx| sub_tx.subscribe())
-                                .unwrap();
+                                .expect("subscription should exist for already subscribed topic");
                             let _ = tx.send(Ok(pubsub_rx));
                         }
                         Err(e) => {
@@ -139,10 +130,10 @@ pub trait GossipsubInterface: Sync {
             ))
             .await;
 
-            match rx.await.unwrap() {
-                Ok(sub_rx) => Ok(BroadcastStream::new(sub_rx)),
-                Err(_) => todo!(),
-            }
+            let sub_rx = rx
+                .await
+                .expect("driver should respond to interface requests")?;
+            Ok(BroadcastStream::new(sub_rx))
         }
     }
 
@@ -154,7 +145,8 @@ pub trait GossipsubInterface: Sync {
                 tx,
             ))
             .await;
-            rx.await.unwrap()
+            rx.await
+                .expect("driver should respond to interface requests")
         }
     }
 
@@ -174,7 +166,8 @@ pub trait GossipsubInterface: Sync {
                 tx,
             ))
             .await;
-            rx.await.unwrap()
+            rx.await
+                .expect("driver should respond to interface requests")
         }
     }
 }
