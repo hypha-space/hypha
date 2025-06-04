@@ -9,7 +9,13 @@ use tracing_subscriber::EnvFilter;
 use crate::network::Network;
 
 #[derive(Debug, Parser)]
-#[clap(name = "hypha")]
+#[command(
+    name = "hypha-gateway",
+    version,
+    about = "Hypha Gateway Node",
+    long_about = "Runs the Hypha Gateway facilitating network connectivity between peers.",
+    after_help = "For more information, see the project documentation."
+)]
 struct Opt {
     #[clap(long)]
     secret_key_seed: u8,
