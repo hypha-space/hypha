@@ -1,7 +1,4 @@
-use std::{
-    collections::HashMap,
-    io::{Error as IoError, ErrorKind as IoErrorKind},
-};
+use std::{collections::HashMap, io::Error as IoError};
 
 use libp2p::{Multiaddr, TransportError, core::transport::ListenerId, swarm::NetworkBehaviour};
 use tokio::sync::oneshot;
@@ -59,10 +56,10 @@ pub trait ListenInterface {
         self.send(ListenAction::Listen(address, tx)).await;
 
         rx.await.map_err(|err| {
-            TransportError::Other(IoError::new(
-                IoErrorKind::Other,
-                format!("Failed to recieve action response: {}", err),
-            ))
+            TransportError::Other(IoError::other(format!(
+                "Failed to recieve action response: {}",
+                err
+            )))
         })?
     }
 }
