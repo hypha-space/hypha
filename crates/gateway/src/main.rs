@@ -1,9 +1,13 @@
 mod network;
 
-use std::error::Error;
+use std::{error::Error, fs, path::PathBuf};
 
 use clap::Parser;
-use hypha_network::{listen::ListenInterface, swarm::SwarmDriver, utils::generate_ed25519};
+use hypha_network::{
+    cert::{load_certs_from_pem, load_crls_from_pem, load_private_key_from_pem},
+    listen::ListenInterface,
+    swarm::SwarmDriver,
+};
 use tracing_subscriber::EnvFilter;
 
 use crate::network::Network;
@@ -12,7 +16,13 @@ use crate::network::Network;
 #[clap(name = "hypha")]
 struct Opt {
     #[clap(long)]
-    secret_key_seed: u8,
+    cert_file: PathBuf,
+    #[clap(long)]
+    key_file: PathBuf,
+    #[clap(long)]
+    ca_cert_file: PathBuf,
+    #[clap(long)]
+    crl_file: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -23,19 +33,26 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let opt = Opt::parse();
 
-    tracing::info!(
-        "Starting worker with secret key seed {}",
-        opt.secret_key_seed
-    );
+    // Load certificates and private key
+    let cert_pem = fs::read(&opt.cert_file)?;
+    let key_pem = fs::read(&opt.key_file)?;
+    let ca_cert_pem = fs::read(&opt.ca_cert_file)?;
 
-    let local_key = generate_ed25519(opt.secret_key_seed).expect("only errors on wrong length");
+    let cert_chain = load_certs_from_pem(&cert_pem)?;
+    let private_key = load_private_key_from_pem(&key_pem)?;
+    let ca_certs = load_certs_from_pem(&ca_cert_pem)?;
 
-    let (network, network_driver) = Network::create(local_key)?;
+    // Optionally load CRLs
+    let crls = if let Some(crl_file) = opt.crl_file {
+        let crl_pem = fs::read(&crl_file)?;
+        load_crls_from_pem(&crl_pem)?
+    } else {
+        vec![]
+    };
+
+    let (network, network_driver) = Network::create(cert_chain, private_key, ca_certs, crls)?;
     let task = tokio::spawn(network_driver.run());
 
-    network
-        .listen("/ip4/0.0.0.0/udp/8888/quic-v1".parse()?)
-        .await?;
     network.listen("/ip4/0.0.0.0/tcp/8888".parse()?).await?;
     tracing::info!("Successfully listening");
 
