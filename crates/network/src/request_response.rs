@@ -164,8 +164,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use futures::Stream;
-use futures_util::StreamExt;
+use futures_util::{Stream, StreamExt};
 use libp2p::{PeerId, request_response, swarm::NetworkBehaviour};
 use pin_project::{pin_project, pinned_drop};
 use tokio::sync::{mpsc, oneshot};

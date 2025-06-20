@@ -2,8 +2,8 @@
 resolver = "3"
 members = [
     "crates/certutil",
-    "crates/messages",
     "crates/gateway",
+    "crates/messages",
     "crates/network",
     "crates/scheduler",
     "crates/worker",
@@ -16,28 +16,18 @@ default-members = [
     "crates/worker",
 ]
 
-[profile.profiling]
-inherits = "release"
-debug = true
-
 [workspace.package]
 publish = false
 edition = "2024"
 
 [workspace.dependencies]
 async-trait = "0.1.88"
+ciborium = "0.2.2"
 clap = { version = "4.5.31", features = ["derive"] }
-futures = "0.3.31"
-futures-bounded = { version = "0.2.4" }
 futures-rustls = { version = "0.26.0", default-features = false }
 futures-util = "0.3"
-webpki = { version = "0.103", package = "rustls-webpki", features = ["std"] }
-rustls = { version = "0.23", features = ["std"] }
-rustls-pemfile = "2.1"
-thiserror = "1.0"
-rcgen = { version = "0.12", features = ["pem", "x509-parser"] }
-sha2 = "0.10"
-x509-parser = "0.16"
+hypha-api = { path = "crates/messages" }
+hypha-network = { path = "crates/network" }
 libp2p = { version = "0.55.0", features = [
     "cbor",
     "dcutr",
@@ -55,9 +45,15 @@ libp2p = { version = "0.55.0", features = [
     "yamux",
 ] }
 libp2p-stream = { version = "0.3.0-alpha" }
+mockall = "0.13.1"
+pin-project = "1.1.7"
+proptest = "1.6.0"
+rcgen = { version = "0.12", features = ["pem", "x509-parser"] }
+rustls = { version = "0.23", features = ["std"] }
+rustls-pemfile = "2.1"
 serde = { version = "1.0.218", features = ["derive"] }
-tracing = "0.1.41"
-tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
+sha2 = "0.10"
+thiserror = "1.0"
 tokio = { version = "1.43.0", features = [
     "macros",
     "rt-multi-thread",
@@ -66,12 +62,11 @@ tokio = { version = "1.43.0", features = [
     "io-util",
 ] }
 tokio-stream = { version = "0.1.17", features = ["sync"] }
-mockall = "0.13.1"
-pin-project = "1.1.7"
-proptest = "1.6.0"
-ciborium = "0.2.2"
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
+webpki = { version = "0.103", package = "rustls-webpki", features = ["std"] }
+x509-parser = "0.16"
 
-
-# Hypha
-hypha-api = { path = "crates/messages" }
-hypha-network = { path = "crates/network" }
+[profile.profiling]
+inherits = "release"
+debug = true
