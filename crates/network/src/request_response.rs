@@ -525,8 +525,7 @@ where
     UnregisterHandler(HandlerId),
 }
 
-#[allow(async_fn_in_trait)]
-pub trait RequestResponseDriver<TBehaviour, TCodec>: SwarmDriver<TBehaviour>
+pub trait RequestResponseDriver<TBehaviour, TCodec>: SwarmDriver<TBehaviour> + Send
 where
     TBehaviour: NetworkBehaviour + RequestResponseBehaviour<TCodec>,
     TCodec: request_response::Codec + Clone + Send + 'static,
@@ -539,169 +538,176 @@ where
 
     fn request_handlers(&mut self) -> &mut Vec<RequestHandler<TCodec>>;
 
-    async fn process_request_response_action(&mut self, action: RequestResponseAction<TCodec>) {
-        match action {
-            RequestResponseAction::OutboundRequest(peer_id, request, tx) => {
-                let id = self
-                    .swarm()
-                    .behaviour_mut()
-                    .request_response()
-                    .send_request(&peer_id, request);
-                self.outbound_requests().insert(id, tx);
-            }
-            RequestResponseAction::OutboundResponse(_id, channel, response, tx) => {
-                let result = self
-                    .swarm()
-                    .behaviour_mut()
-                    .request_response()
-                    .send_response(channel, response)
-                    .map_err(|_| {
-                        RequestResponseError::Other("Failed to send response".to_string())
-                    });
-
-                if tx.send(result).is_err() {
-                    tracing::debug!("Failed to send response result back to request handler");
+    fn process_request_response_action(
+        &mut self,
+        action: RequestResponseAction<TCodec>,
+    ) -> impl Future<Output = ()> + Send {
+        async move {
+            match action {
+                RequestResponseAction::OutboundRequest(peer_id, request, tx) => {
+                    let id = self
+                        .swarm()
+                        .behaviour_mut()
+                        .request_response()
+                        .send_request(&peer_id, request);
+                    self.outbound_requests().insert(id, tx);
                 }
-            }
-            RequestResponseAction::RegisterHandler(id, matcher, sender) => {
-                let handler = RequestHandler {
-                    id,
-                    matcher,
-                    sender,
-                };
-                self.request_handlers().push(handler);
-            }
-            RequestResponseAction::UnregisterHandler(id) => {
-                self.request_handlers().retain(|handler| handler.id != id);
+                RequestResponseAction::OutboundResponse(_id, channel, response, tx) => {
+                    let result = self
+                        .swarm()
+                        .behaviour_mut()
+                        .request_response()
+                        .send_response(channel, response)
+                        .map_err(|_| {
+                            RequestResponseError::Other("Failed to send response".to_string())
+                        });
+
+                    if tx.send(result).is_err() {
+                        tracing::debug!("Failed to send response result back to request handler");
+                    }
+                }
+                RequestResponseAction::RegisterHandler(id, matcher, sender) => {
+                    let handler = RequestHandler {
+                        id,
+                        matcher,
+                        sender,
+                    };
+                    self.request_handlers().push(handler);
+                }
+                RequestResponseAction::UnregisterHandler(id) => {
+                    self.request_handlers().retain(|handler| handler.id != id);
+                }
             }
         }
     }
 
-    async fn process_request_response_event(
+    fn process_request_response_event(
         &mut self,
         event: request_response::Event<
             <TCodec as request_response::Codec>::Request,
             <TCodec as request_response::Codec>::Response,
         >,
-    ) {
-        use request_response::Event;
-        match event {
-            Event::InboundFailure {
-                peer,
-                request_id,
-                error,
-                ..
-            } => {
-                tracing::error!(
-                    peer = %peer,
-                    request_id = ?request_id,
-                    error = ?error,
-                    "Inbound request-response failure"
-                );
-            }
-            Event::Message { peer, message, .. } => match message {
-                request_response::Message::Request {
+    ) -> impl Future<Output = ()> + Send {
+        async move {
+            use request_response::Event;
+            match event {
+                Event::InboundFailure {
+                    peer,
                     request_id,
-                    request,
-                    channel,
+                    error,
+                    ..
+                } => {
+                    tracing::error!(
+                        peer = %peer,
+                        request_id = ?request_id,
+                        error = ?error,
+                        "Inbound request-response failure"
+                    );
+                }
+                Event::Message { peer, message, .. } => match message {
+                    request_response::Message::Request {
+                        request_id,
+                        request,
+                        channel,
+                    } => {
+                        tracing::trace!(
+                            peer = %peer,
+                            request_id = ?request_id,
+                            "Received inbound request"
+                        );
+
+                        let handlers = self.request_handlers();
+
+                        // NOTE: Only the first matching handler is used as a request can only ever be handled (responded) by one handler.
+                        let handler = handlers.iter().find(|h| (h.matcher)(&request));
+
+                        if let Some(handler) = handler {
+                            match handler
+                                .sender
+                                .send(Ok(InboundRequest {
+                                    request_id,
+                                    channel,
+                                    request,
+                                }))
+                                .await
+                            {
+                                Ok(_) => {
+                                    tracing::trace!(
+                                        peer = %peer,
+                                        request_id = ?request_id,
+                                        handler_id = %handler.id,
+                                        "Successfully sent request to handler channel"
+                                    );
+                                }
+                                Err(_) => {
+                                    tracing::warn!(
+                                        peer = %peer,
+                                        handler_id = %handler.id,
+                                        "Handler channel closed, request dropped"
+                                    );
+                                }
+                            }
+                        } else {
+                            tracing::warn!(
+                                peer = %peer,
+                                request_id = ?request_id,
+                                "No handler registered, request dropped"
+                            );
+                        }
+                    }
+                    request_response::Message::Response {
+                        request_id,
+                        response,
+                    } => {
+                        if let Some(tx) = self.outbound_requests().remove(&request_id) {
+                            if tx.send(Ok(response)).is_err() {
+                                tracing::debug!(
+                                    peer = %peer,
+                                    request_id = ?request_id,
+                                    "Response receiver dropped"
+                                );
+                            }
+                        } else {
+                            tracing::warn!(
+                                peer = %peer,
+                                request_id = ?request_id,
+                                "Received response for unknown request"
+                            );
+                        }
+                    }
+                },
+                Event::OutboundFailure {
+                    peer,
+                    request_id,
+                    error,
+                    ..
+                } => {
+                    tracing::error!(
+                        peer = %peer,
+                        request_id = ?request_id,
+                        error = ?error,
+                        "Outbound request-response failure"
+                    );
+
+                    if let Some(tx) = self.outbound_requests().remove(&request_id) {
+                        if tx.send(Err(RequestResponseError::Request(error))).is_err() {
+                            tracing::debug!("Failed to send error to request handler");
+                        }
+                    }
+                }
+                Event::ResponseSent {
+                    peer, request_id, ..
                 } => {
                     tracing::trace!(
                         peer = %peer,
                         request_id = ?request_id,
-                        "Received inbound request"
+                        "Response sent successfully"
                     );
 
-                    let handlers = self.request_handlers();
-
-                    // NOTE: Only the first matching handler is used as a request can only ever be handled (responded) by one handler.
-                    let handler = handlers.iter().find(|h| (h.matcher)(&request));
-
-                    if let Some(handler) = handler {
-                        match handler
-                            .sender
-                            .send(Ok(InboundRequest {
-                                request_id,
-                                channel,
-                                request,
-                            }))
-                            .await
-                        {
-                            Ok(_) => {
-                                tracing::trace!(
-                                    peer = %peer,
-                                    request_id = ?request_id,
-                                    handler_id = %handler.id,
-                                    "Successfully sent request to handler channel"
-                                );
-                            }
-                            Err(_) => {
-                                tracing::warn!(
-                                    peer = %peer,
-                                    handler_id = %handler.id,
-                                    "Handler channel closed, request dropped"
-                                );
-                            }
+                    if let Some(tx) = self.outbound_responses().remove(&request_id) {
+                        if tx.send(Ok(())).is_err() {
+                            tracing::debug!("Response confirmation receiver dropped");
                         }
-                    } else {
-                        tracing::warn!(
-                            peer = %peer,
-                            request_id = ?request_id,
-                            "No handler registered, request dropped"
-                        );
-                    }
-                }
-                request_response::Message::Response {
-                    request_id,
-                    response,
-                } => {
-                    if let Some(tx) = self.outbound_requests().remove(&request_id) {
-                        if tx.send(Ok(response)).is_err() {
-                            tracing::debug!(
-                                peer = %peer,
-                                request_id = ?request_id,
-                                "Response receiver dropped"
-                            );
-                        }
-                    } else {
-                        tracing::warn!(
-                            peer = %peer,
-                            request_id = ?request_id,
-                            "Received response for unknown request"
-                        );
-                    }
-                }
-            },
-            Event::OutboundFailure {
-                peer,
-                request_id,
-                error,
-                ..
-            } => {
-                tracing::error!(
-                    peer = %peer,
-                    request_id = ?request_id,
-                    error = ?error,
-                    "Outbound request-response failure"
-                );
-
-                if let Some(tx) = self.outbound_requests().remove(&request_id) {
-                    if tx.send(Err(RequestResponseError::Request(error))).is_err() {
-                        tracing::debug!("Failed to send error to request handler");
-                    }
-                }
-            }
-            Event::ResponseSent {
-                peer, request_id, ..
-            } => {
-                tracing::trace!(
-                    peer = %peer,
-                    request_id = ?request_id,
-                    "Response sent successfully"
-                );
-
-                if let Some(tx) = self.outbound_responses().remove(&request_id) {
-                    if tx.send(Ok(())).is_err() {
-                        tracing::debug!("Response confirmation receiver dropped");
                     }
                 }
             }
@@ -709,14 +715,13 @@ where
     }
 }
 
-#[allow(async_fn_in_trait)]
 pub trait RequestResponseInterface<TCodec>: Send + Sync
 where
     TCodec: request_response::Codec + Clone + Send + 'static,
     <TCodec as request_response::Codec>::Request: Clone + Send + 'static,
     <TCodec as request_response::Codec>::Response: Send + 'static,
 {
-    async fn send(&self, action: RequestResponseAction<TCodec>);
+    fn send(&self, action: RequestResponseAction<TCodec>) -> impl Future<Output = ()> + Send;
 
     fn try_send(&self, action: RequestResponseAction<TCodec>) -> Result<(), RequestResponseError>;
 
@@ -740,17 +745,21 @@ where
     /// # Ok(())
     /// # }
     /// ```
-    async fn request(
+    fn request(
         &self,
         peer_id: PeerId,
         request: <TCodec as request_response::Codec>::Request,
-    ) -> Result<<TCodec as request_response::Codec>::Response, RequestResponseError> {
-        let (tx, rx) = oneshot::channel();
-        self.send(RequestResponseAction::OutboundRequest(peer_id, request, tx))
-            .await;
-        rx.await.map_err(|_| RequestResponseError::ChannelError {
-            context: "Response channel closed unexpectedly".to_string(),
-        })?
+    ) -> impl Future<
+        Output = Result<<TCodec as request_response::Codec>::Response, RequestResponseError>,
+    > + Send {
+        async move {
+            let (tx, rx) = oneshot::channel();
+            self.send(RequestResponseAction::OutboundRequest(peer_id, request, tx))
+                .await;
+            rx.await.map_err(|_| RequestResponseError::ChannelError {
+                context: "Response channel closed unexpectedly".to_string(),
+            })?
+        }
     }
 
     /// Send a response to an inbound request
@@ -771,20 +780,22 @@ where
     /// # Ok(())
     /// # }
     /// ```
-    async fn respond(
+    fn respond(
         &self,
         request_id: request_response::InboundRequestId,
         channel: request_response::ResponseChannel<<TCodec as request_response::Codec>::Response>,
         response: <TCodec as request_response::Codec>::Response,
-    ) -> Result<(), RequestResponseError> {
-        let (tx, rx) = oneshot::channel();
-        self.send(RequestResponseAction::OutboundResponse(
-            request_id, channel, response, tx,
-        ))
-        .await;
-        rx.await.map_err(|_| RequestResponseError::ChannelError {
-            context: "Response confirmation channel closed".to_string(),
-        })?
+    ) -> impl Future<Output = Result<(), RequestResponseError>> + Send {
+        async move {
+            let (tx, rx) = oneshot::channel();
+            self.send(RequestResponseAction::OutboundResponse(
+                request_id, channel, response, tx,
+            ))
+            .await;
+            rx.await.map_err(|_| RequestResponseError::ChannelError {
+                context: "Response confirmation channel closed".to_string(),
+            })?
+        }
     }
 }
 

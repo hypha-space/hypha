@@ -14,53 +14,63 @@ pub enum ListenAction {
     ),
 }
 
-#[allow(async_fn_in_trait)]
-pub trait ListenDriver<TBehavior>: SwarmDriver<TBehavior>
+pub trait ListenDriver<TBehavior>: SwarmDriver<TBehavior> + Send
 where
     TBehavior: NetworkBehaviour,
 {
     fn pending_listens(&mut self) -> &mut PendingListens;
 
-    async fn process_listen_action(&mut self, action: ListenAction) {
-        match action {
-            ListenAction::Listen(address, tx) => {
-                tracing::info!(address=%address.clone(),"Listening");
+    fn process_listen_action(&mut self, action: ListenAction) -> impl Future<Output = ()> + Send {
+        async move {
+            match action {
+                ListenAction::Listen(address, tx) => {
+                    tracing::info!(address=%address.clone(),"Listening");
 
-                match self.swarm().listen_on(address.clone()) {
-                    Ok(listener_id) => {
-                        self.pending_listens().insert(listener_id, tx);
-                    }
-                    Err(err) => {
-                        let _ = tx.send(Err(err));
+                    match self.swarm().listen_on(address.clone()) {
+                        Ok(listener_id) => {
+                            self.pending_listens().insert(listener_id, tx);
+                        }
+                        Err(err) => {
+                            let _ = tx.send(Err(err));
+                        }
                     }
                 }
             }
         }
     }
 
-    async fn process_new_listen_addr(&mut self, listener_id: &ListenerId) {
-        if let Some(tx) = self.pending_listens().remove(listener_id) {
-            let _ = tx.send(Ok(()));
+    fn process_new_listen_addr(
+        &mut self,
+        listener_id: &ListenerId,
+    ) -> impl Future<Output = ()> + Send {
+        async move {
+            if let Some(tx) = self.pending_listens().remove(listener_id) {
+                let _ = tx.send(Ok(()));
+            }
         }
     }
 }
 
-#[allow(async_fn_in_trait)]
-pub trait ListenInterface {
-    async fn send(&self, action: ListenAction);
+pub trait ListenInterface: Sync {
+    fn send(&self, action: ListenAction) -> impl Future<Output = ()> + Send;
 
-    async fn listen(&self, address: Multiaddr) -> Result<(), TransportError<IoError>> {
-        let (tx, rx) = oneshot::channel();
-        tracing::info!(address=%address.clone(),"Listening");
+    fn listen(
+        &self,
+        address: Multiaddr,
+    ) -> impl Future<Output = Result<(), TransportError<IoError>>> + Send {
+        async move {
+            let (tx, rx) = oneshot::channel();
+            tracing::info!(address=%address.clone(),"Listening");
 
-        self.send(ListenAction::Listen(address, tx)).await;
+            self.send(ListenAction::Listen(address, tx)).await;
 
-        rx.await.map_err(|err| {
-            TransportError::Other(IoError::other(format!(
-                "Failed to recieve action response: {}",
-                err
-            )))
-        })?
+            rx.await.map_err(|err| {
+                TransportError::Other(IoError::other(format!(
+                    "Failed to recieve action response: {}",
+                    err
+                )))
+            })?
+        }
     }
 }
 
