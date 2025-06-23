@@ -1,14 +1,61 @@
 [workspace]
-resolver = "2"
-members = []
-default-members = []
+resolver = "3"
+members = [
+    "crates/certutil",
+    "crates/messages",
+    "crates/gateway",
+    "crates/network",
+    "crates/scheduler",
+    "crates/worker",
+]
+default-members = [
+    "crates/certutil",
+    "crates/gateway",
+    "crates/network",
+    "crates/scheduler",
+    "crates/worker",
+]
+
+[profile.profiling]
+inherits = "release"
+debug = true
 
 [workspace.package]
 publish = false
 edition = "2024"
 
 [workspace.dependencies]
+async-trait = "0.1.88"
 clap = { version = "4.5.31", features = ["derive"] }
+futures = "0.3.31"
+futures-bounded = { version = "0.2.4" }
+futures-rustls = { version = "0.26.0", default-features = false }
+futures-util = "0.3"
+webpki = { version = "0.103", package = "rustls-webpki", features = ["std"] }
+rustls = { version = "0.23", features = ["std"] }
+rustls-pemfile = "2.1"
+thiserror = "1.0"
+rcgen = { version = "0.12", features = ["pem", "x509-parser"] }
+sha2 = "0.10"
+x509-parser = "0.16"
+libp2p = { version = "0.55.0", features = [
+    "cbor",
+    "dcutr",
+    "gossipsub",
+    "identify",
+    "kad",
+    "ping",
+    "quic",
+    "relay",
+    "request-response",
+    "serde",
+    "tcp",
+    "tls",
+    "tokio",
+    "yamux",
+] }
+libp2p-stream = { version = "0.3.0-alpha" }
+serde = { version = "1.0.218", features = ["derive"] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 tokio = { version = "1.43.0", features = [
@@ -16,8 +63,15 @@ tokio = { version = "1.43.0", features = [
     "rt-multi-thread",
     "sync",
     "signal",
+    "io-util",
 ] }
+tokio-stream = { version = "0.1.17", features = ["sync"] }
+mockall = "0.13.1"
+pin-project = "1.1.7"
+proptest = "1.6.0"
+ciborium = "0.2.2"
 
-[profile.profiling]
-inherits = "release"
-debug = true
+
+# Hypha
+hypha-api = { path = "crates/messages" }
+hypha-network = { path = "crates/network" }

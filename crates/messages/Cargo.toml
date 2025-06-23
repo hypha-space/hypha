@@ -1,0 +1,9 @@
+[package]
+name = "hypha-api"
+version = "0.0.0"
+publish.workspace = true
+edition.workspace = true
+license = "Apache-2.0"
+
+[dependencies]
+serde.workspace = true
