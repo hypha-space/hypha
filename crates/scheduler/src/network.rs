@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 
 use futures_util::stream::StreamExt;
+
 use hypha_network::{
-    CertificateDer, CertificateRevocationListDer, PrivateKeyDer, cert,
+    CertificateDer, CertificateRevocationListDer, PrivateKeyDer, cbor_codec, cert,
     dial::{DialAction, DialDriver, DialInterface, PendingDials},
     error::HyphaError,
     gossipsub::{
@@ -14,17 +15,25 @@ use hypha_network::{
     },
     listen::{ListenAction, ListenDriver, ListenInterface, PendingListens},
     mtls,
+    request_response::{
+        OutboundRequests, OutboundResponses, RequestHandler, RequestResponseAction,
+        RequestResponseBehaviour, RequestResponseDriver, RequestResponseError,
+        RequestResponseInterface,
+    },
     stream::{StreamInterface, StreamSenderInterface},
     swarm::SwarmDriver,
 };
-use libp2p::PeerId;
 use libp2p::{
-    Swarm, SwarmBuilder, dcutr, gossipsub, identify, kad, ping, relay,
+    PeerId, StreamProtocol, Swarm, SwarmBuilder, dcutr, gossipsub, identify, kad, ping, relay,
+    request_response,
     swarm::{ConnectionId, DialError, NetworkBehaviour, SwarmEvent},
     tcp, yamux,
 };
 use libp2p_stream as stream;
 use tokio::sync::{mpsc, oneshot};
+
+type HyphaCodec = cbor_codec::Codec<hypha_api::Request, hypha_api::Response>;
+type HyphaRequestHandlers = Vec<RequestHandler<HyphaCodec>>;
 
 #[derive(Clone)]
 pub(crate) struct Network {
@@ -41,6 +50,7 @@ pub(crate) struct Behaviour {
     stream: stream::Behaviour,
     kademlia: kad::Behaviour<kad::store::MemoryStore>,
     gossipsub: gossipsub::Behaviour,
+    request_response: request_response::Behaviour<HyphaCodec>,
 }
 
 pub(crate) struct NetworkDriver {
@@ -50,6 +60,9 @@ pub(crate) struct NetworkDriver {
     pending_queries_map: PendingQueries,
     subscriptions: Subscriptions,
     action_receiver: mpsc::Receiver<Action>,
+    outbound_requests_map: OutboundRequests<HyphaCodec>,
+    outbound_responses_map: OutboundResponses,
+    request_handlers: HyphaRequestHandlers,
 }
 
 enum Action {
@@ -57,6 +70,7 @@ enum Action {
     Listen(ListenAction),
     Kademlia(KademliaAction),
     Gossipsub(GossipsubAction),
+    RequestResponse(RequestResponseAction<HyphaCodec>),
 }
 
 impl Network {
@@ -118,6 +132,13 @@ impl Network {
                     gossipsub::Config::default(),
                 )
                 .unwrap(),
+                request_response: request_response::Behaviour::<HyphaCodec>::new(
+                    [(
+                        StreamProtocol::new("/hypha-api/0.0.1"),
+                        request_response::ProtocolSupport::Full,
+                    )],
+                    request_response::Config::default(),
+                ),
             })
             .map_err(|_| HyphaError::SwarmError("Failed to create swarm behavior.".to_string()))?
             .build();
@@ -133,6 +154,9 @@ impl Network {
                 pending_listen_map: HashMap::default(),
                 pending_queries_map: HashMap::default(),
                 subscriptions: HashMap::default(),
+                outbound_requests_map: HashMap::default(),
+                outbound_responses_map: HashMap::default(),
+                request_handlers: Vec::new(),
                 action_receiver,
             },
         ))
@@ -171,6 +195,10 @@ impl SwarmDriver<Behaviour> for NetworkDriver {
                         SwarmEvent::Behaviour(BehaviourEvent::Gossipsub(event)) => {
                         self.process_gossipsub_event(event).await;
                         }
+                        SwarmEvent::Behaviour(BehaviourEvent::RequestResponse(event)) => {
+                            self.process_request_response_event(event).await;
+                        }
+
                         _ => {
                             tracing::debug!("Unhandled event: {:?}", event);
                         }
@@ -189,7 +217,9 @@ impl SwarmDriver<Behaviour> for NetworkDriver {
                         }
                         Action::Gossipsub(action) => {
                             self.process_gossipsub_action(action).await;
-                        }
+                        },
+                        Action::RequestResponse(action) =>
+                            self.process_request_response_action(action).await,
                     }
                 },
                 else => break
@@ -281,5 +311,43 @@ impl GossipsubInterface for Network {
             .send(Action::Gossipsub(action))
             .await
             .unwrap();
+    }
+}
+
+impl RequestResponseBehaviour<HyphaCodec> for Behaviour {
+    fn request_response(&mut self) -> &mut libp2p::request_response::Behaviour<HyphaCodec> {
+        &mut self.request_response
+    }
+}
+
+impl RequestResponseDriver<Behaviour, HyphaCodec> for NetworkDriver {
+    fn outbound_requests(&mut self) -> &mut OutboundRequests<HyphaCodec> {
+        &mut self.outbound_requests_map
+    }
+
+    fn outbound_responses(&mut self) -> &mut OutboundResponses {
+        &mut self.outbound_responses_map
+    }
+
+    fn request_handlers(&mut self) -> &mut HyphaRequestHandlers {
+        &mut self.request_handlers
+    }
+}
+
+impl RequestResponseInterface<HyphaCodec> for Network {
+    async fn send(&self, action: RequestResponseAction<HyphaCodec>) {
+        self.action_sender
+            .send(Action::RequestResponse(action))
+            .await
+            .unwrap();
+    }
+
+    fn try_send(
+        &self,
+        action: RequestResponseAction<HyphaCodec>,
+    ) -> Result<(), RequestResponseError> {
+        self.action_sender
+            .try_send(Action::RequestResponse(action))
+            .map_err(|_| RequestResponseError::Other("Failed to send action".to_string()))
     }
 }

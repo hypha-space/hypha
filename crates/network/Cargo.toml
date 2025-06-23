@@ -6,22 +6,30 @@ edition.workspace = true
 license = "Apache-2.0"
 
 [dependencies]
+rustls.workspace = true
 async-trait.workspace = true
+futures.workspace = true
 futures-util.workspace = true
 futures-rustls.workspace = true
 libp2p.workspace = true
 libp2p-stream.workspace = true
-rustls.workspace = true
 rustls-pemfile.workspace = true
 thiserror.workspace = true
+pin-project.workspace = true
+serde.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 tokio-stream.workspace = true
 webpki.workspace = true
 ed25519-dalek = { version = "2.1", features = ["alloc", "pkcs8", "pem"] }
+ciborium.workspace = true
+
 
 [dev-dependencies]
+libp2p-swarm-test = { version = "0.5.0", features = ["tokio"] }
 mockall.workspace = true
 rcgen.workspace = true
+proptest.workspace = true
 time = "0.3"
+clap.workspace = true

@@ -183,12 +183,11 @@ mod tests {
         mock.expect_send()
             .withf(|action| matches!(action, GossipsubAction::Subscribe(_, _)))
             .times(1)
-            .returning(move |action| match action {
-                GossipsubAction::Subscribe(_, tx) => {
+            .returning(move |action| {
+                if let GossipsubAction::Subscribe(_, tx) = action {
                     let sub_rx = mock_sub_tx.subscribe();
                     let _ = tx.send(Ok(sub_rx));
                 }
-                _ => {}
             });
 
         let result = mock.subscribe("test_topic").await;
@@ -208,11 +207,10 @@ mod tests {
         mock.expect_send()
             .withf(|action| matches!(action, GossipsubAction::Unsubscribe(_, _)))
             .times(1)
-            .returning(move |action| match action {
-                GossipsubAction::Unsubscribe(_, tx) => {
+            .returning(move |action| {
+                if let GossipsubAction::Unsubscribe(_, tx) = action {
                     let _ = tx.send(Ok(()));
                 }
-                _ => {}
             });
 
         let result = mock.unsubscribe("test_topic").await;
@@ -227,12 +225,11 @@ mod tests {
         mock.expect_send()
             .withf(|action| matches!(action, GossipsubAction::Publish(_, _, _)))
             .times(1)
-            .returning(move |action| match action {
-                GossipsubAction::Publish(_, data, tx) => {
+            .returning(move |action| {
+                if let GossipsubAction::Publish(_, data, tx) = action {
                     let _ = sub_tx.send(data);
                     let _ = tx.send(Ok(()));
                 }
-                _ => {}
             });
 
         let result = mock.publish("test_topic", vec![1, 2, 3]).await;

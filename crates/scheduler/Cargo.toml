@@ -15,3 +15,4 @@ tokio-stream.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 hypha-network.workspace = true
+hypha-api.workspace = true

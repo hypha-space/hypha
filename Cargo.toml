@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/certutil",
+    "crates/messages",
     "crates/gateway",
     "crates/network",
     "crates/scheduler",
@@ -26,7 +27,7 @@ edition = "2024"
 [workspace.dependencies]
 async-trait = "0.1.88"
 clap = { version = "4.5.31", features = ["derive"] }
-futures = "0.3.30"
+futures = "0.3.31"
 futures-bounded = { version = "0.2.4" }
 futures-rustls = { version = "0.26.0", default-features = false }
 futures-util = "0.3"
@@ -66,8 +67,11 @@ tokio = { version = "1.43.0", features = [
 ] }
 tokio-stream = { version = "0.1.17", features = ["sync"] }
 mockall = "0.13.1"
+pin-project = "1.1.7"
 proptest = "1.6.0"
+ciborium = "0.2.2"
 
 
 # Hypha
+hypha-api = { path = "crates/messages" }
 hypha-network = { path = "crates/network" }

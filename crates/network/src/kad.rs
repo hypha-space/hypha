@@ -380,16 +380,12 @@ mod tests {
             .withf(|action| matches!(action, KademliaAction::PutRecord(_, _)))
             .times(1)
             .returning(|action| {
-                match action {
-                    KademliaAction::PutRecord(_, tx) => {
-                        tokio::spawn(async move {
-                            // Simulate a successful store operation
-                            let _ = tx.send(Ok(KademliaOk::PutRecord(()))).await;
-                        });
-                    }
-                    _ => {}
+                if let KademliaAction::PutRecord(_, tx) = action {
+                    tokio::spawn(async move {
+                        // Simulate a successful store operation
+                        let _ = tx.send(Ok(KademliaOk::PutRecord(()))).await;
+                    });
                 }
-                ()
             });
 
         let record = kad::Record::new(kad::RecordKey::new(&"foo"), vec![1, 2, 3]);
@@ -406,17 +402,13 @@ mod tests {
             .withf(|action| matches!(action, KademliaAction::GetRecord(_, _)))
             .times(1)
             .returning(|action| {
-                match action {
-                    KademliaAction::GetRecord(key, tx) => {
-                        tokio::spawn(async move {
-                            // Create a mock record and send it back
-                            let record = kad::Record::new(kad::RecordKey::new(&key), vec![1, 2, 3]);
-                            let _ = tx.send(Ok(KademliaOk::GetRecord(record))).await;
-                        });
-                    }
-                    _ => {}
+                if let KademliaAction::GetRecord(key, tx) = action {
+                    tokio::spawn(async move {
+                        // Create a mock record and send it back
+                        let record = kad::Record::new(kad::RecordKey::new(&key), vec![1, 2, 3]);
+                        let _ = tx.send(Ok(KademliaOk::GetRecord(record))).await;
+                    });
                 }
-                ()
             });
 
         let result = mock.get("foo").await.unwrap();
