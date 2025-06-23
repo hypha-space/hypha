@@ -66,10 +66,10 @@ pub trait ListenInterface {
 
 #[cfg(test)]
 mod listen_interface_tests {
-    use super::*;
-    use libp2p::Multiaddr;
-    use libp2p::core::transport::TransportError;
+    use libp2p::{Multiaddr, core::transport::TransportError};
     use mockall::mock;
+
+    use super::*;
 
     mock! {
         TestListenInterface {}

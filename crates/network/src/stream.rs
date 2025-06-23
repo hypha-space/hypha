@@ -26,11 +26,10 @@ pub trait StreamSenderInterface: StreamInterface {
 
 #[cfg(test)]
 mod stream_interface_tests {
-    use super::*;
-
-    use libp2p_stream::Behaviour;
-    use libp2p_stream::{AlreadyRegistered, Control};
+    use libp2p_stream::{AlreadyRegistered, Behaviour, Control};
     use mockall::mock;
+
+    use super::*;
 
     mock! {
         Network {}
