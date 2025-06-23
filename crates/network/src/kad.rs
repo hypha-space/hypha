@@ -70,8 +70,7 @@ impl Display for KademliaError {
     }
 }
 
-#[allow(async_fn_in_trait)]
-pub trait KademliaDriver<TBehavior>: SwarmDriver<TBehavior>
+pub trait KademliaDriver<TBehavior>: SwarmDriver<TBehavior> + Send
 where
     TBehavior: NetworkBehaviour + KademliaBehavior,
 {
@@ -79,161 +78,167 @@ where
     // Instead of using a 'oneshot' channel, we use a 'mpsc' channel to allow for multiple events to be sent.
     fn pending_queries(&mut self) -> &mut PendingQueries;
 
-    async fn process_kademlia_action(&mut self, action: KademliaAction) {
-        match action {
-            KademliaAction::GetRecord(key, tx) => {
-                let query_id = self
-                    .swarm()
-                    .behaviour_mut()
-                    .kademlia()
-                    .get_record(kad::RecordKey::new(&key));
+    fn process_kademlia_action(
+        &mut self,
+        action: KademliaAction,
+    ) -> impl Future<Output = ()> + Send {
+        async move {
+            match action {
+                KademliaAction::GetRecord(key, tx) => {
+                    let query_id = self
+                        .swarm()
+                        .behaviour_mut()
+                        .kademlia()
+                        .get_record(kad::RecordKey::new(&key));
 
-                self.pending_queries().insert(query_id, tx);
-            }
-            KademliaAction::PutRecord(record, tx) => {
-                match self
-                    .swarm()
-                    .behaviour_mut()
-                    .kademlia()
-                    .put_record(record, kad::Quorum::One)
-                {
-                    Ok(query_id) => {
-                        self.pending_queries().insert(query_id, tx);
-                    }
-                    Err(err) => {
-                        let _ = tx.send(Err(KademliaError::Store(err))).await;
+                    self.pending_queries().insert(query_id, tx);
+                }
+                KademliaAction::PutRecord(record, tx) => {
+                    match self
+                        .swarm()
+                        .behaviour_mut()
+                        .kademlia()
+                        .put_record(record, kad::Quorum::One)
+                    {
+                        Ok(query_id) => {
+                            self.pending_queries().insert(query_id, tx);
+                        }
+                        Err(err) => {
+                            let _ = tx.send(Err(KademliaError::Store(err))).await;
+                        }
                     }
                 }
-            }
-            KademliaAction::GetProvider(key, tx) => {
-                let query_id = self
-                    .swarm()
-                    .behaviour_mut()
-                    .kademlia()
-                    .get_providers(kad::RecordKey::new(&key));
+                KademliaAction::GetProvider(key, tx) => {
+                    let query_id = self
+                        .swarm()
+                        .behaviour_mut()
+                        .kademlia()
+                        .get_providers(kad::RecordKey::new(&key));
 
-                self.pending_queries().insert(query_id, tx);
-            }
-            KademliaAction::StartProviding(key, tx) => {
-                match self
-                    .swarm()
-                    .behaviour_mut()
-                    .kademlia()
-                    .start_providing(kad::RecordKey::new(&key))
-                {
-                    Ok(query_id) => {
-                        self.pending_queries().insert(query_id, tx);
-                    }
-                    Err(err) => {
-                        let _ = tx.send(Err(KademliaError::Store(err))).await;
+                    self.pending_queries().insert(query_id, tx);
+                }
+                KademliaAction::StartProviding(key, tx) => {
+                    match self
+                        .swarm()
+                        .behaviour_mut()
+                        .kademlia()
+                        .start_providing(kad::RecordKey::new(&key))
+                    {
+                        Ok(query_id) => {
+                            self.pending_queries().insert(query_id, tx);
+                        }
+                        Err(err) => {
+                            let _ = tx.send(Err(KademliaError::Store(err))).await;
+                        }
                     }
                 }
-            }
-            KademliaAction::GetClosestPeers(peer, tx) => {
-                let query_id = self
-                    .swarm()
-                    .behaviour_mut()
-                    .kademlia()
-                    .get_closest_peers(peer);
+                KademliaAction::GetClosestPeers(peer, tx) => {
+                    let query_id = self
+                        .swarm()
+                        .behaviour_mut()
+                        .kademlia()
+                        .get_closest_peers(peer);
 
-                self.pending_queries().insert(query_id, tx);
+                    self.pending_queries().insert(query_id, tx);
+                }
             }
         }
     }
 
-    async fn process_kademlia_query_result(
+    fn process_kademlia_query_result(
         &mut self,
         query_id: kad::QueryId,
         result: kad::QueryResult,
         step: kad::ProgressStep,
-    ) {
-        match result {
-            kad::QueryResult::PutRecord(Ok(_)) => {
-                send_kademlia_result(
-                    self.pending_queries(),
-                    query_id,
-                    step,
-                    Ok(KademliaOk::PutRecord(())),
-                )
-                .await;
-            }
-            kad::QueryResult::PutRecord(Err(err)) => {
-                send_kademlia_result(
-                    self.pending_queries(),
-                    query_id,
-                    step,
-                    Err(KademliaError::PutRecord(err)),
-                )
-                .await;
-            }
-            kad::QueryResult::GetRecord(Ok(kad::GetRecordOk::FoundRecord(kad::PeerRecord {
-                record,
-                ..
-            }))) => {
-                send_kademlia_result(
-                    self.pending_queries(),
-                    query_id,
-                    step,
-                    Ok(KademliaOk::GetRecord(record)),
-                )
-                .await;
-            }
-            kad::QueryResult::GetRecord(Err(err)) => {
-                send_kademlia_result(
-                    self.pending_queries(),
-                    query_id,
-                    step,
-                    Err(KademliaError::GetRecord(err)),
-                )
-                .await;
-            }
-            kad::QueryResult::GetProviders(Ok(providers)) => {
-                send_kademlia_result(
-                    self.pending_queries(),
-                    query_id,
-                    step,
-                    Ok(KademliaOk::GetProviders(providers)),
-                )
-                .await;
-            }
-            kad::QueryResult::GetProviders(Err(err)) => {
-                send_kademlia_result(
-                    self.pending_queries(),
-                    query_id,
-                    step,
-                    Err(KademliaError::GetProviders(err)),
-                )
-                .await;
-            }
-            kad::QueryResult::StartProviding(Ok(_)) => {
-                send_kademlia_result(
-                    self.pending_queries(),
-                    query_id,
-                    step,
-                    Ok(KademliaOk::StartProviding(())),
-                )
-                .await
-            }
-            kad::QueryResult::GetClosestPeers(Ok(closest_peers)) => {
-                send_kademlia_result(
-                    self.pending_queries(),
-                    query_id,
-                    step,
-                    Ok(KademliaOk::GetClosestPeers(closest_peers)),
-                )
-                .await;
-            }
-            kad::QueryResult::GetClosestPeers(Err(err)) => {
-                send_kademlia_result(
-                    self.pending_queries(),
-                    query_id,
-                    step,
-                    Err(KademliaError::GetClosestPeers(err)),
-                )
-                .await;
-            }
-            other => {
-                tracing::debug!("Unhandled Kademlia Queryresult: {:?}", other);
+    ) -> impl Future<Output = ()> + Send {
+        async move {
+            match result {
+                kad::QueryResult::PutRecord(Ok(_)) => {
+                    send_kademlia_result(
+                        self.pending_queries(),
+                        query_id,
+                        step,
+                        Ok(KademliaOk::PutRecord(())),
+                    )
+                    .await;
+                }
+                kad::QueryResult::PutRecord(Err(err)) => {
+                    send_kademlia_result(
+                        self.pending_queries(),
+                        query_id,
+                        step,
+                        Err(KademliaError::PutRecord(err)),
+                    )
+                    .await;
+                }
+                kad::QueryResult::GetRecord(Ok(kad::GetRecordOk::FoundRecord(
+                    kad::PeerRecord { record, .. },
+                ))) => {
+                    send_kademlia_result(
+                        self.pending_queries(),
+                        query_id,
+                        step,
+                        Ok(KademliaOk::GetRecord(record)),
+                    )
+                    .await;
+                }
+                kad::QueryResult::GetRecord(Err(err)) => {
+                    send_kademlia_result(
+                        self.pending_queries(),
+                        query_id,
+                        step,
+                        Err(KademliaError::GetRecord(err)),
+                    )
+                    .await;
+                }
+                kad::QueryResult::GetProviders(Ok(providers)) => {
+                    send_kademlia_result(
+                        self.pending_queries(),
+                        query_id,
+                        step,
+                        Ok(KademliaOk::GetProviders(providers)),
+                    )
+                    .await;
+                }
+                kad::QueryResult::GetProviders(Err(err)) => {
+                    send_kademlia_result(
+                        self.pending_queries(),
+                        query_id,
+                        step,
+                        Err(KademliaError::GetProviders(err)),
+                    )
+                    .await;
+                }
+                kad::QueryResult::StartProviding(Ok(_)) => {
+                    send_kademlia_result(
+                        self.pending_queries(),
+                        query_id,
+                        step,
+                        Ok(KademliaOk::StartProviding(())),
+                    )
+                    .await
+                }
+                kad::QueryResult::GetClosestPeers(Ok(closest_peers)) => {
+                    send_kademlia_result(
+                        self.pending_queries(),
+                        query_id,
+                        step,
+                        Ok(KademliaOk::GetClosestPeers(closest_peers)),
+                    )
+                    .await;
+                }
+                kad::QueryResult::GetClosestPeers(Err(err)) => {
+                    send_kademlia_result(
+                        self.pending_queries(),
+                        query_id,
+                        step,
+                        Err(KademliaError::GetClosestPeers(err)),
+                    )
+                    .await;
+                }
+                other => {
+                    tracing::debug!("Unhandled Kademlia Queryresult: {:?}", other);
+                }
             }
         }
     }
@@ -257,104 +262,118 @@ async fn send_kademlia_result(
     }
 }
 
-#[allow(async_fn_in_trait)]
-pub trait KademliaInterface {
-    async fn send(&self, action: KademliaAction);
+pub trait KademliaInterface: Sync {
+    fn send(&self, action: KademliaAction) -> impl Future<Output = ()> + Send;
 
-    async fn store(&self, record: kad::Record) -> Result<(), KademliaError> {
-        let (tx, rx) = mpsc::channel(1);
-        tracing::info!(record=?record,"Store record", );
+    fn store(&self, record: kad::Record) -> impl Future<Output = Result<(), KademliaError>> + Send {
+        async move {
+            let (tx, rx) = mpsc::channel(1);
+            tracing::info!(record=?record,"Store record", );
 
-        self.send(KademliaAction::PutRecord(record, tx)).await;
+            self.send(KademliaAction::PutRecord(record, tx)).await;
 
-        ReceiverStream::new(rx)
-            .fold(Ok(()), |acc, result| match result {
-                Ok(KademliaOk::PutRecord(_)) => acc,
-                Err(err) => Err(err),
-                _ => Err(KademliaError::Other("Unexpected response".to_string())),
-            })
-            .await
-    }
-
-    async fn get(&self, key: &str) -> Result<kad::Record, KademliaError> {
-        let (tx, mut rx) = mpsc::channel(1);
-        tracing::info!(key=%key,"Get key", );
-
-        self.send(KademliaAction::GetRecord(key.to_string(), tx))
-            .await;
-
-        let result = rx.recv().await.ok_or_else(|| {
-            KademliaError::Other("No response received from the network".to_string())
-        })?;
-
-        match result {
-            Ok(KademliaOk::GetRecord(record)) => Ok(record),
-            Err(err) => Err(err),
-            _ => Err(KademliaError::Other("Unexpected response".to_string())),
+            ReceiverStream::new(rx)
+                .fold(Ok(()), |acc, result| match result {
+                    Ok(KademliaOk::PutRecord(_)) => acc,
+                    Err(err) => Err(err),
+                    _ => Err(KademliaError::Other("Unexpected response".to_string())),
+                })
+                .await
         }
     }
 
-    async fn provide(&self, key: &str) -> Result<(), KademliaError> {
-        let (tx, rx) = mpsc::channel(1);
-        tracing::info!(key=%key, "Provide key");
+    fn get(&self, key: &str) -> impl Future<Output = Result<kad::Record, KademliaError>> + Send {
+        async move {
+            let (tx, mut rx) = mpsc::channel(1);
+            tracing::info!(key=%key,"Get key", );
 
-        self.send(KademliaAction::StartProviding(key.to_string(), tx))
-            .await;
+            self.send(KademliaAction::GetRecord(key.to_string(), tx))
+                .await;
 
-        ReceiverStream::new(rx)
-            .fold(Ok(()), |acc, result| match result {
-                Ok(KademliaOk::StartProviding(_)) => acc,
+            let result = rx.recv().await.ok_or_else(|| {
+                KademliaError::Other("No response received from the network".to_string())
+            })?;
+
+            match result {
+                Ok(KademliaOk::GetRecord(record)) => Ok(record),
                 Err(err) => Err(err),
                 _ => Err(KademliaError::Other("Unexpected response".to_string())),
-            })
-            .await
+            }
+        }
     }
 
-    async fn find_provider(&self, key: &str) -> Result<HashSet<PeerId>, KademliaError> {
-        // TODO: Determine rigth channel size, I suspect a small size like 5 is already sufficient.
-        let (tx, rx) = mpsc::channel(5);
-        tracing::info!(key=%key, "Find key providers");
+    fn provide(&self, key: &str) -> impl Future<Output = Result<(), KademliaError>> + Send {
+        async move {
+            let (tx, rx) = mpsc::channel(1);
+            tracing::info!(key=%key, "Provide key");
 
-        self.send(KademliaAction::GetProvider(key.to_string(), tx))
-            .await;
+            self.send(KademliaAction::StartProviding(key.to_string(), tx))
+                .await;
 
-        ReceiverStream::new(rx)
-            .fold(Ok(HashSet::new()), |acc, result| match result {
-                Ok(KademliaOk::GetProviders(kad::GetProvidersOk::FoundProviders {
-                    providers,
-                    ..
-                })) => acc.map(|mut acc| {
-                    acc.extend(providers);
-                    acc
-                }),
-                Ok(KademliaOk::GetProviders(
-                    kad::GetProvidersOk::FinishedWithNoAdditionalRecord { .. },
-                )) => acc,
-                Err(err) => Err(err),
-                _ => Err(KademliaError::Other("Unexpected response".to_string())),
-            })
-            .await
+            ReceiverStream::new(rx)
+                .fold(Ok(()), |acc, result| match result {
+                    Ok(KademliaOk::StartProviding(_)) => acc,
+                    Err(err) => Err(err),
+                    _ => Err(KademliaError::Other("Unexpected response".to_string())),
+                })
+                .await
+        }
     }
 
-    async fn get_closest_peers(&self, peer_id: PeerId) -> Result<Vec<PeerInfo>, KademliaError> {
-        let (tx, rx) = mpsc::channel(5);
-        tracing::info!(peer_id=?peer_id, "Get closest peers");
+    fn find_provider(
+        &self,
+        key: &str,
+    ) -> impl Future<Output = Result<HashSet<PeerId>, KademliaError>> + Send {
+        async move {
+            // TODO: Determine rigth channel size, I suspect a small size like 5 is already sufficient.
+            let (tx, rx) = mpsc::channel(5);
+            tracing::info!(key=%key, "Find key providers");
 
-        self.send(KademliaAction::GetClosestPeers(peer_id, tx))
-            .await;
+            self.send(KademliaAction::GetProvider(key.to_string(), tx))
+                .await;
 
-        ReceiverStream::new(rx)
-            .fold(Ok(Vec::new()), |acc, result| match result {
-                Ok(KademliaOk::GetClosestPeers(kad::GetClosestPeersOk { peers, .. })) => {
-                    acc.map(|mut acc| {
-                        acc.extend(peers);
+            ReceiverStream::new(rx)
+                .fold(Ok(HashSet::new()), |acc, result| match result {
+                    Ok(KademliaOk::GetProviders(kad::GetProvidersOk::FoundProviders {
+                        providers,
+                        ..
+                    })) => acc.map(|mut acc| {
+                        acc.extend(providers);
                         acc
-                    })
-                }
-                Err(err) => Err(err),
-                _ => Err(KademliaError::Other("Unexpected response".to_string())),
-            })
-            .await
+                    }),
+                    Ok(KademliaOk::GetProviders(
+                        kad::GetProvidersOk::FinishedWithNoAdditionalRecord { .. },
+                    )) => acc,
+                    Err(err) => Err(err),
+                    _ => Err(KademliaError::Other("Unexpected response".to_string())),
+                })
+                .await
+        }
+    }
+
+    fn get_closest_peers(
+        &self,
+        peer_id: PeerId,
+    ) -> impl Future<Output = Result<Vec<PeerInfo>, KademliaError>> + Send {
+        async move {
+            let (tx, rx) = mpsc::channel(5);
+            tracing::info!(peer_id=?peer_id, "Get closest peers");
+
+            self.send(KademliaAction::GetClosestPeers(peer_id, tx))
+                .await;
+
+            ReceiverStream::new(rx)
+                .fold(Ok(Vec::new()), |acc, result| match result {
+                    Ok(KademliaOk::GetClosestPeers(kad::GetClosestPeersOk { peers, .. })) => acc
+                        .map(|mut acc| {
+                            acc.extend(peers);
+                            acc
+                        }),
+                    Err(err) => Err(err),
+                    _ => Err(KademliaError::Other("Unexpected response".to_string())),
+                })
+                .await
+        }
     }
 }
 

@@ -46,116 +46,136 @@ impl Display for GossipsubError {
     }
 }
 
-#[allow(async_fn_in_trait)]
-pub trait GossipsubDriver<TBehavior>: SwarmDriver<TBehavior>
+pub trait GossipsubDriver<TBehavior>: SwarmDriver<TBehavior> + Send
 where
     TBehavior: NetworkBehaviour + GossipsubBehaviour,
 {
     fn subscriptions(&mut self) -> &mut Subscriptions;
 
-    async fn process_gossipsub_action(&mut self, action: GossipsubAction) {
-        match action {
-            GossipsubAction::Publish(topic, data, tx) => {
-                if let Err(e) = self
-                    .swarm()
-                    .behaviour_mut()
-                    .gossipsub()
-                    .publish(topic, data)
-                {
-                    let _ = tx.send(Err(GossipsubError::Publish(e)));
-                } else {
+    fn process_gossipsub_action(
+        &mut self,
+        action: GossipsubAction,
+    ) -> impl Future<Output = ()> + Send {
+        async move {
+            match action {
+                GossipsubAction::Publish(topic, data, tx) => {
+                    if let Err(e) = self
+                        .swarm()
+                        .behaviour_mut()
+                        .gossipsub()
+                        .publish(topic, data)
+                    {
+                        let _ = tx.send(Err(GossipsubError::Publish(e)));
+                    } else {
+                        let _ = tx.send(Ok(()));
+                    }
+                }
+                GossipsubAction::Subscribe(topic, tx) => {
+                    match self.swarm().behaviour_mut().gossipsub().subscribe(&topic) {
+                        Ok(true) => {
+                            let (pubsub_tx, pubsub_rx) = broadcast::channel(5);
+                            self.subscriptions().insert(topic.hash(), pubsub_tx);
+                            let _ = tx.send(Ok(pubsub_rx));
+                        }
+                        Ok(false) => {
+                            // We already subscribed to this topic and create a new receiver from the existing sender.
+                            // We expect the sender to be present in the map, therefore we unwrap.
+                            let pubsub_rx = self
+                                .subscriptions()
+                                .get(&topic.hash())
+                                .map(|sub_tx| sub_tx.subscribe())
+                                .unwrap();
+                            let _ = tx.send(Ok(pubsub_rx));
+                        }
+                        Err(e) => {
+                            let _ = tx.send(Err(GossipsubError::Subscription(e)));
+                        }
+                    };
+                }
+                GossipsubAction::Unsubscribe(topic, tx) => {
+                    if self.swarm().behaviour_mut().gossipsub().unsubscribe(&topic) {
+                        self.subscriptions().remove(&topic.hash());
+                    }
                     let _ = tx.send(Ok(()));
                 }
-            }
-            GossipsubAction::Subscribe(topic, tx) => {
-                match self.swarm().behaviour_mut().gossipsub().subscribe(&topic) {
-                    Ok(true) => {
-                        let (pubsub_tx, pubsub_rx) = broadcast::channel(5);
-                        self.subscriptions().insert(topic.hash(), pubsub_tx);
-                        let _ = tx.send(Ok(pubsub_rx));
-                    }
-                    Ok(false) => {
-                        // We already subscribed to this topic and create a new receiver from the existing sender.
-                        // We expect the sender to be present in the map, therefore we unwrap.
-                        let pubsub_rx = self
-                            .subscriptions()
-                            .get(&topic.hash())
-                            .map(|sub_tx| sub_tx.subscribe())
-                            .unwrap();
-                        let _ = tx.send(Ok(pubsub_rx));
-                    }
-                    Err(e) => {
-                        let _ = tx.send(Err(GossipsubError::Subscription(e)));
-                    }
-                };
-            }
-            GossipsubAction::Unsubscribe(topic, tx) => {
-                if self.swarm().behaviour_mut().gossipsub().unsubscribe(&topic) {
-                    self.subscriptions().remove(&topic.hash());
-                }
-                let _ = tx.send(Ok(()));
             }
         }
     }
 
-    async fn process_gossipsub_event(&mut self, event: gossipsub::Event) {
-        match event {
-            gossipsub::Event::Message { message, .. } => {
-                let topic = message.topic;
-                if let Some(sub_tx) = self.subscriptions().get(&topic) {
-                    let _ = sub_tx.send(message.data);
-                } else {
-                    tracing::debug!("No subscription for topic: {:?}", topic);
+    fn process_gossipsub_event(
+        &mut self,
+        event: gossipsub::Event,
+    ) -> impl Future<Output = ()> + Send {
+        async move {
+            match event {
+                gossipsub::Event::Message { message, .. } => {
+                    let topic = message.topic;
+                    if let Some(sub_tx) = self.subscriptions().get(&topic) {
+                        let _ = sub_tx.send(message.data);
+                    } else {
+                        tracing::debug!("No subscription for topic: {:?}", topic);
+                    }
                 }
-            }
-            _ => {
-                tracing::debug!("Unhandled gossipsub event: {:?}", event);
+                _ => {
+                    tracing::debug!("Unhandled gossipsub event: {:?}", event);
+                }
             }
         }
     }
 }
 
-#[allow(async_fn_in_trait)]
-pub trait GossipsubInterface {
-    async fn send(&self, action: GossipsubAction);
+pub trait GossipsubInterface: Sync {
+    fn send(&self, action: GossipsubAction) -> impl Future<Output = ()> + Send;
 
-    async fn subscribe(&self, topic: &str) -> Result<BroadcastStream<Vec<u8>>, GossipsubError> where
-    {
-        let (tx, rx) = oneshot::channel();
-        self.send(GossipsubAction::Subscribe(
-            gossipsub::IdentTopic::new(topic),
-            tx,
-        ))
-        .await;
+    fn subscribe(
+        &self,
+        topic: &str,
+    ) -> impl Future<Output = Result<BroadcastStream<Vec<u8>>, GossipsubError>> + Send {
+        async move {
+            let (tx, rx) = oneshot::channel();
+            self.send(GossipsubAction::Subscribe(
+                gossipsub::IdentTopic::new(topic),
+                tx,
+            ))
+            .await;
 
-        match rx.await.unwrap() {
-            Ok(sub_rx) => Ok(BroadcastStream::new(sub_rx)),
-            Err(_) => todo!(),
+            match rx.await.unwrap() {
+                Ok(sub_rx) => Ok(BroadcastStream::new(sub_rx)),
+                Err(_) => todo!(),
+            }
         }
     }
 
-    async fn unsubscribe(&self, topic: &str) -> Result<(), GossipsubError> {
-        let (tx, rx) = oneshot::channel();
-        self.send(GossipsubAction::Unsubscribe(
-            gossipsub::IdentTopic::new(topic),
-            tx,
-        ))
-        .await;
-        rx.await.unwrap()
+    fn unsubscribe(&self, topic: &str) -> impl Future<Output = Result<(), GossipsubError>> + Send {
+        async move {
+            let (tx, rx) = oneshot::channel();
+            self.send(GossipsubAction::Unsubscribe(
+                gossipsub::IdentTopic::new(topic),
+                tx,
+            ))
+            .await;
+            rx.await.unwrap()
+        }
     }
 
-    async fn publish<T>(&self, topic: &str, data: T) -> Result<(), GossipsubError>
+    fn publish<T>(
+        &self,
+        topic: &str,
+        data: T,
+    ) -> impl Future<Output = Result<(), GossipsubError>> + Send
     where
-        T: Into<Vec<u8>>,
+        T: Into<Vec<u8>> + Send,
     {
-        let (tx, rx) = oneshot::channel();
-        self.send(GossipsubAction::Publish(
-            gossipsub::IdentTopic::new(topic),
-            data.into(),
-            tx,
-        ))
-        .await;
-        rx.await.unwrap()
+        async move {
+            let (tx, rx) = oneshot::channel();
+            self.send(GossipsubAction::Publish(
+                gossipsub::IdentTopic::new(topic),
+                data.into(),
+                tx,
+            ))
+            .await;
+            rx.await.unwrap()
+        }
     }
 }
 

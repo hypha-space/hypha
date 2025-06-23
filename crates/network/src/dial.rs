@@ -14,56 +14,67 @@ pub enum DialAction {
     Dial(Multiaddr, oneshot::Sender<Result<PeerId, DialError>>),
 }
 
-#[allow(async_fn_in_trait)]
-pub trait DialDriver<TBehavior>: SwarmDriver<TBehavior>
+pub trait DialDriver<TBehavior>: SwarmDriver<TBehavior> + Send
 where
     TBehavior: NetworkBehaviour,
 {
     fn pending_dials(&mut self) -> &mut PendingDials;
 
-    async fn process_dial_action(&mut self, action: DialAction) {
-        match action {
-            DialAction::Dial(address, tx) => {
-                tracing::info!(address=%address.clone(),"Dialing");
-                let opts = DialOpts::from(address);
-                let connection_id = opts.connection_id();
+    fn process_dial_action(&mut self, action: DialAction) -> impl Future<Output = ()> + Send {
+        async move {
+            match action {
+                DialAction::Dial(address, tx) => {
+                    tracing::info!(address=%address.clone(),"Dialing");
+                    let opts = DialOpts::from(address);
+                    let connection_id = opts.connection_id();
 
-                if let Err(err) = self.swarm().dial(opts) {
-                    let _ = tx.send(Err(err));
-                } else {
-                    self.pending_dials().insert(connection_id, tx);
+                    if let Err(err) = self.swarm().dial(opts) {
+                        let _ = tx.send(Err(err));
+                    } else {
+                        self.pending_dials().insert(connection_id, tx);
+                    }
                 }
             }
         }
     }
 
-    async fn process_connection_established(
+    fn process_connection_established(
         &mut self,
         peer_id: PeerId,
         connection_id: &ConnectionId,
-    ) {
-        if let Some(dial) = self.pending_dials().remove(connection_id) {
-            let _ = dial.send(Ok(peer_id));
+    ) -> impl Future<Output = ()> + Send {
+        async move {
+            if let Some(dial) = self.pending_dials().remove(connection_id) {
+                let _ = dial.send(Ok(peer_id));
+            }
         }
     }
-    async fn process_connection_error(&mut self, connection_id: &ConnectionId, error: DialError) {
-        if let Some(dial) = self.pending_dials().remove(connection_id) {
-            let _ = dial.send(Err(error));
+
+    fn process_connection_error(
+        &mut self,
+        connection_id: &ConnectionId,
+        error: DialError,
+    ) -> impl Future<Output = ()> + Send {
+        async move {
+            if let Some(dial) = self.pending_dials().remove(connection_id) {
+                let _ = dial.send(Err(error));
+            }
         }
     }
 }
 
-#[allow(async_fn_in_trait)]
-pub trait DialInterface {
-    async fn send(&self, action: DialAction);
+pub trait DialInterface: Sync {
+    fn send(&self, action: DialAction) -> impl Future<Output = ()> + Send;
 
-    async fn dial(&self, address: Multiaddr) -> Result<PeerId, DialError> {
-        let (tx, rx) = oneshot::channel();
-        tracing::info!(address=%address.clone(),"Dialing");
+    fn dial(&self, address: Multiaddr) -> impl Future<Output = Result<PeerId, DialError>> + Send {
+        async move {
+            let (tx, rx) = oneshot::channel();
+            tracing::info!(address=%address.clone(),"Dialing");
 
-        self.send(DialAction::Dial(address, tx)).await;
+            self.send(DialAction::Dial(address, tx)).await;
 
-        rx.await.map_err(|_| DialError::Aborted)?
+            rx.await.map_err(|_| DialError::Aborted)?
+        }
     }
 }
 

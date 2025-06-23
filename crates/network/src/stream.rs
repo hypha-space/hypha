@@ -15,12 +15,16 @@ pub trait StreamReceiverInterface: StreamInterface {
     }
 }
 
-#[allow(async_fn_in_trait)]
-pub trait StreamSenderInterface: StreamInterface {
-    async fn stream(&self, peer_id: PeerId) -> Result<Stream, OpenStreamError> {
-        self.stream_control()
-            .open_stream(peer_id, TENSOR_STREAM_PROTOCOL)
-            .await
+pub trait StreamSenderInterface: StreamInterface + Sync {
+    fn stream(
+        &self,
+        peer_id: PeerId,
+    ) -> impl Future<Output = Result<Stream, OpenStreamError>> + Send {
+        async move {
+            self.stream_control()
+                .open_stream(peer_id, TENSOR_STREAM_PROTOCOL)
+                .await
+        }
     }
 }
 
