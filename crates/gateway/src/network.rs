@@ -20,7 +20,6 @@ use libp2p::{
     tcp, yamux,
 };
 use libp2p_stream as stream;
-
 use tokio::sync::mpsc;
 
 #[derive(Clone)]

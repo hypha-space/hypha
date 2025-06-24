@@ -8,9 +8,7 @@ use std::{
 
 use ed25519_dalek::{VerifyingKey, pkcs8::DecodePublicKey};
 use futures_util::{AsyncRead, AsyncWrite, FutureExt, future::BoxFuture};
-use libp2p::identity::PeerId;
-use libp2p::identity::PublicKey;
-use libp2p::identity::ed25519;
+use libp2p::identity::{PeerId, PublicKey, ed25519};
 use rustls::{
     ClientConfig, CommonState, RootCertStore, ServerConfig,
     pki_types::{CertificateDer, CertificateRevocationListDer, PrivateKeyDer, ServerName},
@@ -297,17 +295,16 @@ fn extract_peer_id_from_tls_state(state: &CommonState) -> Result<PeerId, Upgrade
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::cert::*;
-    use ed25519_dalek::SigningKey;
+    use ed25519_dalek::{SigningKey, pkcs8::DecodePrivateKey};
+    use libp2p::core::upgrade::UpgradeInfo;
     use rcgen::{
         Certificate, CertificateParams, CertificateRevocationList, CertificateRevocationListParams,
         DistinguishedName, DnType, IsCa, PKCS_ED25519, SerialNumber,
     };
     use time::OffsetDateTime;
 
-    use ed25519_dalek::pkcs8::DecodePrivateKey;
-    use libp2p::core::upgrade::UpgradeInfo;
+    use super::*;
+    use crate::cert::*;
 
     fn generate_self_signed_cert(cn: &str) -> (String, String, libp2p::identity::Keypair) {
         let mut cert_params = CertificateParams::new(vec![format!("{}.local", cn)]);

@@ -59,17 +59,18 @@
 //!                     -d certs/tenants/acme
 //! ```
 //!
+use std::{
+    fs, io,
+    path::{Path, PathBuf},
+};
+
 use clap::{Parser, Subcommand};
 use rcgen::{
     BasicConstraints, Certificate, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa,
     KeyPair, KeyUsagePurpose,
 };
-use time::{Duration, OffsetDateTime};
-
-use std::fs;
-use std::io;
-use std::path::{Path, PathBuf};
 use thiserror::Error;
+use time::{Duration, OffsetDateTime};
 
 #[derive(Error, Debug)]
 pub enum CertError {

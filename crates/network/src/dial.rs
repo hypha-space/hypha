@@ -80,11 +80,10 @@ pub trait DialInterface: Sync {
 
 #[cfg(test)]
 mod dial_interface_tests {
-    use super::*;
-    use libp2p::Multiaddr;
-    use libp2p::PeerId;
-    use libp2p::swarm::DialError;
+    use libp2p::{Multiaddr, PeerId, swarm::DialError};
     use mockall::mock;
+
+    use super::*;
 
     mock! {
         NetworkInterface {}

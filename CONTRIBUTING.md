@@ -45,7 +45,15 @@ The following are illustrative scenarios showing how these principles can be app
 
 ## Setup
 
-<!-- Setup rust  -->
+Install the stable toolchain for building and the nightly toolchain for
+formatting:
+
+```sh
+rustup toolchain install stable
+rustup toolchain install nightly --component rustfmt
+```
+
+Format the codebase using `cargo +nightly fmt` before committing.
 
 ## Components
 

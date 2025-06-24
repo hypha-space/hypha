@@ -1,9 +1,8 @@
 use std::io;
 
+use ed25519_dalek::{SigningKey, pkcs8::DecodePrivateKey};
 use rustls::pki_types::{CertificateDer, CertificateRevocationListDer, PrivateKeyDer};
 use thiserror::Error;
-
-use ed25519_dalek::{SigningKey, pkcs8::DecodePrivateKey};
 
 #[derive(Error, Debug)]
 pub enum ParseError {
@@ -74,13 +73,14 @@ pub fn load_crls_from_pem(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use ed25519_dalek::SigningKey;
     use rcgen::{
         Certificate, CertificateParams, CertificateRevocationList, CertificateRevocationListParams,
         DistinguishedName, DnType, IsCa, PKCS_ED25519, RevokedCertParams, SerialNumber,
     };
     use time::OffsetDateTime;
+
+    use super::*;
 
     fn generate_ed25519_cert() -> (String, String, libp2p::identity::Keypair) {
         let mut params = CertificateParams::new(vec!["test.local".to_string()]);
