@@ -1,6 +1,6 @@
 mod network;
 
-use std::{error::Error, fs, path::PathBuf, time::Duration};
+use std::{error::Error, fs, net::SocketAddr, path::PathBuf, time::Duration};
 
 use clap::Parser;
 use hypha_network::{
@@ -8,8 +8,8 @@ use hypha_network::{
     dial::DialInterface,
     listen::ListenInterface,
     swarm::SwarmDriver,
+    utils::multiaddr_from_socketaddr,
 };
-use libp2p::Multiaddr;
 use tracing_subscriber::EnvFilter;
 
 use crate::network::Network;
@@ -26,7 +26,9 @@ struct Opt {
     #[clap(long)]
     crl_file: Option<PathBuf>,
     #[clap(long)]
-    gateway_address: String,
+    gateway_address: SocketAddr,
+    #[clap(long, default_value = "[::1]:0")]
+    listen_address: SocketAddr,
 }
 
 #[tokio::main]
@@ -54,12 +56,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
         vec![]
     };
 
-    let gateway_address = opt.gateway_address.parse::<Multiaddr>()?;
+    let gateway_address = multiaddr_from_socketaddr(opt.gateway_address)?;
 
     let (network, network_driver) = Network::create(cert_chain, private_key, ca_certs, crls)?;
     tokio::spawn(network_driver.run());
 
-    network.listen("/ip4/0.0.0.0/tcp/0".parse()?).await?;
+    network
+        .listen(multiaddr_from_socketaddr(opt.listen_address)?)
+        .await?;
     tracing::info!("Successfully listening");
 
     // Dial the gateway address
