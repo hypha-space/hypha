@@ -1,12 +1,13 @@
 mod network;
 
-use std::{error::Error, fs, path::PathBuf};
+use std::{error::Error, fs, net::SocketAddr, path::PathBuf};
 
 use clap::Parser;
 use hypha_network::{
     cert::{load_certs_from_pem, load_crls_from_pem, load_private_key_from_pem},
     listen::ListenInterface,
     swarm::SwarmDriver,
+    utils::multiaddr_from_socketaddr,
 };
 use tracing_subscriber::EnvFilter;
 
@@ -23,6 +24,8 @@ struct Opt {
     ca_cert_file: PathBuf,
     #[clap(long)]
     crl_file: Option<PathBuf>,
+    #[clap(long, default_value = "[::1]:8888")]
+    listen_address: SocketAddr,
 }
 
 #[tokio::main]
@@ -53,7 +56,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let (network, network_driver) = Network::create(cert_chain, private_key, ca_certs, crls)?;
     let task = tokio::spawn(network_driver.run());
 
-    network.listen("/ip4/0.0.0.0/tcp/8888".parse()?).await?;
+    network
+        .listen(multiaddr_from_socketaddr(opt.listen_address)?)
+        .await?;
     tracing::info!("Successfully listening");
 
     let _ = task.await?;
