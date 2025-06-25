@@ -172,7 +172,7 @@ async fn test_simple_request_response() {
 
     tokio::spawn(async move {
         handler
-            .respond_with_concurrent(Some(1), |req| async move {
+            .respond_with_concurrent(Some(1), |(_, req)| async move {
                 match req {
                     TestRequest::Ping(msg) => TestResponse::Pong(format!("Got: {}", msg)),
                     _ => unreachable!(),
@@ -215,7 +215,7 @@ async fn test_multiple_handlers_with_patterns() {
 
     tokio::spawn(async move {
         ping_handler
-            .respond_with_concurrent(Some(2), |req| async move {
+            .respond_with_concurrent(Some(2), |(_, req)| async move {
                 match req {
                     TestRequest::Ping(msg) => TestResponse::Pong(msg),
                     _ => unreachable!(),
@@ -232,7 +232,7 @@ async fn test_multiple_handlers_with_patterns() {
 
     tokio::spawn(async move {
         echo_handler
-            .respond_with_concurrent(Some(1), |req| async move {
+            .respond_with_concurrent(Some(1), |(_, req)| async move {
                 match req {
                     TestRequest::Echo(msg) => TestResponse::Echo(msg),
                     _ => unreachable!(),
@@ -286,7 +286,7 @@ async fn test_concurrent_request_processing() {
 
     tokio::spawn(async move {
         handler
-            .respond_with_concurrent(Some(3), move |req| {
+            .respond_with_concurrent(Some(3), move |(_, req)| {
                 let concurrent_count = concurrent_count_clone.clone();
                 let max_concurrent_seen = max_concurrent_seen_clone.clone();
 
@@ -369,7 +369,7 @@ async fn test_handler_with_complex_pattern() {
 
     tokio::spawn(async move {
         handler
-            .respond_with_concurrent(None, |req| async move {
+            .respond_with_concurrent(None, |(_, req)| async move {
                 match req {
                     TestRequest::Work { id, .. } => TestResponse::WorkDone { id },
                     _ => unreachable!(),
@@ -548,7 +548,7 @@ async fn test_duplicate_handlers() {
 
     tokio::spawn(async move {
         handler1
-            .respond_with_concurrent(Some(1), move |req| async move {
+            .respond_with_concurrent(Some(1), move |(_, req)| async move {
                 match req {
                     TestRequest::Echo(msg) => TestResponse::Echo(format!("1: {}", msg)),
                     _ => unreachable!(),
@@ -559,7 +559,7 @@ async fn test_duplicate_handlers() {
 
     tokio::spawn(async move {
         handler2
-            .respond_with_concurrent(Some(1), move |req| async move {
+            .respond_with_concurrent(Some(1), move |(_, req)| async move {
                 match req {
                     TestRequest::Echo(msg) => TestResponse::Echo(format!("2: {}", msg)),
                     _ => unreachable!(),
@@ -619,7 +619,7 @@ async fn test_concurrent_request_handling() {
 
     tokio::spawn(async move {
         handler
-            .respond_with_concurrent(None, move |req| {
+            .respond_with_concurrent(None, move |(_, req)| {
                 let concurrent_count = concurrent_count_clone.clone();
                 let max_concurrent_seen = max_concurrent_seen_clone.clone();
 
