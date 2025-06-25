@@ -84,7 +84,7 @@ async fn server(args: Args, listen_addr: &str) -> Result<(), Box<dyn Error>> {
 
     tokio::spawn(async move {
         handler
-            .respond_with_concurrent(Some(10), |req| async move {
+            .respond_with_concurrent(Some(10), |(_, req)| async move {
                 match req {
                     ExampleRequest::Ping(msg) => {
                         tracing::info!("Received ping: {}", msg);

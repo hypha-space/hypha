@@ -45,7 +45,7 @@
 //!     .buffer_size(64)
 //!     .into_stream()
 //!     .await?
-//!     .respond_with_concurrent(Some(2), |req| handle_greetings_request(req));
+//!     .respond_with_concurrent(Some(2), |(_, req)| handle_greetings_request(req));
 //!
 //! // Run the handler
 //! greetings_handler.await;
@@ -138,7 +138,7 @@
 //!     .await?
 //!     .respond_with_concurrent(
 //!         Some(4), // Process up to 4 requests concurrently
-//!         |req| async move {
+//!         |(_, req)| async move {
 //!             // Simulate some async work
 //!             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 //!
@@ -232,6 +232,7 @@ where
 {
     pub request_id: request_response::InboundRequestId,
     pub channel: request_response::ResponseChannel<<TCodec as request_response::Codec>::Response>,
+    pub peer_id: PeerId,
     pub request: <TCodec as request_response::Codec>::Request,
 }
 
@@ -403,7 +404,11 @@ where
     ) -> impl Future<Output = ()>
     where
         TInterface: Clone + Send + Sync + 'static,
-        F: Fn(<TCodec as request_response::Codec>::Request) -> Fut + Clone + Send + Sync + 'static,
+        F: Fn((PeerId, <TCodec as request_response::Codec>::Request)) -> Fut
+            + Clone
+            + Send
+            + Sync
+            + 'static,
         Fut: Future<Output = <TCodec as request_response::Codec>::Response> + Send + 'static,
     {
         let interface = self.interface.clone();
@@ -421,7 +426,8 @@ where
             async move {
                 match result {
                     Ok(inbound_request) => {
-                        let response = handler(inbound_request.request).await;
+                        let response =
+                            handler((inbound_request.peer_id, inbound_request.request)).await;
 
                         if let Err(e) = interface
                             .respond(
@@ -627,6 +633,7 @@ where
                                 .send(Ok(InboundRequest {
                                     request_id,
                                     channel,
+                                    peer_id: peer,
                                     request,
                                 }))
                                 .await
