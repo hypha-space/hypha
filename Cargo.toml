@@ -22,6 +22,7 @@ edition = "2024"
 
 [workspace.dependencies]
 async-trait = "0.1.88"
+ciborium = "0.2.2"
 clap = { version = "4.5.31", features = ["derive"] }
 futures-rustls = { version = "0.26.0", default-features = false }
 futures-util = "0.3"
@@ -63,6 +64,7 @@ tokio = { version = "1.43.0", features = [
 tokio-stream = { version = "0.1.17", features = ["sync"] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
+uuid = { version = "1.17.0", features = ["serde", "v4"] }
 webpki = { version = "0.103", package = "rustls-webpki", features = ["std"] }
 x509-parser = "0.16"
 

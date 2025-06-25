@@ -6,6 +6,7 @@ edition.workspace = true
 license = "Apache-2.0"
 
 [dependencies]
+ciborium.workspace = true
 clap.workspace = true
 futures-util.workspace = true
 hypha-api.workspace = true
