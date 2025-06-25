@@ -15,7 +15,13 @@ use tracing_subscriber::EnvFilter;
 use crate::network::Network;
 
 #[derive(Debug, Parser)]
-#[clap(name = "hypha")]
+#[command(
+    name = "hypha-scheduler",
+    version,
+    about = "Hypha Scheduler",
+    long_about = "Runs the Hypha Scheduler coordinating workers.",
+    after_help = "For more information, see the project documentation."
+)]
 struct Opt {
     #[clap(long)]
     cert_file: PathBuf,

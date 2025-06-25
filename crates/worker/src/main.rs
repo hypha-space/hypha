@@ -15,7 +15,13 @@ use tracing_subscriber::EnvFilter;
 use crate::network::Network;
 
 #[derive(Debug, Parser)]
-#[clap(name = "hypha")]
+#[command(
+    name = "hypha-worker",
+    version,
+    about = "Hypha Worker Node",
+    long_about = "Runs a Hypha Worker which executes tasks.",
+    after_help = "For more information, see the project documentation."
+)]
 struct Opt {
     #[clap(long)]
     cert_file: PathBuf,
