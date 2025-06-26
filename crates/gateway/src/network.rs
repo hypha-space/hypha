@@ -146,12 +146,8 @@ impl SwarmDriver<Behaviour> for NetworkDriver {
                             tracing::info!(address=%address, "New listen address");
                             self.process_new_listen_addr(&listener_id).await;
                         }
-                        SwarmEvent::Behaviour(BehaviourEvent::Identify(identify::Event::Received { peer_id, info, .. })) => {
-                            // Add known addresses of peers to the Kademlia routing table
-                            tracing::debug!(peer_id=%peer_id, info=?info, "Adding address to Kademlia routing table");
-                            for addr in info.listen_addrs {
-                                self.swarm.behaviour_mut().kademlia.add_address(&peer_id, addr);
-                            }
+                        SwarmEvent::Behaviour(BehaviourEvent::Identify(event)) => {
+                            self.process_identify_event(event);
                         }
                         SwarmEvent::Behaviour(BehaviourEvent::Kademlia(kad::Event::OutboundQueryProgressed {id,  result, step, ..})) => {
                             self.process_kademlia_query_result(id, result, step).await;

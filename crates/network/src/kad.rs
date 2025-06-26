@@ -5,7 +5,7 @@ use std::{
 };
 
 use libp2p::{
-    PeerId,
+    PeerId, identify,
     kad::{
         self, PeerInfo, QueryId,
         store::{self, MemoryStore},
@@ -234,6 +234,40 @@ where
             }
             other => {
                 tracing::debug!("Unhandled Kademlia Queryresult: {:?}", other);
+            }
+        }
+    }
+
+    /// Process Identify::Events and add the peer's listen addresses
+    /// to the Kademlia routing table. This improves peer discovery and
+    /// the overall health of the DHT.
+    fn process_identify_event(&mut self, event: identify::Event) {
+        match event {
+            identify::Event::Received { peer_id, info, .. } => {
+                // NOTE: Add known addresses of peers to the Kademlia routing table
+                tracing::debug!(peer_id=%peer_id, info=?info, "Adding address to Kademlia routing table");
+                for addr in info.listen_addrs {
+                    self.swarm()
+                        .behaviour_mut()
+                        .kademlia()
+                        .add_address(&peer_id, addr);
+                }
+            }
+            identify::Event::Sent { peer_id, .. } => {
+                tracing::trace!(peer_id=%peer_id, "Sent identify info to peer");
+            }
+            identify::Event::Pushed { peer_id, info, .. } => {
+                tracing::debug!(peer_id=%peer_id, info=?info, "Received identify push from peer");
+                // NOTE: Handle pushed identify info similar to received info
+                for addr in info.listen_addrs {
+                    self.swarm()
+                        .behaviour_mut()
+                        .kademlia()
+                        .add_address(&peer_id, addr);
+                }
+            }
+            identify::Event::Error { peer_id, error, .. } => {
+                tracing::warn!(peer_id=%peer_id, error=?error, "Identify protocol error");
             }
         }
     }
