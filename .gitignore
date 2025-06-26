@@ -46,3 +46,4 @@ secrets*
 *.sublime-workspace
 *.swp
 *~
+.backup/
