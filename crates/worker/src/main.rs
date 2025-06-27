@@ -1,3 +1,5 @@
+mod driver;
+mod file_transfer;
 mod network;
 
 use std::{error::Error, fs, net::SocketAddr, path::PathBuf, time::Duration};
@@ -10,12 +12,15 @@ use hypha_network::{
     gossipsub::GossipsubInterface,
     listen::ListenInterface,
     request_response::{RequestResponseInterface, RequestResponseInterfaceExt},
+    stream::StreamReceiverInterface,
     swarm::SwarmDriver,
     utils::multiaddr_from_socketaddr,
 };
+use tokio::signal::unix::{SignalKind, signal};
+use tokio_util::sync::CancellationToken;
 use tracing_subscriber::EnvFilter;
 
-use crate::network::Network;
+use crate::{file_transfer::receive_file, network::Network};
 
 #[derive(Clone, Debug, ValueEnum)]
 enum Role {
@@ -44,6 +49,9 @@ struct Opt {
     gateway_address: SocketAddr,
     #[clap(long, default_value = "[::1]:0")]
     listen_address: SocketAddr,
+    /// Socket to use for driver communication.
+    #[clap(long, default_value = "/tmp/hypha.sock")]
+    socket: PathBuf,
     /// Role of the worker in DiLoCo tasks.
     #[arg(value_enum)]
     role: Role,
@@ -77,7 +85,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let gateway_address = multiaddr_from_socketaddr(opt.gateway_address)?;
 
     let (network, network_driver) = Network::create(cert_chain, private_key, ca_certs, crls)?;
-    tokio::spawn(network_driver.run());
+    let driver_future = tokio::spawn(network_driver.run());
 
     network
         .listen(multiaddr_from_socketaddr(opt.listen_address)?)
@@ -93,30 +101,60 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // TODO: Provide a way to wait for this event
     tokio::time::sleep(Duration::from_secs(2)).await;
 
+    let token = CancellationToken::new();
+
+    let work_dir = tempfile::tempdir()?;
+
+    let driver = driver::try_new(
+        network.clone(),
+        opt.socket.as_path(),
+        work_dir.path(),
+        token.clone(),
+    )
+    .await?;
+
     let handler = network
         .on(|req: &hypha_api::Request| matches!(req, hypha_api::Request::Scheduler(_)))
         .into_stream()
         .await?;
 
-    let handler_future = handler.respond_with_concurrent(None, |(peer_id, req)| {
-        async move {
-            match req {
-                hypha_api::Request::Scheduler(scheduler) => match scheduler {
-                    hypha_api::SchedulerRequest::Work { task_id, .. } => {
-                        tracing::debug!(
-                            task_id = %task_id,
-                            peer_id = %peer_id,
-                            "Received work request"
-                        );
-                        // TODO: Implement the logic to handle the work request
-                        // ...
-                        hypha_api::Response::Scheduler(hypha_api::SchedulerResponse::Work {})
-                    }
-                },
-                _ => {
-                    panic!("Unexpected request received");
+    let handler_future = {
+        let driver = driver.clone();
+        handler.respond_with_concurrent(None, move |(peer_id, req)| {
+            let mut driver = driver.clone();
+            async move {
+                match req {
+                    hypha_api::Request::Scheduler(scheduler) => match scheduler {
+                        hypha_api::SchedulerRequest::Work {
+                            task_id,
+                            parameter_server_peer_id,
+                        } => {
+                            tracing::info!(
+                                task_id = %task_id,
+                                peer_id = %peer_id,
+                                "Received work request"
+                            );
+
+                            driver
+                                .start_training(peer_id, parameter_server_peer_id, task_id)
+                                .await;
+
+                            hypha_api::Response::Scheduler(hypha_api::SchedulerResponse::Work {})
+                        }
+                    },
+                    _ => panic!("Unexpected request received"),
                 }
             }
+        })
+    };
+
+    let mut tensor_stream = network.streams().unwrap();
+
+    let stream_future = tokio::spawn(async move {
+        while let Some((peer_id, mut stream)) = tensor_stream.next().await {
+            tracing::debug!(peer_id = %peer_id, "Received tensor stream");
+
+            receive_file(work_dir.path(), &mut stream).await.unwrap();
         }
     });
 
@@ -147,10 +185,35 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     });
 
+    let mut sigterm = signal(SignalKind::terminate())?;
+
     tokio::select! {
-        _ = handler_future => {}
-        _ = announce_future => {}
+        _ = tokio::signal::ctrl_c() => {
+            tracing::info!("Received SIGINT, shutting down");
+        }
+        _ = sigterm.recv() => {
+            tracing::info!("Received SIGTERM, shutting down");
+        }
+        // All of these futures handle streams of events.
+        // If any of them terminate on their own, it must be due to an error.
+        // We warn about that, then shut down gracefully.
+        // TODO: Log errors if futures return one.
+        _ = driver_future => {
+            tracing::warn!("Network driver error, shutting down");
+        }
+        _ = handler_future => {
+            tracing::warn!("Network driver error, shutting down");
+        }
+        _ = announce_future => {
+            tracing::warn!("Network driver error, shutting down");
+        }
+        _ = stream_future => {
+            tracing::warn!("Network driver error, shutting down");
+        }
     }
+
+    token.cancel();
+    driver.wait().await;
 
     Ok(())
 }
