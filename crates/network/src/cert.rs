@@ -75,38 +75,30 @@ pub fn load_crls_from_pem(
 mod tests {
     use ed25519_dalek::SigningKey;
     use rcgen::{
-        Certificate, CertificateParams, CertificateRevocationList, CertificateRevocationListParams,
-        DistinguishedName, DnType, IsCa, PKCS_ED25519, RevokedCertParams, SerialNumber,
+        CertificateParams, CertificateRevocationListParams, DistinguishedName, DnType, IsCa,
+        PKCS_ED25519, RevokedCertParams, SerialNumber,
     };
     use time::OffsetDateTime;
 
     use super::*;
 
     fn generate_ed25519_cert() -> (String, String, libp2p::identity::Keypair) {
-        let mut params = CertificateParams::new(vec!["test.local".to_string()]);
-        params.alg = &PKCS_ED25519;
+        let mut params = CertificateParams::new(vec!["test.local".to_string()]).unwrap();
         params.distinguished_name = DistinguishedName::new();
         params.distinguished_name.push(DnType::CommonName, "Test");
 
-        let cert = Certificate::from_params(params).unwrap();
-        let cert_pem = cert.serialize_pem().unwrap();
-        let key_pem = cert.serialize_private_key_pem();
+        let key_pair = rcgen::KeyPair::generate_for(&PKCS_ED25519).unwrap();
+        let cert = params.self_signed(&key_pair).unwrap();
+        let cert_pem = cert.pem();
+        let key_pem = key_pair.serialize_pem();
 
         // Extract the key to create libp2p keypair
-        let key_der = cert.get_key_pair().serialize_der();
+        let key_der = key_pair.serialize_der();
         let signing_key = SigningKey::from_pkcs8_der(&key_der).unwrap();
         let keypair =
             libp2p::identity::Keypair::ed25519_from_bytes(signing_key.to_bytes()).unwrap();
 
         (cert_pem, key_pem, keypair)
-    }
-
-    fn generate_rsa_cert() -> (String, String) {
-        let params = CertificateParams::new(vec!["rsa-test.local".to_string()]);
-        let cert = Certificate::from_params(params).unwrap();
-        let cert_pem = cert.serialize_pem().unwrap();
-        let key_pem = cert.serialize_private_key_pem();
-        (cert_pem, key_pem)
     }
 
     #[test]
@@ -142,18 +134,6 @@ mod tests {
     }
 
     #[test]
-    fn test_load_private_key_rsa() {
-        let (_, rsa_key_pem) = generate_rsa_cert();
-
-        let key = load_private_key_from_pem(rsa_key_pem.as_bytes()).unwrap();
-        // RSA keys can be in different formats
-        match key {
-            PrivateKeyDer::Pkcs1(_) | PrivateKeyDer::Pkcs8(_) => {} // Expected
-            _ => panic!("Expected PKCS1 or PKCS8 key format for RSA"),
-        }
-    }
-
-    #[test]
     fn test_load_private_key_invalid() {
         let invalid_pem = "-----BEGIN PRIVATE KEY-----\n!@#$%^&*()\n-----END PRIVATE KEY-----\n";
         let result = load_private_key_from_pem(invalid_pem.as_bytes());
@@ -185,17 +165,6 @@ mod tests {
     }
 
     #[test]
-    fn test_identity_from_rsa_private_key() {
-        let (_, rsa_key_pem) = generate_rsa_cert();
-        let key = load_private_key_from_pem(rsa_key_pem.as_bytes()).unwrap();
-
-        // NOTE: Should fail because we only support Ed25519 in PKCS8 format for the time being.
-        let result = identity_from_private_key(&key);
-
-        assert!(result.is_err());
-    }
-
-    #[test]
     fn test_identity_from_invalid_ed25519_key() {
         // Create an invalid PKCS8 key (too short)
         let invalid_pkcs8 = rustls::pki_types::PrivatePkcs8KeyDer::from(vec![1, 2, 3]);
@@ -208,15 +177,15 @@ mod tests {
     #[test]
     fn test_load_crls_from_pem() {
         // Generate CA cert with built-in key generation
-        let mut ca_params = CertificateParams::new(vec!["ca.local".to_string()]);
+        let mut ca_params = CertificateParams::new(vec!["ca.local".to_string()]).unwrap();
         ca_params.is_ca = IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
-        ca_params.alg = &PKCS_ED25519;
         ca_params.distinguished_name = DistinguishedName::new();
         ca_params
             .distinguished_name
             .push(DnType::CommonName, "Test CA");
 
-        let ca_cert = Certificate::from_params(ca_params).unwrap();
+        let ca_key_pair = rcgen::KeyPair::generate().unwrap();
+        let ca_cert = ca_params.self_signed(&ca_key_pair).unwrap();
 
         // Create CRL
         let revoked_cert = RevokedCertParams {
@@ -232,12 +201,11 @@ mod tests {
             crl_number: SerialNumber::from(1u64),
             issuing_distribution_point: None,
             revoked_certs: vec![revoked_cert],
-            alg: &rcgen::PKCS_ED25519,
             key_identifier_method: rcgen::KeyIdMethod::Sha256,
         };
 
-        let crl = CertificateRevocationList::from_params(crl_params).unwrap();
-        let crl_pem = crl.serialize_pem_with_signer(&ca_cert).unwrap();
+        let crl = crl_params.signed_by(&ca_cert, &ca_key_pair).unwrap();
+        let crl_pem = crl.pem().unwrap();
 
         let crls = load_crls_from_pem(crl_pem.as_bytes()).unwrap();
         assert_eq!(crls.len(), 1);

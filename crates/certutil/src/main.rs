@@ -67,7 +67,7 @@ use std::{
 use clap::{Parser, Subcommand};
 use rcgen::{
     BasicConstraints, Certificate, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa,
-    KeyPair, KeyUsagePurpose,
+    KeyPair, KeyUsagePurpose, PKCS_ECDSA_P256_SHA256,
 };
 use thiserror::Error;
 use time::{Duration, OffsetDateTime};
@@ -166,12 +166,7 @@ enum Commands {
         /// Subject Alternative Names (SANs) - DNS names, IPs, etc.
         /// Format: comma-separated list of DNS names and IP addresses
         /// The common name will be automatically added if not present
-        #[arg(
-            short,
-            long,
-            value_delimiter = ',',
-            default_value = "localhost,127.0.0.1,0.0.0.0"
-        )]
+        #[arg(short, long, value_delimiter = ',', default_value = "0.0.0.0")]
         san: Vec<String>,
 
         /// Directory to save the certificate and key files
@@ -184,8 +179,8 @@ enum Commands {
 fn generate_root_ca_certificate(
     common_name: &str,
     organization: &str,
-) -> Result<Certificate, CertError> {
-    let mut params = CertificateParams::new(vec![]);
+) -> Result<(Certificate, KeyPair), CertError> {
+    let mut params = CertificateParams::new(vec![])?;
     params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
     params.distinguished_name.push(DnType::CountryName, "US");
     params
@@ -202,28 +197,26 @@ fn generate_root_ca_certificate(
         KeyUsagePurpose::CrlSign,
     ];
 
-    // Set validity period (10 years for root CA)
+    // Set validity period (10 years from yesterday to avoid clock skew)
     let now = OffsetDateTime::now_utc();
-    // Valid from yesterday to avoid clock skew
     params.not_before = now - Duration::days(1);
     params.not_after = now + Duration::days(3650);
 
-    // Set algorithm to Ed25519
-    params.alg = &rcgen::PKCS_ED25519;
+    let key_pair = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256)?;
+    let cert = params.self_signed(&key_pair)?;
 
-    let key_pair = KeyPair::generate(&rcgen::PKCS_ED25519)?;
-    params.key_pair = Some(key_pair);
-
-    Certificate::from_params(params).map_err(|e| e.into())
+    Ok((cert, key_pair))
 }
 
 /// Generate an Organization CA certificate signed by Root CA
 fn generate_org_certificate(
     organization_name: &str,
     common_name: &str,
-) -> Result<Certificate, CertError> {
-    let mut params = CertificateParams::new(vec![]);
-    params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0)); // pathlen:0
+    root_cert: &Certificate,
+    root_key: &KeyPair,
+) -> Result<(Certificate, KeyPair), CertError> {
+    let mut params = CertificateParams::new(vec![])?;
+    params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
     params.distinguished_name.push(DnType::CountryName, "US");
     params
         .distinguished_name
@@ -232,35 +225,31 @@ fn generate_org_certificate(
         .distinguished_name
         .push(DnType::CommonName, common_name);
 
-    // Key usage for Intermediate CA
     params.key_usages = vec![
         KeyUsagePurpose::DigitalSignature,
         KeyUsagePurpose::KeyCertSign,
         KeyUsagePurpose::CrlSign,
     ];
 
-    // Set validity period (5 years for org CAs)
+    // Set validity period (5 years from yesterday to avoid clock skew)
     let now = OffsetDateTime::now_utc();
-
-    // Valid from yesterday to avoid clock skew
     params.not_before = now - Duration::days(1);
     params.not_after = now + Duration::days(1825);
 
-    // Set algorithm to Ed25519
-    params.alg = &rcgen::PKCS_ED25519;
+    let key_pair = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256)?;
+    let cert = params.signed_by(&key_pair, root_cert, root_key)?;
 
-    let key_pair = KeyPair::generate(&rcgen::PKCS_ED25519)?;
-    params.key_pair = Some(key_pair);
-
-    Certificate::from_params(params).map_err(|e| e.into())
+    Ok((cert, key_pair))
 }
 
 /// Generate a certificate signed by a CA
 fn generate_node_certificate(
     common_name: &str,
     san_names: Vec<String>,
-) -> Result<Certificate, CertError> {
-    let mut params = CertificateParams::new(san_names);
+    ca_cert: &Certificate,
+    ca_key: &KeyPair,
+) -> Result<(Certificate, KeyPair), CertError> {
+    let mut params = CertificateParams::new(san_names)?;
     params.distinguished_name.push(DnType::CountryName, "US");
     params
         .distinguished_name
@@ -269,7 +258,6 @@ fn generate_node_certificate(
         .distinguished_name
         .push(DnType::CommonName, common_name);
 
-    // Key usage for end-entity certificates
     params.key_usages = vec![
         KeyUsagePurpose::DigitalSignature,
         KeyUsagePurpose::KeyAgreement,
@@ -280,33 +268,37 @@ fn generate_node_certificate(
         ExtendedKeyUsagePurpose::ClientAuth,
     ];
 
-    // Set validity period (1 year for node certificates)
+    // NOTE: Set validity period (1 year from yesterday to avoid clock skew)
     let now = OffsetDateTime::now_utc();
-    // Valid from yesterday to avoid clock skew
     params.not_before = now - Duration::days(1);
     params.not_after = now + Duration::days(365);
 
-    // Set algorithm to Ed25519
-    params.alg = &rcgen::PKCS_ED25519;
+    let key_pair = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256)?;
+    let cert = params.signed_by(&key_pair, ca_cert, ca_key)?;
 
-    let key_pair = KeyPair::generate(&rcgen::PKCS_ED25519)?;
-    params.key_pair = Some(key_pair);
-
-    Certificate::from_params(params).map_err(|e| e.into())
+    Ok((cert, key_pair))
 }
 
 /// Load a certificate and key pair from PEM files
-fn load_ca_certificate(cert_path: &Path, key_path: &Path) -> Result<Certificate, CertError> {
+fn load_ca_certificate(
+    cert_path: &Path,
+    key_path: &Path,
+) -> Result<(Certificate, KeyPair), CertError> {
     let cert_pem = fs::read_to_string(cert_path)
         .map_err(|e| CertError::Load(format!("Failed to read certificate file: {e}")))?;
 
     let key_pem = fs::read_to_string(key_path)
         .map_err(|e| CertError::Load(format!("Failed to read key file: {e}")))?;
 
-    let params = CertificateParams::from_ca_cert_pem(&cert_pem, KeyPair::from_pem(&key_pem)?)
+    let key_pair = KeyPair::from_pem(&key_pem)
+        .map_err(|e| CertError::Load(format!("Failed to parse key: {e}")))?;
+
+    let params = CertificateParams::from_ca_cert_pem(&cert_pem)
         .map_err(|e| CertError::Load(format!("Failed to parse certificate: {e}")))?;
 
-    Certificate::from_params(params).map_err(|e| e.into())
+    let cert = params.self_signed(&key_pair)?;
+
+    Ok((cert, key_pair))
 }
 
 fn main() -> Result<(), CertError> {
@@ -325,7 +317,7 @@ fn main() -> Result<(), CertError> {
             let common_name = name.unwrap_or_else(|| format!("{organization} CA"));
 
             println!("Generating Root CA certificate...");
-            let cert = generate_root_ca_certificate(&common_name, &organization)?;
+            let (cert, key_pair) = generate_root_ca_certificate(&common_name, &organization)?;
 
             // Turn the (common) name into a valid file name for the certificate and key
             let file_name = common_name
@@ -336,8 +328,8 @@ fn main() -> Result<(), CertError> {
             let cert_out = dir.join(format!("{file_name}-cert.pem"));
             let key_out = dir.join(format!("{file_name}-key.pem"));
 
-            fs::write(&cert_out, cert.serialize_pem()?)?;
-            fs::write(&key_out, cert.serialize_private_key_pem())?;
+            fs::write(&cert_out, cert.pem())?;
+            fs::write(&key_out, key_pair.serialize_pem())?;
 
             println!("Root CA certificate saved to: {}", cert_out.display());
             println!("Root CA private key saved to: {}", key_out.display());
@@ -359,16 +351,14 @@ fn main() -> Result<(), CertError> {
             println!("Generating Organization CA certificate...");
 
             // Load root CA certificate and key
-            let root_ca = load_ca_certificate(&root_cert, &root_key)?;
+            let (root_ca_cert, root_ca_key) = load_ca_certificate(&root_cert, &root_key)?;
 
             // Use provided name or default to "<org> CA"
             let common_name = name.unwrap_or_else(|| format!("{organization} CA"));
 
             // Generate org certificate
-            let org_cert = generate_org_certificate(&organization, &common_name)?;
-
-            // Sign the certificate with the root CA and get PEM directly
-            let signed_cert_pem = org_cert.serialize_pem_with_signer(&root_ca)?;
+            let (org_cert, org_key) =
+                generate_org_certificate(&organization, &common_name, &root_ca_cert, &root_ca_key)?;
 
             // Create filename from organization name
             let file_name = organization
@@ -380,8 +370,8 @@ fn main() -> Result<(), CertError> {
             let key_out = dir.join(format!("{file_name}-ca-key.pem"));
 
             // Write the signed certificate and private key
-            fs::write(&cert_out, signed_cert_pem)?;
-            fs::write(&key_out, org_cert.serialize_private_key_pem())?;
+            fs::write(&cert_out, org_cert.pem())?;
+            fs::write(&key_out, org_key.serialize_pem())?;
 
             println!(
                 "Organization CA certificate saved to: {}",
@@ -409,7 +399,7 @@ fn main() -> Result<(), CertError> {
             println!("Generating node certificate...");
 
             // Load CA certificate and key
-            let ca = load_ca_certificate(&ca_cert, &ca_key)?;
+            let (ca_cert_obj, ca_key_obj) = load_ca_certificate(&ca_cert, &ca_key)?;
 
             // Generate node certificate
             let mut san_names = san;
@@ -418,10 +408,8 @@ fn main() -> Result<(), CertError> {
                 san_names.push(name.clone());
             }
 
-            let node_cert = generate_node_certificate(&name, san_names.clone())?;
-
-            // Sign the certificate with the CA and get PEM directly
-            let signed_cert_pem = node_cert.serialize_pem_with_signer(&ca)?;
+            let (node_cert, node_key) =
+                generate_node_certificate(&name, san_names.clone(), &ca_cert_obj, &ca_key_obj)?;
 
             // Create filename from common name
             let file_name = name
@@ -438,11 +426,11 @@ fn main() -> Result<(), CertError> {
             let ca_cert_pem = fs::read_to_string(&ca_cert)?;
 
             // Write individual certificate and key
-            fs::write(&cert_out, &signed_cert_pem)?;
-            fs::write(&key_out, node_cert.serialize_private_key_pem())?;
+            fs::write(&cert_out, node_cert.pem())?;
+            fs::write(&key_out, node_key.serialize_pem())?;
 
             // Create certificate chain (node cert + CA cert)
-            let chain_pem = format!("{signed_cert_pem}{ca_cert_pem}");
+            let chain_pem = format!("{}{}", node_cert.pem(), ca_cert_pem);
             fs::write(&chain_out, chain_pem)?;
 
             println!("Node certificate saved to: {}", cert_out.display());
@@ -451,21 +439,6 @@ fn main() -> Result<(), CertError> {
             println!("\nCertificate details:");
             println!("  Common Name: {name}");
             println!("  SANs: {}", san_names.join(", "));
-
-            // If we can find a root CA cert, create full chain
-            if let Some(parent) = ca_cert.parent() {
-                let root_cert_path = parent.join("hypha-space-root-ca-cert.pem");
-                if root_cert_path.exists() {
-                    let root_cert_pem = fs::read_to_string(&root_cert_path)?;
-                    let fullchain_out = dir.join(format!("{file_name}-fullchain.pem"));
-                    let fullchain_pem = format!("{signed_cert_pem}{ca_cert_pem}{root_cert_pem}");
-                    fs::write(&fullchain_out, fullchain_pem)?;
-                    println!(
-                        "Full certificate chain saved to: {}",
-                        fullchain_out.display()
-                    );
-                }
-            }
         }
     }
 
