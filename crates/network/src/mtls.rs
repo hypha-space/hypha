@@ -126,7 +126,7 @@ impl Config {
         let mut root_store = RootCertStore::empty();
         for ca_cert in &ca_certs {
             root_store.add(ca_cert.clone()).map_err(|e| {
-                UpgradeError::TlsConfiguration(format!("Failed to add CA cert: {}", e))
+                UpgradeError::TlsConfiguration(format!("Failed to add CA cert: {e}"))
             })?;
         }
 
@@ -135,15 +135,13 @@ impl Config {
             .with_crls(crls)
             .build()
             .map_err(|e| {
-                UpgradeError::TlsConfiguration(format!("Failed to create client verifier: {}", e))
+                UpgradeError::TlsConfiguration(format!("Failed to create client verifier: {e}"))
             })?;
 
         ServerConfig::builder()
             .with_client_cert_verifier(client_verifier)
             .with_single_cert(cert_chain, private_key)
-            .map_err(|e| {
-                UpgradeError::TlsConfiguration(format!("Failed to configure server: {}", e))
-            })
+            .map_err(|e| UpgradeError::TlsConfiguration(format!("Failed to configure server: {e}")))
     }
 
     fn make_client_config(
@@ -156,7 +154,7 @@ impl Config {
         let mut root_store = RootCertStore::empty();
         for ca_cert in &ca_certs {
             root_store.add(ca_cert.clone()).map_err(|e| {
-                UpgradeError::TlsConfiguration(format!("Failed to add CA cert: {}", e))
+                UpgradeError::TlsConfiguration(format!("Failed to add CA cert: {e}"))
             })?;
         }
 
@@ -168,9 +166,7 @@ impl Config {
         ClientConfig::builder()
             .with_root_certificates(root_store)
             .with_client_auth_cert(cert_chain, private_key)
-            .map_err(|e| {
-                UpgradeError::TlsConfiguration(format!("Failed to configure client: {}", e))
-            })
+            .map_err(|e| UpgradeError::TlsConfiguration(format!("Failed to configure client: {e}")))
     }
 }
 
@@ -272,10 +268,7 @@ fn extract_peer_id_from_tls_state(state: &CommonState) -> Result<PeerId, Upgrade
     // 1. Parse the certificate using rustls-webpki
     // rustls_webpki::EndEntityCert::try_from takes &[u8]
     let end_entity_cert = EndEntityCert::try_from(cert_der).map_err(|e| {
-        UpgradeError::TlsConfiguration(format!(
-            "Failed to parse peer certificate with webpki: {}",
-            e
-        ))
+        UpgradeError::TlsConfiguration(format!("Failed to parse peer certificate with webpki: {e}"))
     })?;
 
     // 2. Get the SubjectPublicKeyInfo (SPKI) DER bytes

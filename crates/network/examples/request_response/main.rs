@@ -88,7 +88,7 @@ async fn server(args: Args, listen_addr: &str) -> Result<(), Box<dyn Error>> {
                 match req {
                     ExampleRequest::Ping(msg) => {
                         tracing::info!("Received ping: {}", msg);
-                        ExampleResponse::Pong(format!("Pong: {}", msg))
+                        ExampleResponse::Pong(format!("Pong: {msg}"))
                     }
                     ExampleRequest::Echo(msg) => {
                         tracing::info!("Received echo: {}", msg);
@@ -163,10 +163,10 @@ async fn create_network(args: Args) -> Result<(Network, NetworkDriver), Box<dyn 
     };
 
     let identity = hypha_network::cert::identity_from_private_key(&private_key)
-        .map_err(|e| format!("Failed to create identity: {}", e))?;
+        .map_err(|e| format!("Failed to create identity: {e}"))?;
 
     let mtls_config = mtls::Config::try_new(cert_chain, private_key, ca_certs, crls)
-        .map_err(|e| format!("Failed to create mTLS config: {}", e))?;
+        .map_err(|e| format!("Failed to create mTLS config: {e}"))?;
 
     let swarm = SwarmBuilder::with_existing_identity(identity)
         .with_tokio()

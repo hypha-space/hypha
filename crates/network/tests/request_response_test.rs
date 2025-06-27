@@ -64,11 +64,8 @@ impl SwarmDriver<TestBehaviour> for TestDriver {
         loop {
             tokio::select! {
                 event = self.swarm.select_next_some() => {
-                    match event {
-                        SwarmEvent::Behaviour(TestBehaviourEvent::RequestResponse(event)) => {
-                            self.process_request_response_event(event).await;
-                        }
-                        _ => {}
+                    if let SwarmEvent::Behaviour(TestBehaviourEvent::RequestResponse(event)) = event {
+                        self.process_request_response_event(event).await;
                     }
                 }
                 Some(action) = self.action_rx.recv() => {
@@ -103,6 +100,7 @@ struct TestInterface {
 
 impl TestInterface {
     fn create(swarm: Swarm<TestBehaviour>) -> (Self, TestDriver) {
+        #![allow(clippy::disallowed_methods)]
         let (action_tx, action_rx) = mpsc::unbounded_channel();
 
         let driver = TestDriver {
@@ -174,7 +172,7 @@ async fn test_simple_request_response() {
         handler
             .respond_with_concurrent(Some(1), |(_, req)| async move {
                 match req {
-                    TestRequest::Ping(msg) => TestResponse::Pong(format!("Got: {}", msg)),
+                    TestRequest::Ping(msg) => TestResponse::Pong(format!("Got: {msg}")),
                     _ => unreachable!(),
                 }
             })
@@ -337,7 +335,7 @@ async fn test_concurrent_request_processing() {
 
     let max_seen = max_concurrent_seen.load(Ordering::SeqCst);
 
-    assert!(max_seen <= 3, "Max concurrent {} should be <= 3", max_seen);
+    assert!(max_seen <= 3, "Max concurrent {max_seen} should be <= 3");
     assert!(max_seen >= 2, "Should have seen some concurrency");
 }
 
@@ -443,7 +441,7 @@ async fn test_handler_stream_manual_processing() {
                         .unwrap();
                 }
                 Err(e) => {
-                    eprintln!("Handler error: {:?}", e);
+                    eprintln!("Handler error: {e:?}");
                 }
             }
         }
@@ -510,8 +508,7 @@ async fn test_handler_unregistration() {
 
     assert!(
         matches!(result, Err(RequestResponseError::Request(_))),
-        "Unexpected Result: {:?}",
-        result
+        "Unexpected Result: {result:?}"
     );
 }
 
@@ -550,7 +547,7 @@ async fn test_duplicate_handlers() {
         handler1
             .respond_with_concurrent(Some(1), move |(_, req)| async move {
                 match req {
-                    TestRequest::Echo(msg) => TestResponse::Echo(format!("1: {}", msg)),
+                    TestRequest::Echo(msg) => TestResponse::Echo(format!("1: {msg}")),
                     _ => unreachable!(),
                 }
             })
@@ -561,7 +558,7 @@ async fn test_duplicate_handlers() {
         handler2
             .respond_with_concurrent(Some(1), move |(_, req)| async move {
                 match req {
-                    TestRequest::Echo(msg) => TestResponse::Echo(format!("2: {}", msg)),
+                    TestRequest::Echo(msg) => TestResponse::Echo(format!("2: {msg}")),
                     _ => unreachable!(),
                 }
             })
@@ -573,7 +570,7 @@ async fn test_duplicate_handlers() {
         let interface1_clone = interface1.clone();
         let future = tokio::spawn(async move {
             interface1_clone
-                .request(peer2, TestRequest::Echo(format!("msg{}", i)))
+                .request(peer2, TestRequest::Echo(format!("msg{i}")))
                 .await
         });
         response_futures.push(future);
@@ -673,8 +670,7 @@ async fn test_concurrent_request_handling() {
 
     assert!(
         max_seen >= 2,
-        "Should have seen some concurrency, but max was {}",
-        max_seen
+        "Should have seen some concurrency, but max was {max_seen}"
     );
 }
 
@@ -701,8 +697,7 @@ async fn test_request_without_handlers() {
 
     assert!(
         matches!(result, Err(RequestResponseError::Request(_))),
-        "Unexpected Response: {:?}",
-        result
+        "Unexpected Response: {result:?}"
     );
 }
 
@@ -749,8 +744,7 @@ async fn test_request_after_disconnect() {
 
     assert!(
         matches!(result, Err(RequestResponseError::Request(_))),
-        "Unexpected Response: {:?}",
-        result
+        "Unexpected Response: {result:?}"
     );
     driver1_handle.abort();
     handler_task.abort();

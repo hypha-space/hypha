@@ -66,8 +66,7 @@ pub trait ListenInterface: Sync {
 
             rx.await.map_err(|err| {
                 TransportError::Other(IoError::other(format!(
-                    "Failed to recieve action response: {}",
-                    err
+                    "Failed to recieve action response: {err}"
                 )))
             })?
         }

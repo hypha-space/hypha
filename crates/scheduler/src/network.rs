@@ -83,11 +83,11 @@ impl Network {
 
         // Create a libp2p identity keypair from provided private key.
         let identity = cert::identity_from_private_key(&private_key)
-            .map_err(|e| HyphaError::SwarmError(format!("Failed to create identity: {}", e)))?;
+            .map_err(|e| HyphaError::SwarmError(format!("Failed to create identity: {e}")))?;
 
         // Create mTLS config
         let mtls_config = mtls::Config::try_new(cert_chain, private_key, ca_certs, crls)
-            .map_err(|e| HyphaError::SwarmError(format!("Failed to create mTLS config: {}", e)))?;
+            .map_err(|e| HyphaError::SwarmError(format!("Failed to create mTLS config: {e}")))?;
 
         // Build libp2p Swarm using the derived identity and mTLS config
         let swarm = SwarmBuilder::with_existing_identity(identity)

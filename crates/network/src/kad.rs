@@ -60,12 +60,12 @@ impl Error for KademliaError {
 impl Display for KademliaError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::GetProviders(msg) => write!(f, "Get Providers error: {}", msg),
-            Self::GetRecord(msg) => write!(f, "Get Record error: {}", msg),
-            Self::Store(msg) => write!(f, "Store error: {}", msg),
-            Self::PutRecord(msg) => write!(f, "Put Record error: {}", msg),
-            Self::GetClosestPeers(msg) => write!(f, "Get Closest Peers error: {}", msg),
-            Self::Other(msg) => write!(f, "Other error: {}", msg),
+            Self::GetProviders(msg) => write!(f, "Get Providers error: {msg}"),
+            Self::GetRecord(msg) => write!(f, "Get Record error: {msg}"),
+            Self::Store(msg) => write!(f, "Store error: {msg}"),
+            Self::PutRecord(msg) => write!(f, "Put Record error: {msg}"),
+            Self::GetClosestPeers(msg) => write!(f, "Get Closest Peers error: {msg}"),
+            Self::Other(msg) => write!(f, "Other error: {msg}"),
         }
     }
 }
