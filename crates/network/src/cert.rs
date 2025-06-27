@@ -261,7 +261,7 @@ mod tests {
         let (cert1_pem, _, _) = generate_ed25519_cert();
         let (cert2_pem, _, _) = generate_ed25519_cert();
 
-        let combined_pem = format!("{}\n{}", cert1_pem, cert2_pem);
+        let combined_pem = format!("{cert1_pem}\n{cert2_pem}");
         let certs = load_certs_from_pem(combined_pem.as_bytes()).unwrap();
         assert_eq!(certs.len(), 2);
     }

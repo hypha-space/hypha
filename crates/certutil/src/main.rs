@@ -298,13 +298,13 @@ fn generate_node_certificate(
 /// Load a certificate and key pair from PEM files
 fn load_ca_certificate(cert_path: &Path, key_path: &Path) -> Result<Certificate, CertError> {
     let cert_pem = fs::read_to_string(cert_path)
-        .map_err(|e| CertError::Load(format!("Failed to read certificate file: {}", e)))?;
+        .map_err(|e| CertError::Load(format!("Failed to read certificate file: {e}")))?;
 
     let key_pem = fs::read_to_string(key_path)
-        .map_err(|e| CertError::Load(format!("Failed to read key file: {}", e)))?;
+        .map_err(|e| CertError::Load(format!("Failed to read key file: {e}")))?;
 
     let params = CertificateParams::from_ca_cert_pem(&cert_pem, KeyPair::from_pem(&key_pem)?)
-        .map_err(|e| CertError::Load(format!("Failed to parse certificate: {}", e)))?;
+        .map_err(|e| CertError::Load(format!("Failed to parse certificate: {e}")))?;
 
     Certificate::from_params(params).map_err(|e| e.into())
 }
@@ -322,7 +322,7 @@ fn main() -> Result<(), CertError> {
             dir,
         } => {
             // Use provided name or default to "<org> CA"
-            let common_name = name.unwrap_or_else(|| format!("{} CA", organization));
+            let common_name = name.unwrap_or_else(|| format!("{organization} CA"));
 
             println!("Generating Root CA certificate...");
             let cert = generate_root_ca_certificate(&common_name, &organization)?;
@@ -333,8 +333,8 @@ fn main() -> Result<(), CertError> {
                 .replace(" ", "-")
                 .replace("/", "-");
 
-            let cert_out = dir.join(format!("{}-cert.pem", file_name));
-            let key_out = dir.join(format!("{}-key.pem", file_name));
+            let cert_out = dir.join(format!("{file_name}-cert.pem"));
+            let key_out = dir.join(format!("{file_name}-key.pem"));
 
             fs::write(&cert_out, cert.serialize_pem()?)?;
             fs::write(&key_out, cert.serialize_private_key_pem())?;
@@ -362,7 +362,7 @@ fn main() -> Result<(), CertError> {
             let root_ca = load_ca_certificate(&root_cert, &root_key)?;
 
             // Use provided name or default to "<org> CA"
-            let common_name = name.unwrap_or_else(|| format!("{} CA", organization));
+            let common_name = name.unwrap_or_else(|| format!("{organization} CA"));
 
             // Generate org certificate
             let org_cert = generate_org_certificate(&organization, &common_name)?;
@@ -376,8 +376,8 @@ fn main() -> Result<(), CertError> {
                 .replace(" ", "-")
                 .replace("/", "-");
 
-            let cert_out = dir.join(format!("{}-ca-cert.pem", file_name));
-            let key_out = dir.join(format!("{}-ca-key.pem", file_name));
+            let cert_out = dir.join(format!("{file_name}-ca-cert.pem"));
+            let key_out = dir.join(format!("{file_name}-ca-key.pem"));
 
             // Write the signed certificate and private key
             fs::write(&cert_out, signed_cert_pem)?;
@@ -430,9 +430,9 @@ fn main() -> Result<(), CertError> {
                 .replace("/", "-")
                 .replace(".", "-");
 
-            let cert_out = dir.join(format!("{}-cert.pem", file_name));
-            let key_out = dir.join(format!("{}-key.pem", file_name));
-            let chain_out = dir.join(format!("{}-chain.pem", file_name));
+            let cert_out = dir.join(format!("{file_name}-cert.pem"));
+            let key_out = dir.join(format!("{file_name}-key.pem"));
+            let chain_out = dir.join(format!("{file_name}-chain.pem"));
 
             // Load CA certificate PEM for chain creation
             let ca_cert_pem = fs::read_to_string(&ca_cert)?;
@@ -442,14 +442,14 @@ fn main() -> Result<(), CertError> {
             fs::write(&key_out, node_cert.serialize_private_key_pem())?;
 
             // Create certificate chain (node cert + CA cert)
-            let chain_pem = format!("{}{}", signed_cert_pem, ca_cert_pem);
+            let chain_pem = format!("{signed_cert_pem}{ca_cert_pem}");
             fs::write(&chain_out, chain_pem)?;
 
             println!("Node certificate saved to: {}", cert_out.display());
             println!("Node private key saved to: {}", key_out.display());
             println!("Certificate chain saved to: {}", chain_out.display());
             println!("\nCertificate details:");
-            println!("  Common Name: {}", name);
+            println!("  Common Name: {name}");
             println!("  SANs: {}", san_names.join(", "));
 
             // If we can find a root CA cert, create full chain
@@ -457,9 +457,8 @@ fn main() -> Result<(), CertError> {
                 let root_cert_path = parent.join("hypha-space-root-ca-cert.pem");
                 if root_cert_path.exists() {
                     let root_cert_pem = fs::read_to_string(&root_cert_path)?;
-                    let fullchain_out = dir.join(format!("{}-fullchain.pem", file_name));
-                    let fullchain_pem =
-                        format!("{}{}{}", signed_cert_pem, ca_cert_pem, root_cert_pem);
+                    let fullchain_out = dir.join(format!("{file_name}-fullchain.pem"));
+                    let fullchain_pem = format!("{signed_cert_pem}{ca_cert_pem}{root_cert_pem}");
                     fs::write(&fullchain_out, fullchain_pem)?;
                     println!(
                         "Full certificate chain saved to: {}",
