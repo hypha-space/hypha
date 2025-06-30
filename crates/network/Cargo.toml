@@ -7,7 +7,6 @@ license = "Apache-2.0"
 
 [dependencies]
 async-trait.workspace = true
-ciborium.workspace = true
 ed25519-dalek = { version = "2.1", features = ["alloc", "pkcs8", "pem"] }
 futures-rustls.workspace = true
 futures-util.workspace = true
@@ -27,7 +26,7 @@ webpki.workspace = true
 [dev-dependencies]
 clap.workspace = true
 futures = "0.3.31"
-libp2p-swarm-test = { version = "0.5.0", features = ["tokio"] }
+libp2p-swarm-test = { version = "0.6.0", features = ["tokio"] }
 mockall.workspace = true
 proptest.workspace = true
 rcgen.workspace = true

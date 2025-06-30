@@ -8,12 +8,16 @@ use hypha_network::{
     error::HyphaError,
     listen::{ListenAction, ListenDriver, ListenInterface, PendingListens},
     mtls,
-    request_response::*,
+    request_response::{
+        OutboundRequests, OutboundResponses, RequestHandler, RequestResponseAction,
+        RequestResponseBehaviour, RequestResponseDriver, RequestResponseError,
+        RequestResponseInterface, RequestResponseInterfaceExt,
+    },
     swarm::SwarmDriver,
 };
 use libp2p::{
     Multiaddr, Swarm, SwarmBuilder,
-    request_response::{self, ProtocolSupport},
+    request_response::{self, ProtocolSupport, cbor::codec::Codec},
     swarm::{NetworkBehaviour, SwarmEvent},
     tcp, yamux,
 };
@@ -142,7 +146,7 @@ enum ExampleResponse {
     Echo(String),
 }
 
-type ExampleCodec = hypha_network::cbor_codec::Codec<ExampleRequest, ExampleResponse>;
+type ExampleCodec = Codec<ExampleRequest, ExampleResponse>;
 
 async fn create_network(args: Args) -> Result<(Network, NetworkDriver), Box<dyn Error>> {
     // Load certificates and private key
