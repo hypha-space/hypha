@@ -67,7 +67,7 @@ use std::{
 use clap::{Parser, Subcommand};
 use rcgen::{
     BasicConstraints, Certificate, CertificateParams, DnType, DnValue, ExtendedKeyUsagePurpose,
-    IsCa, KeyPair, KeyUsagePurpose, PKCS_ECDSA_P256_SHA256,
+    IsCa, KeyPair, KeyUsagePurpose, PKCS_ED25519,
 };
 use thiserror::Error;
 use time::{Duration, OffsetDateTime};
@@ -207,7 +207,7 @@ fn generate_root_ca_certificate(
     params.not_before = now - Duration::days(1);
     params.not_after = now + Duration::days(3650);
 
-    let key_pair = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256)?;
+    let key_pair = KeyPair::generate_for(&PKCS_ED25519)?;
     let cert = params.self_signed(&key_pair)?;
 
     Ok((cert, key_pair))
@@ -250,7 +250,7 @@ fn generate_org_certificate(
     params.not_before = now - Duration::days(1);
     params.not_after = now + Duration::days(1825);
 
-    let key_pair = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256)?;
+    let key_pair = KeyPair::generate_for(&PKCS_ED25519)?;
     let cert = params.signed_by(&key_pair, root_cert, root_key)?;
 
     Ok((cert, key_pair))
@@ -297,7 +297,7 @@ fn generate_node_certificate(
     params.not_before = now - Duration::days(1);
     params.not_after = now + Duration::days(365);
 
-    let key_pair = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256)?;
+    let key_pair = KeyPair::generate_for(&PKCS_ED25519)?;
     let cert = params.signed_by(&key_pair, ca_cert, ca_key)?;
 
     Ok((cert, key_pair))
