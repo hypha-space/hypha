@@ -333,10 +333,10 @@ fn main() -> Result<(), CertError> {
 
             println!("Root CA certificate saved to: {}", cert_out.display());
             println!("Root CA private key saved to: {}", key_out.display());
-            println!("\nNext steps:");
-            println!("  Generate an Organization CA:");
+            println!("\nNext generate an Organization CA:");
+            println!("  :");
             println!(
-                "    hypha-certutil org --root-cert {} --root-key {} -o <org-name>",
+                "hypha-certutil org --root-cert {} --root-key {} -o <org-name>",
                 cert_out.display(),
                 key_out.display()
             );
@@ -381,10 +381,9 @@ fn main() -> Result<(), CertError> {
                 "Organization CA private key saved to: {}",
                 key_out.display()
             );
-            println!("\nNext steps:");
-            println!("  Generate node certificates:");
+            println!("\nNext generate node certificates:");
             println!(
-                "    hypha-certutil node --ca-cert {} --ca-key {} -n <node-name>",
+                "hypha-certutil node --ca-cert {} --ca-key {} -n <node-name>",
                 cert_out.display(),
                 key_out.display()
             );
@@ -436,9 +435,6 @@ fn main() -> Result<(), CertError> {
             println!("Node certificate saved to: {}", cert_out.display());
             println!("Node private key saved to: {}", key_out.display());
             println!("Certificate chain saved to: {}", chain_out.display());
-            println!("\nCertificate details:");
-            println!("  Common Name: {name}");
-            println!("  SANs: {}", san_names.join(", "));
         }
     }
 
