@@ -111,7 +111,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     .await?;
 
     let handler = network
-        .on(|req: &hypha_api::Request| matches!(req, hypha_api::Request::Scheduler(_)))
+        .on(|req: &hypha_messages::Request| matches!(req, hypha_messages::Request::Scheduler(_)))
         .into_stream()
         .await?;
 
@@ -121,8 +121,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
             let mut driver = driver.clone();
             async move {
                 match req {
-                    hypha_api::Request::Scheduler(scheduler) => match scheduler {
-                        hypha_api::SchedulerRequest::Work {
+                    hypha_messages::Request::Scheduler(scheduler) => match scheduler {
+                        hypha_messages::SchedulerRequest::Work {
                             task_id,
                             parameter_server_peer_id,
                         } => {
@@ -136,7 +136,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                 .start_training(peer_id, parameter_server_peer_id, task_id)
                                 .await;
 
-                            hypha_api::Response::Scheduler(hypha_api::SchedulerResponse::Work {})
+                            hypha_messages::Response::Scheduler(
+                                hypha_messages::SchedulerResponse::Work {},
+                            )
                         }
                     },
                     _ => panic!("Unexpected request received"),
@@ -161,27 +163,27 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let announce_future = tokio::spawn(async move {
         while let Some(Ok(data)) = announce_stream.next().await {
-            let announce: hypha_api::RequestAnnounce = match ciborium::from_reader(data.as_slice())
-            {
-                Ok(announce) => announce,
-                Err(e) => {
-                    tracing::error!(error = ?e, "Failed to deserialize announce message");
-                    continue;
-                }
-            };
+            let announce: hypha_messages::RequestAnnounce =
+                match ciborium::from_reader(data.as_slice()) {
+                    Ok(announce) => announce,
+                    Err(e) => {
+                        tracing::error!(error = ?e, "Failed to deserialize announce message");
+                        continue;
+                    }
+                };
 
             tracing::debug!(
                 peer_id = %announce.scheduler_peer_id,
                 "Sending availability to scheduler"
             );
             let role = match opt.role {
-                Role::Worker => hypha_api::WorkerRole::TaskExecutor,
-                Role::ParameterServer => hypha_api::WorkerRole::ParameterExecutor,
+                Role::Worker => hypha_messages::WorkerRole::TaskExecutor,
+                Role::ParameterServer => hypha_messages::WorkerRole::ParameterExecutor,
             };
             let _ = network
                 .request(
                     announce.scheduler_peer_id,
-                    hypha_api::Request::Worker(hypha_api::WorkerRequest::Available {
+                    hypha_messages::Request::Worker(hypha_messages::WorkerRequest::Available {
                         task_id: announce.task_id,
                         role,
                     }),

@@ -42,14 +42,14 @@ impl Tasks {
 }
 
 pub struct Task {
-    workers: HashMap<PeerId, hypha_api::TaskStatus>,
+    workers: HashMap<PeerId, hypha_messages::TaskStatus>,
     parameter_servers: HashSet<PeerId>,
 }
 
 impl Task {
     pub fn add_worker(&mut self, participant: PeerId) {
         self.workers
-            .insert(participant, hypha_api::TaskStatus::Unknown);
+            .insert(participant, hypha_messages::TaskStatus::Unknown);
     }
 
     pub fn add_parameter_server(&mut self, participant: PeerId) {
@@ -69,7 +69,7 @@ impl Task {
     pub fn update_status(
         &mut self,
         participant: &PeerId,
-        status: hypha_api::TaskStatus,
+        status: hypha_messages::TaskStatus,
     ) -> Option<()> {
         if let Some(current_status) = self.workers.get_mut(participant) {
             *current_status = status;

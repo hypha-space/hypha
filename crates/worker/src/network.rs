@@ -33,7 +33,7 @@ use libp2p::{
 use libp2p_stream as stream;
 use tokio::sync::mpsc;
 
-type HyphaCodec = Codec<hypha_api::Request, hypha_api::Response>;
+type HyphaCodec = Codec<hypha_messages::Request, hypha_messages::Response>;
 type HyphaRequestHandlers = Vec<RequestHandler<HyphaCodec>>;
 
 #[derive(Clone)]
