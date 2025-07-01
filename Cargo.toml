@@ -49,6 +49,7 @@ libp2p = { version = "0.56.0", features = [
 libp2p-stream = { version = "0.4.0-alpha" }
 mime = "0.3.17"
 mockall = "0.13.1"
+nix = { version = "0.30.1", features = ["signal"] }
 pin-project = "1.1.7"
 proptest = "1.6.0"
 rcgen = { version = "0.13", features = ["pem", "x509-parser"] }

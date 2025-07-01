@@ -105,7 +105,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let work_dir = tempfile::tempdir()?;
 
-    let driver = driver::try_new(
+    let driver = driver::try_new_accelerate(
         network.clone(),
         opt.socket.as_path(),
         work_dir.path(),
