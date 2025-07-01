@@ -66,8 +66,8 @@ use std::{
 
 use clap::{Parser, Subcommand};
 use rcgen::{
-    BasicConstraints, Certificate, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa,
-    KeyPair, KeyUsagePurpose, PKCS_ECDSA_P256_SHA256,
+    BasicConstraints, Certificate, CertificateParams, DnType, DnValue, ExtendedKeyUsagePurpose,
+    IsCa, KeyPair, KeyUsagePurpose, PKCS_ECDSA_P256_SHA256,
 };
 use thiserror::Error;
 use time::{Duration, OffsetDateTime};
@@ -104,6 +104,10 @@ enum Commands {
         /// Organization name
         #[arg(short = 'o', long)]
         organization: String,
+
+        /// Country name (2-letter code)
+        #[arg(long, default_value = "US")]
+        country: String,
 
         /// Common name for the Root CA (defaults to "<org> CA")
         #[arg(short = 'n', long)]
@@ -179,10 +183,11 @@ enum Commands {
 fn generate_root_ca_certificate(
     common_name: &str,
     organization: &str,
+    country: &str,
 ) -> Result<(Certificate, KeyPair), CertError> {
     let mut params = CertificateParams::new(vec![])?;
     params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
-    params.distinguished_name.push(DnType::CountryName, "US");
+    params.distinguished_name.push(DnType::CountryName, country);
     params
         .distinguished_name
         .push(DnType::OrganizationName, organization);
@@ -217,7 +222,16 @@ fn generate_org_certificate(
 ) -> Result<(Certificate, KeyPair), CertError> {
     let mut params = CertificateParams::new(vec![])?;
     params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
-    params.distinguished_name.push(DnType::CountryName, "US");
+
+    // Inherit country from root
+    let root_params = root_cert.params();
+    for (dn_type, value) in root_params.distinguished_name.iter() {
+        if let (DnType::CountryName, DnValue::PrintableString(s)) = (dn_type, value) {
+            params
+                .distinguished_name
+                .push(DnType::CountryName, s.to_string());
+        }
+    }
     params
         .distinguished_name
         .push(DnType::OrganizationName, organization_name);
@@ -250,10 +264,20 @@ fn generate_node_certificate(
     ca_key: &KeyPair,
 ) -> Result<(Certificate, KeyPair), CertError> {
     let mut params = CertificateParams::new(san_names)?;
-    params.distinguished_name.push(DnType::CountryName, "US");
-    params
-        .distinguished_name
-        .push(DnType::OrganizationName, "Hypha Network");
+
+    // Inherit country, organization from CA
+    let ca_params = ca_cert.params();
+    for (dn_type, value) in ca_params.distinguished_name.iter() {
+        if let (DnType::CountryName, DnValue::PrintableString(s)) = (dn_type, value) {
+            params
+                .distinguished_name
+                .push(DnType::CountryName, s.to_string());
+        } else if let (DnType::OrganizationName, DnValue::PrintableString(s)) = (dn_type, value) {
+            params
+                .distinguished_name
+                .push(DnType::OrganizationName, s.to_string());
+        }
+    }
     params
         .distinguished_name
         .push(DnType::CommonName, common_name);
@@ -311,13 +335,15 @@ fn main() -> Result<(), CertError> {
         Commands::Root {
             name,
             organization,
+            country,
             dir,
         } => {
             // Use provided name or default to "<org> CA"
             let common_name = name.unwrap_or_else(|| format!("{organization} CA"));
 
             println!("Generating Root CA certificate...");
-            let (cert, key_pair) = generate_root_ca_certificate(&common_name, &organization)?;
+            let (cert, key_pair) =
+                generate_root_ca_certificate(&common_name, &organization, &country)?;
 
             // Turn the (common) name into a valid file name for the certificate and key
             let file_name = common_name
