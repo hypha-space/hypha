@@ -1,4 +1,3 @@
-pub mod cbor_codec;
 pub mod cert;
 pub mod dial;
 pub mod error;

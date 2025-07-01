@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use futures_util::stream::StreamExt;
 use hypha_network::{
-    CertificateDer, CertificateRevocationListDer, PrivateKeyDer, cbor_codec, cert,
+    CertificateDer, CertificateRevocationListDer, PrivateKeyDer, cert,
     dial::{DialAction, DialDriver, DialInterface, PendingDials},
     error::HyphaError,
     gossipsub::{
@@ -21,14 +21,14 @@ use hypha_network::{
 };
 use libp2p::{
     StreamProtocol, Swarm, SwarmBuilder, dcutr, gossipsub, identify, kad, ping, relay,
-    request_response,
+    request_response::{self, cbor::codec::Codec},
     swarm::{NetworkBehaviour, SwarmEvent},
     tcp, yamux,
 };
 use libp2p_stream as stream;
 use tokio::sync::mpsc;
 
-type HyphaCodec = cbor_codec::Codec<hypha_api::Request, hypha_api::Response>;
+type HyphaCodec = Codec<hypha_api::Request, hypha_api::Response>;
 type HyphaRequestHandlers = Vec<RequestHandler<HyphaCodec>>;
 
 #[derive(Clone)]

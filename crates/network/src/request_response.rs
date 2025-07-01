@@ -10,7 +10,8 @@
 //! ## Setting up a Request Handler
 //!
 //! ```no_run
-//! use hypha_network::{request_response::RequestResponseInterfaceExt, cbor_codec};
+//! use hypha_network::{request_response::RequestResponseInterfaceExt};
+//! use libp2p::request_response::cbor::codec::Codec;
 //! use serde::{Deserialize, Serialize};
 //! use futures_util::StreamExt;
 //!
@@ -24,7 +25,7 @@
 //!     Hello(),
 //! }
 //!
-//! type MyCodec = cbor_codec::Codec<Request, Response>;
+//! type MyCodec = Codec<Request, Response>;
 //!
 //! async fn handle_greetings_request(req: Request) -> Response {
 //!     match req {
@@ -56,8 +57,8 @@
 //! ## Making Requests
 //!
 //! ```no_run
-//! use hypha_network::{request_response::RequestResponseInterface, cbor_codec};
-//! use libp2p::PeerId;
+//! use hypha_network::{request_response::RequestResponseInterface};
+//! use libp2p::{PeerId, request_response::cbor::codec::Codec};
 //! use serde::{Deserialize, Serialize};
 //! use std::str::FromStr;
 //!
@@ -65,7 +66,7 @@
 //! # enum Request { Greetings(String) }
 //! # #[derive(Serialize, Deserialize, Debug, Clone)]
 //! # enum Response { Hello() }
-//! # type MyCodec = cbor_codec::Codec<Request, Response>;
+//! # type MyCodec = Codec<Request, Response>;
 //! # async fn example<N>(network: N) -> Result<(), Box<dyn std::error::Error>>
 //! # where
 //! #     N: RequestResponseInterface<MyCodec>,
@@ -87,13 +88,14 @@
 //! The fluent API supports various pattern matching approaches:
 //!
 //! ```no_run
-//! # use hypha_network::{request_response::RequestResponseInterfaceExt, cbor_codec};
+//! # use hypha_network::{request_response::RequestResponseInterfaceExt};
+//! # use libp2p::request_response::cbor::codec::Codec;
 //! # use serde::{Deserialize, Serialize};
 //! # #[derive(Serialize, Deserialize, Debug, Clone)]
 //! # enum Request { Work(String) }
 //! # #[derive(Serialize, Deserialize, Debug, Clone)]
 //! # enum Response { Done() }
-//! # type MyCodec = cbor_codec::Codec<Request, Response>;
+//! # type MyCodec = Codec<Request, Response>;
 //! # async fn example<N>(network: N) -> Result<(), Box<dyn std::error::Error>>
 //! # where
 //! #     N: RequestResponseInterfaceExt<MyCodec>,
@@ -121,13 +123,14 @@
 //! ## Concurrent Request Processing
 //!
 //! ```no_run
-//! # use hypha_network::{request_response::RequestResponseInterfaceExt, cbor_codec};
+//! # use hypha_network::{request_response::RequestResponseInterfaceExt};
+//! # use libp2p::request_response::cbor::codec::Codec;
 //! # use serde::{Deserialize, Serialize};
 //! # #[derive(Serialize, Deserialize, Debug, Clone)]
 //! # enum Request { Work(String) }
 //! # #[derive(Serialize, Deserialize, Debug, Clone)]
 //! # enum Response { Done() }
-//! # type MyCodec = cbor_codec::Codec<Request, Response>;
+//! # type MyCodec = Codec<Request, Response>;
 //! # async fn example<N>(network: N) -> Result<(), Box<dyn std::error::Error>>
 //! # where
 //! #     N: RequestResponseInterfaceExt<MyCodec>,
@@ -298,7 +301,7 @@ pub enum RequestResponseError {
 /// # enum MyRequest { TypeA }
 /// # #[derive(Serialize, Deserialize, Clone)]
 /// # struct MyResponse { status: String }
-/// # type MyCodec = hypha_network::cbor_codec::Codec<MyRequest, MyResponse>;
+/// # type MyCodec = libp2p::request_response::cbor::codec::Codec<MyRequest, MyResponse>;
 /// # async fn example(interface: impl RequestResponseInterfaceExt<MyCodec>) -> Result<(), RequestResponseError> {
 /// let handler_stream = interface
 ///     .on(|req: &MyRequest| matches!(req, MyRequest::TypeA))
@@ -340,7 +343,7 @@ where
     /// # use serde::{Serialize, Deserialize};
     /// # #[derive(Serialize, Deserialize, Clone)]
     /// # enum MyRequest { TypeA }
-    /// # type MyCodec = hypha_network::cbor_codec::Codec<MyRequest, String>;
+    /// # type MyCodec = libp2p::request_response::cbor::codec::Codec<MyRequest, String>;
     /// # async fn example(network: impl RequestResponseInterfaceExt<MyCodec>) -> Result<(), RequestResponseError> {
     /// let handler = network
     ///     .on(|_: &MyRequest| true)
@@ -744,7 +747,7 @@ where
     /// # struct MyRequest { data: String }
     /// # #[derive(Serialize, Deserialize, Clone)]
     /// # struct MyResponse { result: String }
-    /// # type MyCodec = hypha_network::cbor_codec::Codec<MyRequest, MyResponse>;
+    /// # type MyCodec = libp2p::request_response::cbor::codec::Codec<MyRequest, MyResponse>;
     /// # async fn example(network: impl RequestResponseInterface<MyCodec>, peer: PeerId) -> Result<(), RequestResponseError> {
     /// let request = MyRequest { data: "hello".to_string() };
     /// let response = network.request(peer, request).await?;
@@ -780,7 +783,7 @@ where
     /// # use serde::{Serialize, Deserialize};
     /// # #[derive(Serialize, Deserialize, Clone)]
     /// # struct MyResponse { result: String }
-    /// # type MyCodec = hypha_network::cbor_codec::Codec<String, MyResponse>;
+    /// # type MyCodec = libp2p::request_response::cbor::codec::Codec<String, MyResponse>;
     /// # async fn example(network: impl RequestResponseInterface<MyCodec>, request: InboundRequest<MyCodec>) -> Result<(), RequestResponseError> {
     /// let response = MyResponse { result: "processed".to_string() };
     /// network.respond(request.request_id, request.channel, response).await?;
@@ -826,7 +829,7 @@ where
     /// # use serde::{Serialize, Deserialize};
     /// # #[derive(Serialize, Deserialize, Clone)]
     /// # enum MyRequest { TypeA, TypeB }
-    /// # type MyCodec = hypha_network::cbor_codec::Codec<MyRequest, String>;
+    /// # type MyCodec = libp2p::request_response::cbor::codec::Codec<MyRequest, String>;
     /// # async fn example(network: impl RequestResponseInterfaceExt<MyCodec>) -> Result<(), RequestResponseError> {
     /// // Handle only TypeA requests
     /// let handler = network
@@ -861,6 +864,7 @@ where
 mod tests {
     use std::collections::HashSet;
 
+    use libp2p::request_response::cbor::codec::Codec;
     use mockall::mock;
     use proptest::prelude::*;
     use serde::{Deserialize, Serialize};
@@ -878,7 +882,7 @@ mod tests {
         status: String,
     }
 
-    type TestCodec = crate::cbor_codec::Codec<TestRequest, TestResponse>;
+    type TestCodec = Codec<TestRequest, TestResponse>;
 
     mock! {
         Interface {}

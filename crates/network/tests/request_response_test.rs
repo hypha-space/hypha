@@ -11,7 +11,7 @@ use futures::StreamExt;
 use hypha_network::{error::HyphaError, request_response::*, swarm::SwarmDriver};
 use libp2p::{
     Swarm,
-    request_response::{self, ProtocolSupport},
+    request_response::{self, ProtocolSupport, cbor::codec::Codec},
     swarm::{NetworkBehaviour, SwarmEvent},
 };
 use libp2p_swarm_test::SwarmExt;
@@ -34,7 +34,7 @@ enum TestResponse {
     SlowDone,
 }
 
-type TestCodec = hypha_network::cbor_codec::Codec<TestRequest, TestResponse>;
+type TestCodec = Codec<TestRequest, TestResponse>;
 
 #[derive(NetworkBehaviour)]
 struct TestBehaviour {

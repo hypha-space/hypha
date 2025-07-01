@@ -55,7 +55,10 @@ mod stream_interface_tests {
         let mut mock = MockNetwork::new();
         mock.expect_stream_control().return_const(control.clone());
 
-        assert!(mock.streams().is_ok());
-        assert!(matches!(mock.streams(), Err(AlreadyRegistered)));
+        let stream1 = mock.streams();
+        assert!(stream1.is_ok());
+
+        let stream2 = mock.streams();
+        assert!(matches!(stream2, Err(AlreadyRegistered)));
     }
 }
