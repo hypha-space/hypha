@@ -66,8 +66,8 @@ use std::{
 
 use clap::{Parser, Subcommand};
 use rcgen::{
-    BasicConstraints, Certificate, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa,
-    KeyPair, KeyUsagePurpose, PKCS_ECDSA_P256_SHA256,
+    BasicConstraints, Certificate, CertificateParams, DnType, DnValue, ExtendedKeyUsagePurpose,
+    IsCa, KeyPair, KeyUsagePurpose, PKCS_ED25519,
 };
 use thiserror::Error;
 use time::{Duration, OffsetDateTime};
@@ -104,6 +104,10 @@ enum Commands {
         /// Organization name
         #[arg(short = 'o', long)]
         organization: String,
+
+        /// Country name (2-letter code)
+        #[arg(long, default_value = "US")]
+        country: String,
 
         /// Common name for the Root CA (defaults to "<org> CA")
         #[arg(short = 'n', long)]
@@ -179,10 +183,11 @@ enum Commands {
 fn generate_root_ca_certificate(
     common_name: &str,
     organization: &str,
+    country: &str,
 ) -> Result<(Certificate, KeyPair), CertError> {
     let mut params = CertificateParams::new(vec![])?;
     params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
-    params.distinguished_name.push(DnType::CountryName, "US");
+    params.distinguished_name.push(DnType::CountryName, country);
     params
         .distinguished_name
         .push(DnType::OrganizationName, organization);
@@ -202,7 +207,7 @@ fn generate_root_ca_certificate(
     params.not_before = now - Duration::days(1);
     params.not_after = now + Duration::days(3650);
 
-    let key_pair = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256)?;
+    let key_pair = KeyPair::generate_for(&PKCS_ED25519)?;
     let cert = params.self_signed(&key_pair)?;
 
     Ok((cert, key_pair))
@@ -217,7 +222,16 @@ fn generate_org_certificate(
 ) -> Result<(Certificate, KeyPair), CertError> {
     let mut params = CertificateParams::new(vec![])?;
     params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
-    params.distinguished_name.push(DnType::CountryName, "US");
+
+    // Inherit country from root
+    let root_params = root_cert.params();
+    for (dn_type, value) in root_params.distinguished_name.iter() {
+        if let (DnType::CountryName, DnValue::PrintableString(s)) = (dn_type, value) {
+            params
+                .distinguished_name
+                .push(DnType::CountryName, s.to_string());
+        }
+    }
     params
         .distinguished_name
         .push(DnType::OrganizationName, organization_name);
@@ -236,7 +250,7 @@ fn generate_org_certificate(
     params.not_before = now - Duration::days(1);
     params.not_after = now + Duration::days(1825);
 
-    let key_pair = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256)?;
+    let key_pair = KeyPair::generate_for(&PKCS_ED25519)?;
     let cert = params.signed_by(&key_pair, root_cert, root_key)?;
 
     Ok((cert, key_pair))
@@ -250,10 +264,20 @@ fn generate_node_certificate(
     ca_key: &KeyPair,
 ) -> Result<(Certificate, KeyPair), CertError> {
     let mut params = CertificateParams::new(san_names)?;
-    params.distinguished_name.push(DnType::CountryName, "US");
-    params
-        .distinguished_name
-        .push(DnType::OrganizationName, "Hypha Network");
+
+    // Inherit country, organization from CA
+    let ca_params = ca_cert.params();
+    for (dn_type, value) in ca_params.distinguished_name.iter() {
+        if let (DnType::CountryName, DnValue::PrintableString(s)) = (dn_type, value) {
+            params
+                .distinguished_name
+                .push(DnType::CountryName, s.to_string());
+        } else if let (DnType::OrganizationName, DnValue::PrintableString(s)) = (dn_type, value) {
+            params
+                .distinguished_name
+                .push(DnType::OrganizationName, s.to_string());
+        }
+    }
     params
         .distinguished_name
         .push(DnType::CommonName, common_name);
@@ -273,7 +297,7 @@ fn generate_node_certificate(
     params.not_before = now - Duration::days(1);
     params.not_after = now + Duration::days(365);
 
-    let key_pair = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256)?;
+    let key_pair = KeyPair::generate_for(&PKCS_ED25519)?;
     let cert = params.signed_by(&key_pair, ca_cert, ca_key)?;
 
     Ok((cert, key_pair))
@@ -311,13 +335,15 @@ fn main() -> Result<(), CertError> {
         Commands::Root {
             name,
             organization,
+            country,
             dir,
         } => {
             // Use provided name or default to "<org> CA"
             let common_name = name.unwrap_or_else(|| format!("{organization} CA"));
 
             println!("Generating Root CA certificate...");
-            let (cert, key_pair) = generate_root_ca_certificate(&common_name, &organization)?;
+            let (cert, key_pair) =
+                generate_root_ca_certificate(&common_name, &organization, &country)?;
 
             // Turn the (common) name into a valid file name for the certificate and key
             let file_name = common_name
@@ -333,10 +359,10 @@ fn main() -> Result<(), CertError> {
 
             println!("Root CA certificate saved to: {}", cert_out.display());
             println!("Root CA private key saved to: {}", key_out.display());
-            println!("\nNext steps:");
-            println!("  Generate an Organization CA:");
+            println!("\nNext generate an Organization CA:");
+            println!("  :");
             println!(
-                "    hypha-certutil org --root-cert {} --root-key {} -o <org-name>",
+                "hypha-certutil org --root-cert {} --root-key {} -o <org-name>",
                 cert_out.display(),
                 key_out.display()
             );
@@ -381,10 +407,9 @@ fn main() -> Result<(), CertError> {
                 "Organization CA private key saved to: {}",
                 key_out.display()
             );
-            println!("\nNext steps:");
-            println!("  Generate node certificates:");
+            println!("\nNext generate node certificates:");
             println!(
-                "    hypha-certutil node --ca-cert {} --ca-key {} -n <node-name>",
+                "hypha-certutil node --ca-cert {} --ca-key {} -n <node-name>",
                 cert_out.display(),
                 key_out.display()
             );
@@ -436,9 +461,6 @@ fn main() -> Result<(), CertError> {
             println!("Node certificate saved to: {}", cert_out.display());
             println!("Node private key saved to: {}", key_out.display());
             println!("Certificate chain saved to: {}", chain_out.display());
-            println!("\nCertificate details:");
-            println!("  Common Name: {name}");
-            println!("  SANs: {}", san_names.join(", "));
         }
     }
 
