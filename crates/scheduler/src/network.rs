@@ -39,13 +39,13 @@ type HyphaCodec = Codec<hypha_api::Request, hypha_api::Response>;
 type HyphaRequestHandlers = Vec<RequestHandler<HyphaCodec>>;
 
 #[derive(Clone)]
-pub(crate) struct Network {
+pub struct Network {
     action_sender: mpsc::Sender<Action>,
     stream_control: stream::Control,
 }
 
 #[derive(NetworkBehaviour)]
-pub(crate) struct Behaviour {
+pub struct Behaviour {
     ping: ping::Behaviour,
     identify: identify::Behaviour,
     relay_client: relay::client::Behaviour,
@@ -56,7 +56,7 @@ pub(crate) struct Behaviour {
     request_response: request_response::Behaviour<HyphaCodec>,
 }
 
-pub(crate) struct NetworkDriver {
+pub struct NetworkDriver {
     swarm: Swarm<Behaviour>,
     pending_dials_map: PendingDials,
     pending_listen_map: PendingListens,

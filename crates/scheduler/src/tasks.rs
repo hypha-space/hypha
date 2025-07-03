@@ -3,12 +3,18 @@ use std::collections::{HashMap, HashSet};
 use libp2p::PeerId;
 use uuid::Uuid;
 
-pub(crate) type TaskId = Uuid;
+pub type TaskId = Uuid;
 
 /// A very simple class to keep track of DiLoCo-like tasks
 /// and the participating workers and parameter servers.
-pub(crate) struct Tasks {
+pub struct Tasks {
     tasks: HashMap<TaskId, Task>,
+}
+
+impl Default for Tasks {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Tasks {
@@ -35,7 +41,7 @@ impl Tasks {
     }
 }
 
-pub(crate) struct Task {
+pub struct Task {
     workers: HashMap<PeerId, hypha_api::TaskStatus>,
     parameter_servers: HashSet<PeerId>,
 }

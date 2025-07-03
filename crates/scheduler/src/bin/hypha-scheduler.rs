@@ -1,8 +1,5 @@
 //! Scheduler binary.
 
-mod network;
-mod tasks;
-
 use std::{error::Error, fs, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
 use clap::Parser;
@@ -18,14 +15,13 @@ use hypha_network::{
     swarm::SwarmDriver,
     utils::multiaddr_from_socketaddr,
 };
-use libp2p::PeerId;
-use tokio::{sync::Mutex, task::JoinSet};
-use tracing_subscriber::EnvFilter;
-
-use crate::{
+use hypha_scheduler::{
     network::Network,
     tasks::{TaskId, Tasks},
 };
+use libp2p::PeerId;
+use tokio::{sync::Mutex, task::JoinSet};
+use tracing_subscriber::EnvFilter;
 
 #[derive(Debug, Parser)]
 #[command(

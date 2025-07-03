@@ -27,13 +27,13 @@ use libp2p_stream as stream;
 use tokio::sync::mpsc;
 
 #[derive(Clone)]
-pub(crate) struct Network {
+pub struct Network {
     action_sender: mpsc::Sender<Action>,
     stream_control: stream::Control,
 }
 
 #[derive(NetworkBehaviour)]
-pub(crate) struct Behaviour {
+pub struct Behaviour {
     ping: ping::Behaviour,
     identify: identify::Behaviour,
     relay: relay::Behaviour,
@@ -42,7 +42,7 @@ pub(crate) struct Behaviour {
     gossipsub: gossipsub::Behaviour,
 }
 
-pub(crate) struct NetworkDriver {
+pub struct NetworkDriver {
     swarm: Swarm<Behaviour>,
     pending_dials_map: PendingDials,
     pending_listen_map: PendingListens,

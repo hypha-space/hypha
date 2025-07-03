@@ -1,9 +1,5 @@
 //! Worker binary.
 
-mod driver;
-mod file_transfer;
-mod network;
-
 use std::{error::Error, fs, net::SocketAddr, path::PathBuf, time::Duration};
 
 use clap::{Parser, ValueEnum};
@@ -18,11 +14,10 @@ use hypha_network::{
     swarm::SwarmDriver,
     utils::multiaddr_from_socketaddr,
 };
+use hypha_worker::{driver, file_transfer::receive_file, network::Network};
 use tokio::signal::unix::{SignalKind, signal};
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::EnvFilter;
-
-use crate::{file_transfer::receive_file, network::Network};
 
 #[derive(Clone, Debug, ValueEnum)]
 enum Role {
