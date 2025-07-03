@@ -7,18 +7,31 @@
 
 use std::collections::HashMap;
 
-use libp2p::{gossipsub, swarm::NetworkBehaviour};
+use libp2p::{PeerId, gossipsub, swarm::NetworkBehaviour};
 use thiserror::Error;
 use tokio::sync::{broadcast, oneshot};
 use tokio_stream::wrappers::BroadcastStream;
 
 use crate::swarm::SwarmDriver;
 
+/// A message received through the gossipsub protocol.
+///
+/// This structure represents a message that has been received from a peer
+/// in the gossipsub network. It contains the source peer ID and the raw
+/// message data.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GossipsubMessage {
+    /// The peer ID of the message sender.
+    pub source: PeerId,
+    /// The raw message data as bytes.
+    pub data: Vec<u8>,
+}
+
 /// Type alias for tracking active gossipsub subscriptions.
 ///
 /// Maps topic hashes to broadcast channels that distribute incoming messages
 /// for that topic to all interested subscribers.
-pub type Subscriptions = HashMap<gossipsub::TopicHash, broadcast::Sender<Vec<u8>>>;
+pub type Subscriptions = HashMap<gossipsub::TopicHash, broadcast::Sender<GossipsubMessage>>;
 
 /// Trait for network behaviours that include gossipsub functionality.
 ///
@@ -52,7 +65,7 @@ pub enum GossipsubAction {
     /// receive messages published to this topic.
     Subscribe(
         gossipsub::IdentTopic,
-        oneshot::Sender<Result<broadcast::Receiver<Vec<u8>>, GossipsubError>>,
+        oneshot::Sender<Result<broadcast::Receiver<GossipsubMessage>, GossipsubError>>,
     ),
 
     /// Unsubscribe from the specified topic.
@@ -171,9 +184,20 @@ where
         async move {
             match event {
                 gossipsub::Event::Message { message, .. } => {
+                    if message.source.is_none() {
+                        tracing::debug!("Message from unknown source");
+
+                        return;
+                    }
+
                     let topic = message.topic;
                     if let Some(sub_tx) = self.subscriptions().get(&topic) {
-                        let _ = sub_tx.send(message.data);
+                        let gossipsub_msg = GossipsubMessage {
+                            // NOTE: We checked for `None` above, so we can safely `expect` here.
+                            source: message.source.expect("source should be known"),
+                            data: message.data,
+                        };
+                        let _ = sub_tx.send(gossipsub_msg);
                     } else {
                         tracing::debug!("No subscription for topic: {:?}", topic);
                     }
@@ -240,7 +264,7 @@ pub trait GossipsubInterface: Sync {
     /// # async fn example(network: impl GossipsubInterface) -> Result<(), hypha_network::gossipsub::GossipsubError> {
     /// let mut stream = network.subscribe("chat").await?;
     /// while let Some(Ok(message)) = stream.next().await {
-    ///     println!("Chat message: {:?}", String::from_utf8_lossy(&message));
+    ///     println!("Chat message: {:?}", String::from_utf8_lossy(&message.data));
     /// }
     /// # Ok(())
     /// # }
@@ -248,7 +272,8 @@ pub trait GossipsubInterface: Sync {
     fn subscribe(
         &self,
         topic: &str,
-    ) -> impl Future<Output = Result<BroadcastStream<Vec<u8>>, GossipsubError>> + Send {
+    ) -> impl Future<Output = Result<BroadcastStream<GossipsubMessage>, GossipsubError>> + Send
+    {
         async move {
             let (tx, rx) = oneshot::channel();
             self.send(GossipsubAction::Subscribe(
@@ -376,10 +401,22 @@ mod tests {
         assert!(result.is_ok());
         let mut result = result.unwrap();
 
-        sub_tx.send(vec![1, 2, 3]).unwrap();
+        let test_peer_id = PeerId::random();
+        sub_tx
+            .send(GossipsubMessage {
+                source: test_peer_id,
+                data: vec![1, 2, 3],
+            })
+            .unwrap();
 
         let received = result.next().await.unwrap();
-        assert_eq!(received, Ok(vec![1, 2, 3]));
+        assert_eq!(
+            received,
+            Ok(GossipsubMessage {
+                source: test_peer_id,
+                data: vec![1, 2, 3]
+            })
+        );
     }
 
     #[tokio::test]
@@ -403,13 +440,17 @@ mod tests {
     async fn test_gossipsub_interface_publish() {
         let (sub_tx, mut sub_rx) = broadcast::channel(1);
         let mut mock = MockTestInterface::new();
+        let test_peer_id = PeerId::random();
 
         mock.expect_send()
             .withf(|action| matches!(action, GossipsubAction::Publish(_, _, _)))
             .times(1)
             .returning(move |action| {
                 if let GossipsubAction::Publish(_, data, tx) = action {
-                    let _ = sub_tx.send(data);
+                    let _ = sub_tx.send(GossipsubMessage {
+                        source: test_peer_id,
+                        data,
+                    });
                     let _ = tx.send(Ok(()));
                 }
             });
@@ -418,6 +459,12 @@ mod tests {
         assert!(result.is_ok());
 
         let received = sub_rx.recv().await.unwrap();
-        assert_eq!(received, vec![1, 2, 3]);
+        assert_eq!(
+            received,
+            GossipsubMessage {
+                source: test_peer_id,
+                data: vec![1, 2, 3]
+            }
+        );
     }
 }

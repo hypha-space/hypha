@@ -175,9 +175,9 @@ async fn run(config: Config, role: Role) -> Result<(), Box<dyn Error>> {
     let mut announce_stream = network.subscribe("announce").await.into_diagnostic()?;
 
     let announce_future = tokio::spawn(async move {
-        while let Some(Ok(data)) = announce_stream.next().await {
+        while let Some(Ok(message)) = announce_stream.next().await {
             let announce: hypha_messages::RequestAnnounce =
-                match ciborium::from_reader(data.as_slice()) {
+                match ciborium::from_reader(message.data.as_slice()) {
                     Ok(announce) => announce,
                     Err(e) => {
                         tracing::error!(error = ?e, "Failed to deserialize announce message");
