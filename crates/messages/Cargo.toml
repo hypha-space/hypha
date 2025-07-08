@@ -6,4 +6,6 @@ edition.workspace = true
 license = "Apache-2.0"
 
 [dependencies]
+libp2p.workspace = true
 serde.workspace = true
+uuid.workspace = true

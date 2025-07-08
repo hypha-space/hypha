@@ -2,17 +2,26 @@ mod network;
 
 use std::{error::Error, fs, net::SocketAddr, path::PathBuf, time::Duration};
 
-use clap::Parser;
+use clap::{Parser, ValueEnum};
+use futures_util::StreamExt;
 use hypha_network::{
     cert::{load_certs_from_pem, load_crls_from_pem, load_private_key_from_pem},
     dial::DialInterface,
+    gossipsub::GossipsubInterface,
     listen::ListenInterface,
+    request_response::{RequestResponseInterface, RequestResponseInterfaceExt},
     swarm::SwarmDriver,
     utils::multiaddr_from_socketaddr,
 };
 use tracing_subscriber::EnvFilter;
 
 use crate::network::Network;
+
+#[derive(Clone, Debug, ValueEnum)]
+enum Role {
+    Worker,
+    ParameterServer,
+}
 
 #[derive(Debug, Parser)]
 #[command(
@@ -35,6 +44,9 @@ struct Opt {
     gateway_address: SocketAddr,
     #[clap(long, default_value = "[::1]:0")]
     listen_address: SocketAddr,
+    /// Role of the worker in DiLoCo tasks.
+    #[arg(value_enum)]
+    role: Role,
 }
 
 #[tokio::main]
@@ -80,6 +92,65 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Once we receive an 'Identify' message, bootstrapping will start.
     // TODO: Provide a way to wait for this event
     tokio::time::sleep(Duration::from_secs(2)).await;
+
+    let handler = network
+        .on(|req: &hypha_api::Request| matches!(req, hypha_api::Request::Scheduler(_)))
+        .into_stream()
+        .await?;
+
+    let handler_future = handler.respond_with_concurrent(None, |(peer_id, req)| {
+        async move {
+            match req {
+                hypha_api::Request::Scheduler(scheduler) => match scheduler {
+                    hypha_api::SchedulerRequest::Work { task_id, .. } => {
+                        tracing::debug!(
+                            task_id = %task_id,
+                            peer_id = %peer_id,
+                            "Received work request"
+                        );
+                        // TODO: Implement the logic to handle the work request
+                        // ...
+                        hypha_api::Response::Scheduler(hypha_api::SchedulerResponse::Work {})
+                    }
+                },
+                _ => {
+                    panic!("Unexpected request received");
+                }
+            }
+        }
+    });
+
+    let mut announce_stream = network.subscribe("announce").await?;
+
+    let announce_future = tokio::spawn(async move {
+        while let Some(Ok(data)) = announce_stream.next().await {
+            let announce: hypha_api::RequestAnnounce =
+                ciborium::from_reader(data.as_slice()).unwrap();
+
+            tracing::debug!(
+                peer_id = %announce.scheduler_peer_id,
+                "Sending availability to scheduler"
+            );
+            let role = match opt.role {
+                Role::Worker => hypha_api::WorkerRole::TaskExecutor,
+                Role::ParameterServer => hypha_api::WorkerRole::ParameterExecutor,
+            };
+            let _ = network
+                .request(
+                    announce.scheduler_peer_id,
+                    hypha_api::Request::Worker(hypha_api::WorkerRequest::Available {
+                        task_id: announce.task_id,
+                        role,
+                    }),
+                )
+                .await;
+        }
+    });
+
+    tokio::select! {
+        _ = handler_future => {}
+        _ = announce_future => {}
+    }
 
     Ok(())
 }
