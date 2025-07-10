@@ -139,7 +139,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             // The criteria when and with whom to start a task need to be added later.
                             if participants.len() == 2 {
                                 if let Some(parameter_server_peer_id) = parameter_server_peer_id {
-                                    tokio::spawn(run_task(
+                                    tokio::spawn(start_task(
                                         network.clone(),
                                         task_id,
                                         parameter_server_peer_id,
@@ -151,9 +151,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             hypha_api::Response::Worker(hypha_api::WorkerResponse::Available {})
                         }
                         hypha_api::WorkerRequest::TaskStatus { task_id, status } => {
+                            tracing::info!(
+                                task_id = %task_id,
+                                peer_id = %peer_id,
+                                status = ?status,
+                                "Received status update",
+                            );
+
                             if let Some(task) = scheduler.lock().await.get_task(&task_id) {
                                 task.update_status(&peer_id, status);
                             }
+
+                            // TODO: At some point a task is completed. Once that is the case
+                            // a scheduler needs to inform workers about that so that they no longer
+                            // keep track of that task/no longer expect messages related to that task.
 
                             hypha_api::Response::Worker(hypha_api::WorkerResponse::TaskStatus {})
                         }
@@ -166,7 +177,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         })
     };
 
-    tracing::debug!("Publishing task announcement");
+    tracing::info!("Publishing task announcement");
 
     let task_id = scheduler.lock().await.create_task();
 
@@ -188,7 +199,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-async fn run_task(
+async fn start_task(
     network: Network,
     task_id: TaskId,
     parameter_server_peer_id: PeerId,
@@ -197,7 +208,7 @@ async fn run_task(
     let mut set = JoinSet::new();
 
     for worker_peer_id in worker_peer_ids {
-        tracing::debug!(task_id = %task_id, peer_id = %worker_peer_id, "Requesting work");
+        tracing::info!(task_id = %task_id, peer_id = %worker_peer_id, "Requesting work");
         let network = network.clone();
         set.spawn(async move {
             network
@@ -213,6 +224,4 @@ async fn run_task(
     }
 
     let _result = set.join_all().await;
-
-    tracing::debug!(task_id = %task_id, "Work done");
 }
