@@ -219,33 +219,43 @@ impl Display for HandlerId {
     }
 }
 
+/// Map of outbound requests.
+///
+/// Tracks requests to another peer created from an interface action that haven't been added to the swarm yet.
 pub type OutboundRequests<TCodec> = HashMap<
     request_response::OutboundRequestId,
     oneshot::Sender<Result<<TCodec as request_response::Codec>::Response, RequestResponseError>>,
 >;
 
+/// Map of outbound responses.
+///
+/// Tracks responses to another peer created from an interface action that haven't been added to the swarm yet.
 pub type OutboundResponses =
     HashMap<request_response::InboundRequestId, oneshot::Sender<Result<(), RequestResponseError>>>;
 
+/// Map of inbound requests.
+///
+/// Tracks requests from another peer on the swarm, not yet sent to a handler.
 pub struct InboundRequest<TCodec>
 where
     TCodec: request_response::Codec + Clone + Send + 'static,
     <TCodec as request_response::Codec>::Request: Clone + Send + 'static,
     <TCodec as request_response::Codec>::Response: Send + 'static,
 {
+    /// Unique identifier for the request.
     pub request_id: request_response::InboundRequestId,
+    /// Channel to send the response to.
     pub channel: request_response::ResponseChannel<<TCodec as request_response::Codec>::Response>,
+    /// Peer ID of the sender.
     pub peer_id: PeerId,
+    /// Request messages.
     pub request: <TCodec as request_response::Codec>::Request,
 }
 
-pub type InboundRequestSender<TCodec> =
+type InboundRequestSender<TCodec> =
     mpsc::Sender<Result<InboundRequest<TCodec>, RequestResponseError>>;
 
-pub type InboundRequestReceiver<TCodec> =
-    mpsc::Receiver<Result<InboundRequest<TCodec>, RequestResponseError>>;
-
-pub type RequestMatcher<TCodec> =
+type RequestMatcher<TCodec> =
     Box<dyn Fn(&<TCodec as request_response::Codec>::Request) -> bool + Send + Sync>;
 
 /// Trait for converting patterns into request matchers
@@ -255,6 +265,7 @@ pub trait Pattern<TCodec>
 where
     TCodec: request_response::Codec,
 {
+    /// Convert the pattern into a request matcher.
     fn into_matcher(self) -> RequestMatcher<TCodec>;
 }
 
@@ -268,20 +279,26 @@ where
     }
 }
 
+/// Error type for request-response operations
 #[derive(Debug, thiserror::Error)]
 pub enum RequestResponseError {
+    /// Outbound request failed
     #[error("Outbound request failed: {0}")]
     Request(#[from] request_response::OutboundFailure),
 
+    /// Inbound response failed
     #[error("Inbound response failed: {0}")]
     Response(#[from] request_response::InboundFailure),
 
-    #[error("Channel error: {context}")]
-    ChannelError { context: String },
+    /// Channel error
+    #[error("Channel error: {0}")]
+    ChannelError(String),
 
+    /// No handler registered for request
     #[error("No handler registered for request")]
     NoHandler,
 
+    /// Other error
     #[error("{0}")]
     Other(String),
 }
@@ -378,6 +395,7 @@ where
     }
 }
 
+/// A Stream for handling matching requests
 #[pin_project(PinnedDrop)]
 pub struct HandlerStream<TCodec, TInterface>
 where
@@ -487,32 +505,41 @@ where
     }
 }
 
+/// Wraps a request matcher with a request sender
 pub struct RequestHandler<TCodec>
 where
     TCodec: request_response::Codec + Clone + Send + 'static,
     <TCodec as request_response::Codec>::Request: Clone + Send + 'static,
     <TCodec as request_response::Codec>::Response: Send + 'static,
 {
-    pub id: HandlerId,
-    pub matcher: RequestMatcher<TCodec>,
-    pub sender: InboundRequestSender<TCodec>,
+    id: HandlerId,
+    matcher: RequestMatcher<TCodec>,
+    sender: InboundRequestSender<TCodec>,
 }
 
+/// Trait for network behaviours that include request-response functionality.
+///
+/// This trait provides access to the request-response behaviour within a composite
+/// network behaviour. It's used by other traits that need to interact with
+/// the request-response protocol.
 pub trait RequestResponseBehaviour<TCodec>
 where
     TCodec: request_response::Codec + Clone + Send + 'static,
     <TCodec as request_response::Codec>::Request: Clone + Send + 'static,
     <TCodec as request_response::Codec>::Response: Send + 'static,
 {
+    /// Returns a mutable reference to the request-response behaviour.
     fn request_response(&mut self) -> &mut request_response::Behaviour<TCodec>;
 }
 
+/// Actions that can be sent to a request-response driver for processing.
 pub enum RequestResponseAction<TCodec>
 where
     TCodec: request_response::Codec + Clone + Send + 'static,
     <TCodec as request_response::Codec>::Request: Clone + Send + 'static,
     <TCodec as request_response::Codec>::Response: Send + 'static,
 {
+    /// A request to be sent to a peer.
     OutboundRequest(
         PeerId,
         <TCodec as request_response::Codec>::Request,
@@ -520,20 +547,27 @@ where
             Result<<TCodec as request_response::Codec>::Response, RequestResponseError>,
         >,
     ),
+
+    /// A response to a request sent from a peer to be sent back to that peer.
     OutboundResponse(
         request_response::InboundRequestId,
         request_response::ResponseChannel<<TCodec as request_response::Codec>::Response>,
         <TCodec as request_response::Codec>::Response,
         oneshot::Sender<Result<(), RequestResponseError>>,
     ),
+
+    /// Register a handler for requests of a specific type.
     RegisterHandler(
         HandlerId,
         RequestMatcher<TCodec>,
         InboundRequestSender<TCodec>,
     ),
+
+    /// Unregister a handler.
     UnregisterHandler(HandlerId),
 }
 
+/// Trait for handling request-response operations within a swarm driver.
 pub trait RequestResponseDriver<TBehaviour, TCodec>: SwarmDriver<TBehaviour> + Send
 where
     TBehaviour: NetworkBehaviour + RequestResponseBehaviour<TCodec>,
@@ -541,12 +575,24 @@ where
     <TCodec as request_response::Codec>::Request: Clone + Send + 'static,
     <TCodec as request_response::Codec>::Response: Send + 'static,
 {
+    /// Returns a mutable reference to the outbound requests.
+    ///
+    /// This is used to manage incoming request from the driver
+    /// that haven't been added to the swarm yet.
     fn outbound_requests(&mut self) -> &mut OutboundRequests<TCodec>;
 
+    /// Returns a mutable reference to the outbound responses.
+    ///
+    /// This is used to manage outgoing responses from the driver
+    /// that haven't been added to the swarm yet.
     fn outbound_responses(&mut self) -> &mut OutboundResponses;
 
+    /// Returns a mutable reference to the request handlers.
+    ///
+    /// Incoming requests will be handled by the request handlers.
     fn request_handlers(&mut self) -> &mut Vec<RequestHandler<TCodec>>;
 
+    /// Process a request-response action from the interface.
     fn process_request_response_action(
         &mut self,
         action: RequestResponseAction<TCodec>,
@@ -590,6 +636,7 @@ where
         }
     }
 
+    /// Process a request-response event from the swarm.
     fn process_request_response_event(
         &mut self,
         event: request_response::Event<
@@ -725,14 +772,17 @@ where
     }
 }
 
+/// Interface for sending request-response actions to a network driver.
 pub trait RequestResponseInterface<TCodec>: Send + Sync
 where
     TCodec: request_response::Codec + Clone + Send + 'static,
     <TCodec as request_response::Codec>::Request: Clone + Send + 'static,
     <TCodec as request_response::Codec>::Response: Send + 'static,
 {
+    /// Send a request-response action to the network driver.
     fn send(&self, action: RequestResponseAction<TCodec>) -> impl Future<Output = ()> + Send;
 
+    /// Try to send a request-response action to the network driver synchronously.
     fn try_send(&self, action: RequestResponseAction<TCodec>) -> Result<(), RequestResponseError>;
 
     /// Send a request and await the response
@@ -766,8 +816,10 @@ where
             let (tx, rx) = oneshot::channel();
             self.send(RequestResponseAction::OutboundRequest(peer_id, request, tx))
                 .await;
-            rx.await.map_err(|_| RequestResponseError::ChannelError {
-                context: "Response channel closed unexpectedly".to_string(),
+            rx.await.map_err(|_| {
+                RequestResponseError::ChannelError(
+                    "Response channel closed unexpectedly".to_string(),
+                )
             })?
         }
     }
@@ -802,8 +854,10 @@ where
                 request_id, channel, response, tx,
             ))
             .await;
-            rx.await.map_err(|_| RequestResponseError::ChannelError {
-                context: "Response confirmation channel closed".to_string(),
+            rx.await.map_err(|_| {
+                RequestResponseError::ChannelError(
+                    "Response confirmation channel closed".to_string(),
+                )
             })?
         }
     }

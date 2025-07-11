@@ -1,3 +1,8 @@
+//! Networking utilities for the scheduler component.
+//!
+//! The scheduler orchestrates workers via libp2p. This module brings together
+//! the networking primitives and drives the underlying swarm.
+
 use std::collections::HashMap;
 
 use futures_util::stream::StreamExt;

@@ -1,3 +1,9 @@
+//! Networking utilities for the worker component.
+//!
+//! Workers use this module to communicate with the scheduler and other peers.
+//! It ties together the networking primitives and drives the swarm. This
+//! documentation follows the [rustdoc guidelines](https://doc.rust-lang.org/rustdoc/how-to-write-documentation.html).
+
 use std::collections::HashMap;
 
 use futures_util::stream::StreamExt;

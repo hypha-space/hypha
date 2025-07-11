@@ -1,3 +1,5 @@
+//! Gateway binary.
+
 mod network;
 
 use std::{error::Error, fs, net::SocketAddr, path::PathBuf};

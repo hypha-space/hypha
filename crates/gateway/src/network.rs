@@ -1,3 +1,8 @@
+//! Networking utilities for the gateway component.
+//!
+//! This module wires together the various networking primitives to run the
+//! gateway's event loop.
+
 use std::collections::HashMap;
 
 use futures_util::stream::StreamExt;

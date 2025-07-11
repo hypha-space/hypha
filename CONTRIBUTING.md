@@ -93,6 +93,22 @@ license = "${TYPE}"
 
 The default license is Apache-2.0, but the project uses multiple licenses for the time being. If you're uncertain about which license to use, please consult the project lead. Make sure to use the SPDF license identifier, see  https://spdx.org/licenses/ for more information.
 
+## Documentation
+
+All user-facing features MUST be documented. Good documentation is crucial to making making large-scale machine learning accessible. Quality documentation removes barriers and enables widespread innovation by ensuring users can effectively understand and utilize the system.
+
+Each crate MUST begin with comprehensive front-page documentation in `lib.rs` and SHOULD including an introduction, quick start example, feature overview, and integration guide. Every public function, struct, enum, trait, and module MUST be documented with `///` comments that describe their purpose and SHOULD document include usage examples.
+
+All Documentation SHOULD be:
+- **Clear and concise** - Easy to understand for the target audience
+- **Complete** - Covering all public functionality comprehensively
+- **Current** - Updated with every change
+- **Consistent** - Following project-wide style and conventions
+
+Poor or missing documentation for user-facing features will block pull requests. When in doubt, err on the side of more documentation rather than less.
+
+For detailed guidelines, refer to the [rustdoc book](https://doc.rust-lang.org/rustdoc/how-to-write-documentation.html).
+
 ### Adding Dependencies
 
 When adding dependencies, these MUST be added to the respective crate's `Cargo.toml` file. You can add dependencies using:
@@ -108,6 +124,7 @@ Make sure that the dependency is compatible with the project's licenses.
 All dependencies SHALL be updated regularly to maintain an up to date and secure product. Updates SHOULD consider backward compatibility and MUST document compatibility issues.
 
 <!-- TODO: Setup dependabot for automatic dependency updates and security updates and document configuration. -->
+
 
 ## Version Control
 

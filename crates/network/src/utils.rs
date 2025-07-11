@@ -1,7 +1,10 @@
+//! Utility functions.
+
 use std::net::SocketAddr;
 
 use libp2p::multiaddr;
 
+/// Converts a `SocketAddr` to a libp2p `MultiAddr`.
 pub fn multiaddr_from_socketaddr(
     addr: SocketAddr,
 ) -> Result<multiaddr::Multiaddr, multiaddr::Error> {

@@ -1,3 +1,5 @@
+//! Worker binary.
+
 mod driver;
 mod file_transfer;
 mod network;

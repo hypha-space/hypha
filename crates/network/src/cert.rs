@@ -1,21 +1,29 @@
+//! Handle certificates and peer identities.
+
 use std::io;
 
 use ed25519_dalek::{SigningKey, pkcs8::DecodePrivateKey};
 use rustls::pki_types::{CertificateDer, CertificateRevocationListDer, PrivateKeyDer};
 use thiserror::Error;
 
+/// Errors that can occur when parsing certificates.
 #[derive(Error, Debug)]
 pub enum ParseError {
+    /// Invalid certificate format
     #[error("Invalid certificate format")]
     InvalidFormat,
+    /// Unsupported public key algorithm
     #[error("Unsupported public key algorithm")]
     UnsupportedPublicKey,
+    /// Public key extraction failed
     #[error("Failed to extract public key")]
-    PublicKeyExtractionError,
+    PublicKeyExtraction,
+    /// Key-pair creation failed
     #[error("Failed to create keypair: {0}")]
-    KeypairCreationError(String),
+    KeypairCreation(String),
+    /// IO error
     #[error("IO error: {0}")]
-    IoError(#[from] io::Error),
+    Io(#[from] io::Error),
 }
 
 /// Create a libp2p identity from a private key
@@ -25,13 +33,13 @@ pub fn identity_from_private_key(
     match private_key {
         PrivateKeyDer::Pkcs8(key) => {
             let key = SigningKey::from_pkcs8_der(key.secret_pkcs8_der()).map_err(|_| {
-                ParseError::KeypairCreationError(
+                ParseError::KeypairCreation(
                     "Invalid PKCS8 format: too short for Ed25519 private key".to_string(),
                 )
             })?;
 
             libp2p::identity::Keypair::ed25519_from_bytes(key.to_bytes()).map_err(|_| {
-                ParseError::KeypairCreationError(
+                ParseError::KeypairCreation(
                     "Invalid PKCS8 format: too short for Ed25519 private key".to_string(),
                 )
             })
@@ -171,7 +179,7 @@ mod tests {
         let key = PrivateKeyDer::Pkcs8(invalid_pkcs8);
 
         let result = identity_from_private_key(&key);
-        assert!(matches!(result, Err(ParseError::KeypairCreationError(_))));
+        assert!(matches!(result, Err(ParseError::KeypairCreation(_))));
     }
 
     #[test]
