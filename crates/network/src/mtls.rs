@@ -1,3 +1,8 @@
+//! mTLS functionality for 'libp2p'.
+//!
+//! Provides mutual TLS for 'libp2p' by providing a `Config` that can be used for the
+//! `security_upgrade` parameter when using `SwarmBuilder`.
+
 use std::{
     io,
     net::{IpAddr, Ipv4Addr},
@@ -19,7 +24,9 @@ use webpki::EndEntityCert;
 
 /// Unified TLS stream that can be either a client or server stream
 pub enum TlsStream<T> {
+    /// A client TLS stream
     Client(futures_rustls::client::TlsStream<T>),
+    /// A server TLS stream
     Server(futures_rustls::server::TlsStream<T>),
 }
 
@@ -69,22 +76,30 @@ where
     }
 }
 
+/// Error type for mTLS configuration and upgrade failures.
 #[derive(Error, Debug)]
 pub enum UpgradeError {
+    /// Failed to upgrade server connection.
     #[error("Failed to upgrade server connection: {0}")]
     ServerUpgrade(io::Error),
+    /// Failed to upgrade client connection.
     #[error("Failed to upgrade client connection: {0}")]
     ClientUpgrade(io::Error),
+    /// Failed to configure TLS.
     #[error("Failed to configure TLS: {0}")]
     TlsConfiguration(String),
+    /// No peer certificate found.
     #[error("No peer certificate found")]
     NoPeerCertificate,
+    /// Failed to decode public key.
     #[error("Failed to decode public key from DER: {0}")]
     SPKIError(#[from] ed25519_dalek::pkcs8::spki::Error),
+    /// Failed to convert to Ed25519 public key.
     #[error("Failed to convert to Ed25519 public key: {0}")]
     DecodingError(#[from] libp2p::identity::DecodingError),
 }
 
+/// A mTLS configuration.
 #[derive(Clone)]
 pub struct Config {
     server: ServerConfig,

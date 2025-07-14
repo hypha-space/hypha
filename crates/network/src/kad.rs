@@ -1,3 +1,10 @@
+//! Kademlia distributed hash table utilities.
+//!
+//! Provides a thin wrapper over libp2p's Kademlia behaviour and exposes
+//! asynchronous actions for query management. Other crates can use these
+//! abstractions to perform peer discovery and record lookups without dealing
+//! with the low level protocol details.
+
 use std::{
     collections::{HashMap, HashSet},
     error::Error,
@@ -17,37 +24,109 @@ use tokio_stream::{StreamExt, wrappers::ReceiverStream};
 
 use crate::swarm::SwarmDriver;
 
+/// Type alias for tracking pending Kademlia queries.
+///
+/// Maps query IDs to channels that will receive query results as they arrive.
+/// Since Kademlia queries can produce multiple results, channels are used
+/// instead of oneshot channels.
 pub type PendingQueries = HashMap<kad::QueryId, mpsc::Sender<KademliaResult>>;
 
+/// Trait for network behaviours that include Kademlia functionality.
+///
+/// This trait provides access to the Kademlia behaviour within a composite
+/// network behaviour. It's used by other traits that need to interact with
+/// the Kademlia DHT protocol.
 pub trait KademliaBehavior {
+    /// Returns a mutable reference to the Kademlia behaviour.
     fn kademlia(&mut self) -> &mut kad::Behaviour<MemoryStore>;
 }
 
+/// Actions that can be sent to a Kademlia driver for processing.
+///
+/// These actions represent Kademlia DHT operations that need to be handled
+/// by the network event loop. Each action includes the necessary data and
+/// a response channel to communicate results back to the caller.
 pub enum KademliaAction {
+    /// Find providers for a specific key.
+    ///
+    /// This queries the DHT to find peers that are providing content for
+    /// the given key.
     GetProvider(String, mpsc::Sender<KademliaResult>),
+
+    /// Retrieve a record from the DHT.
+    ///
+    /// This queries the DHT to find and retrieve the value associated with
+    /// the given key.
     GetRecord(String, mpsc::Sender<KademliaResult>),
+
+    /// Store a record in the DHT.
+    ///
+    /// This stores the given record in the DHT, making it available for
+    /// retrieval by other peers.
     PutRecord(kad::Record, mpsc::Sender<KademliaResult>),
+
+    /// Start providing a key.
+    ///
+    /// This announces to the DHT that this peer can provide content for the
+    /// given key.
     StartProviding(String, mpsc::Sender<KademliaResult>),
+
+    /// Find the closest peers to a given peer ID.
+    ///
+    /// This queries the DHT to find peers that are closest to the target peer.
     GetClosestPeers(PeerId, mpsc::Sender<KademliaResult>),
 }
 
+/// Type alias for Kademlia operation results.
+///
+/// All Kademlia operations return this result type, which can contain
+/// either a successful result or an error.
 pub type KademliaResult = Result<KademliaOk, KademliaError>;
 
+/// Successful results from Kademlia operations.
+///
+/// This enum contains the successful result data for different types
+/// of Kademlia DHT operations.
 pub enum KademliaOk {
+    /// Result from a successful get providers query.
     GetProviders(kad::GetProvidersOk),
+
+    /// Result from a successful start providing operation.
     StartProviding(()),
+
+    /// Result from a successful put record operation.
     PutRecord(()),
+
+    /// Result from a successful get record query.
     GetRecord(kad::Record),
+
+    /// Result from a successful get closest peers query.
     GetClosestPeers(kad::GetClosestPeersOk),
 }
 
+/// Errors that can occur during Kademlia operations.
+///
+/// This enum wraps the various error types that can be returned by the
+/// libp2p Kademlia implementation, providing a unified error type for
+/// the Hypha network layer.
 #[derive(Debug)]
 pub enum KademliaError {
+    /// Error occurred during a get providers query.
     GetProviders(kad::GetProvidersError),
+
+    /// Error occurred during DHT storage operations.
     Store(store::Error),
+
+    /// Error occurred during a put record operation.
     PutRecord(kad::PutRecordError),
+
+    /// Error occurred during a get record query.
     GetRecord(kad::GetRecordError),
+
+    /// Error occurred during a get closest peers query.
     GetClosestPeers(kad::GetClosestPeersError),
+
+    /// Other error not covered by specific error types.
     Other(String),
 }
 
@@ -70,14 +149,38 @@ impl Display for KademliaError {
     }
 }
 
+/// Trait for handling Kademlia DHT operations within a swarm driver.
+///
+/// This trait extends [`SwarmDriver`] to provide Kademlia-specific
+/// functionality.
+/// Implementations should track pending queries and process Kademlia-related
+/// events from the libp2p swarm.
+///
+/// # Note
+///
+/// Kademlia queries can produce multiple events over time, so this trait uses
+/// multi-producer single-consumer (mpsc) channels instead of oneshot channels
+/// to handle the stream of results.
 pub trait KademliaDriver<TBehavior>: SwarmDriver<TBehavior> + Send
 where
     TBehavior: NetworkBehaviour + KademliaBehavior,
 {
-    // Within Kademlia, a single query can result in multiple events.
-    // Instead of using a 'oneshot' channel, we use a 'mpsc' channel to allow for multiple events to be sent.
+    /// Returns a mutable reference to the pending queries tracker.
+    ///
+    /// This is used to manage result channels for ongoing Kademlia queries.
+    /// Since Kademlia queries can produce multiple results, mpsc channels
+    /// are used to send results as they arrive.
     fn pending_queries(&mut self) -> &mut PendingQueries;
 
+    /// Process a Kademlia action by initiating the appropriate DHT operation.
+    ///
+    /// This method handles all types of Kademlia actions by calling the
+    /// corresponding methods on the Kademlia behaviour and tracking the
+    /// resulting queries.
+    ///
+    /// # Arguments
+    ///
+    /// * `action` - The Kademlia action to process
     fn process_kademlia_action(
         &mut self,
         action: KademliaAction,
@@ -145,6 +248,17 @@ where
         }
     }
 
+    /// Handle Kademlia query results from the libp2p swarm.
+    ///
+    /// This method processes query results and forwards them to the appropriate
+    /// pending query channels. It handles the completion state to clean up
+    /// finished queries.
+    ///
+    /// # Arguments
+    ///
+    /// * `query_id` - The ID of the query that produced this result
+    /// * `result` - The query result from the Kademlia behaviour
+    /// * `step` - Progress information indicating if this is the final result
     fn process_kademlia_query_result(
         &mut self,
         query_id: kad::QueryId,
@@ -262,9 +376,68 @@ async fn send_kademlia_result(
     }
 }
 
+/// Interface for sending Kademlia actions to a network driver.
+///
+/// This trait provides a high-level API for Kademlia DHT operations without
+/// needing to interact directly with the libp2p swarm.
+/// Implementations typically send actions through a channel to the network
+/// event loop.
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use hypha_network::kad::{KademliaInterface, KademliaAction};
+/// use libp2p::kad;
+///
+/// async fn example_usage(network: impl KademliaInterface) {
+///     // Store a record
+///     let record = kad::Record::new(kad::RecordKey::new(&"my-key"), b"my-value".to_vec());
+///     network.store(record).await.unwrap();
+///
+///     // Retrieve the record
+///     let retrieved = network.get("my-key").await.unwrap();
+///     println!("Retrieved: {:?}", String::from_utf8_lossy(&retrieved.value));
+///
+///     // Announce that we're providing this key
+///     network.provide("my-key").await.unwrap();
+///
+///     // Find other providers
+///     let providers = network.find_provider("my-key").await.unwrap();
+///     println!("Found {} providers", providers.len());
+/// }
+/// ```
 pub trait KademliaInterface: Sync {
+    /// Send a Kademlia action to the network driver.
+    ///
+    /// This is the low-level method for sending actions. Most users should
+    /// prefer the higher-level methods like [`store`](Self::store),
+    /// [`get`](Self::get), [`provide`](Self::provide), etc.
     fn send(&self, action: KademliaAction) -> impl Future<Output = ()> + Send;
 
+    /// Store a record in the DHT.
+    ///
+    /// This method stores the given record in the distributed hash table,
+    /// making it available for retrieval by other peers in the network.
+    ///
+    /// # Arguments
+    ///
+    /// * `record` - The record to store in the DHT
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use hypha_network::kad::{KademliaInterface, KademliaError};
+    /// # use libp2p::kad;
+    /// # async fn example(network: impl KademliaInterface) -> Result<(), KademliaError> {
+    /// let record = kad::Record::new(
+    ///     kad::RecordKey::new(&"example-key"),
+    ///     b"example-value".to_vec()
+    /// );
+    /// network.store(record).await?;
+    /// println!("Record stored successfully");
+    /// # Ok(())
+    /// # }
+    /// ```
     fn store(&self, record: kad::Record) -> impl Future<Output = Result<(), KademliaError>> + Send {
         async move {
             let (tx, rx) = mpsc::channel(1);
@@ -282,6 +455,30 @@ pub trait KademliaInterface: Sync {
         }
     }
 
+    /// Retrieve a record from the DHT.
+    ///
+    /// This method queries the distributed hash table to find and retrieve
+    /// the value associated with the given key.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - The key to look up in the DHT
+    ///
+    /// # Returns
+    ///
+    /// The record associated with the key, or an error if the key is not found
+    /// or the operation fails.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use hypha_network::kad::{KademliaInterface, KademliaError};
+    /// # async fn example(network: impl KademliaInterface) -> Result<(), KademliaError> {
+    /// let record = network.get("example-key").await?;
+    /// println!("Retrieved value: {:?}", String::from_utf8_lossy(&record.value));
+    /// # Ok(())
+    /// # }
+    /// ```
     fn get(&self, key: &str) -> impl Future<Output = Result<kad::Record, KademliaError>> + Send {
         async move {
             let (tx, mut rx) = mpsc::channel(1);
@@ -302,6 +499,26 @@ pub trait KademliaInterface: Sync {
         }
     }
 
+    /// Announce that this peer can provide _content_ for a key.
+    ///
+    /// This method announces to the DHT that this peer has _content_ available
+    /// for the given key, allowing other peers to find this peer when they
+    /// search for providers of that key.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - The key to announce as being provided by this peer
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use hypha_network::kad::{KademliaInterface, KademliaError};
+    /// # async fn example(network: impl KademliaInterface) -> Result<(), KademliaError> {
+    /// network.provide("my-content-key").await?;
+    /// println!("Now providing content for my-content-key");
+    /// # Ok(())
+    /// # }
+    /// ```
     fn provide(&self, key: &str) -> impl Future<Output = Result<(), KademliaError>> + Send {
         async move {
             let (tx, rx) = mpsc::channel(1);
@@ -320,6 +537,31 @@ pub trait KademliaInterface: Sync {
         }
     }
 
+    /// Find peers that can provide _content_ for a key.
+    ///
+    /// This method queries the DHT to find all peers that have announced
+    /// they can provide content for the given key.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - The key to search for providers
+    ///
+    /// # Returns
+    ///
+    /// A set of peer IDs that have announced they can provide the requested content.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use hypha_network::kad::{KademliaInterface, KademliaError};
+    /// # async fn example(network: impl KademliaInterface) -> Result<(), KademliaError> {
+    /// let providers = network.find_provider("some-content").await?;
+    /// for peer_id in providers {
+    ///     println!("Peer {} provides some-content", peer_id);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
     fn find_provider(
         &self,
         key: &str,
@@ -351,6 +593,31 @@ pub trait KademliaInterface: Sync {
         }
     }
 
+    /// Find the peers closest to a given peer ID.
+    ///
+    /// This method queries the DHT to find peers that are closest to the
+    /// target peer ID according to the Kademlia distance metric.
+    ///
+    /// # Arguments
+    ///
+    /// * `peer_id` - The target peer ID to find closest peers for
+    ///
+    /// # Returns
+    ///
+    /// A vector of peer information for the closest peers found.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use hypha_network::kad::{KademliaInterface, KademliaError};
+    /// # use libp2p::PeerId;
+    /// # async fn example(network: impl KademliaInterface) -> Result<(), KademliaError> {
+    /// let target = PeerId::random();
+    /// let closest = network.get_closest_peers(target).await?;
+    /// println!("Found {} peers close to {}", closest.len(), target);
+    /// # Ok(())
+    /// # }
+    /// ```
     fn get_closest_peers(
         &self,
         peer_id: PeerId,

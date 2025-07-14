@@ -1,3 +1,5 @@
+//! Scheduler binary.
+
 mod network;
 mod tasks;
 
