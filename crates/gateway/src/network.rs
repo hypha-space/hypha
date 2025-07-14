@@ -4,7 +4,6 @@ use futures_util::stream::StreamExt;
 use hypha_network::{
     CertificateDer, CertificateRevocationListDer, PrivateKeyDer, cert,
     dial::{DialAction, DialDriver, DialInterface, PendingDials},
-    error::HyphaError,
     gossipsub::{
         GossipsubAction, GossipsubBehaviour, GossipsubDriver, GossipsubInterface, Subscriptions,
     },
@@ -12,7 +11,7 @@ use hypha_network::{
     listen::{ListenAction, ListenDriver, ListenInterface, PendingListens},
     mtls,
     stream::{StreamInterface, StreamReceiverInterface},
-    swarm::SwarmDriver,
+    swarm::{SwarmDriver, SwarmError},
 };
 use libp2p::{
     Swarm, SwarmBuilder, gossipsub, identify, kad, ping, relay,
@@ -60,16 +59,18 @@ impl Network {
         private_key: PrivateKeyDer<'static>,
         ca_certs: Vec<CertificateDer<'static>>,
         crls: Vec<CertificateRevocationListDer<'static>>,
-    ) -> Result<(Self, NetworkDriver), HyphaError> {
+    ) -> Result<(Self, NetworkDriver), SwarmError> {
         let (action_sender, action_receiver) = mpsc::channel(5);
 
         // Create a libp2p keypair from the certificate and private key
         let identity = cert::identity_from_private_key(&private_key)
-            .map_err(|e| HyphaError::SwarmError(format!("Failed to create identity: {e}")))?;
+            .map_err(|e| SwarmError::TransportConfig(format!("Failed to create identity: {e}")))?;
 
         // Create mTLS config
-        let mtls_config = mtls::Config::try_new(cert_chain, private_key, ca_certs, crls)
-            .map_err(|e| HyphaError::SwarmError(format!("Failed to create mTLS config: {e}")))?;
+        let mtls_config =
+            mtls::Config::try_new(cert_chain, private_key, ca_certs, crls).map_err(|e| {
+                SwarmError::TransportConfig(format!("Failed to create mTLS config: {e}"))
+            })?;
 
         let mut swarm = SwarmBuilder::with_existing_identity(identity)
             .with_tokio()
@@ -82,7 +83,7 @@ impl Network {
                 yamux::Config::default,
             )
             .map_err(|_: Box<dyn std::error::Error>| {
-                HyphaError::SwarmError("Failed to create TCP transport.".to_string())
+                SwarmError::TransportConfig("Failed to create TCP transport.".to_string())
             })?
             .with_behaviour(|key| Behaviour {
                 relay: relay::Behaviour::new(key.public().to_peer_id(), Default::default()),
@@ -100,9 +101,11 @@ impl Network {
                     gossipsub::MessageAuthenticity::Signed(key.clone()),
                     gossipsub::Config::default(),
                 )
-                .unwrap(),
+                .expect("Failed to create gossipsub behaviour"),
             })
-            .map_err(|_| HyphaError::SwarmError("Failed to create swarm behavior.".to_string()))?
+            .map_err(|_| {
+                SwarmError::BehaviourCreation("Failed to create swarm behavior.".to_string())
+            })?
             // TODO: Tune swarm configuration
             .with_swarm_config(|config| config)
             .build();
@@ -130,7 +133,7 @@ impl Network {
 }
 
 impl SwarmDriver<Behaviour> for NetworkDriver {
-    async fn run(mut self) -> Result<(), HyphaError> {
+    async fn run(mut self) -> Result<(), SwarmError> {
         loop {
             tokio::select! {
                 event = self.swarm.select_next_some() => {
@@ -189,7 +192,10 @@ impl SwarmDriver<Behaviour> for NetworkDriver {
 
 impl DialInterface for Network {
     async fn send(&self, action: DialAction) {
-        self.action_sender.send(Action::Dial(action)).await.unwrap();
+        self.action_sender
+            .send(Action::Dial(action))
+            .await
+            .expect("network driver should be running and able to receive actions");
     }
 }
 
@@ -204,7 +210,7 @@ impl ListenInterface for Network {
         self.action_sender
             .send(Action::Listen(action))
             .await
-            .unwrap();
+            .expect("network driver should be running and able to receive actions");
     }
 }
 
@@ -239,7 +245,7 @@ impl KademliaInterface for Network {
         self.action_sender
             .send(Action::Kademlia(action))
             .await
-            .unwrap();
+            .expect("network driver should be running and able to receive actions");
     }
 }
 
@@ -260,6 +266,6 @@ impl GossipsubInterface for Network {
         self.action_sender
             .send(Action::Gossipsub(action))
             .await
-            .unwrap();
+            .expect("network driver should be running and able to receive actions");
     }
 }

@@ -190,7 +190,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         },
         &mut data,
     )
-    .unwrap();
+    .expect("hardcoded task announcement should serialize successfully");
 
     let _ = network.publish("announce", data).await;
 

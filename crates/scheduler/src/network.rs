@@ -4,7 +4,6 @@ use futures_util::stream::StreamExt;
 use hypha_network::{
     CertificateDer, CertificateRevocationListDer, PrivateKeyDer, cert,
     dial::{DialAction, DialDriver, DialInterface, PendingDials},
-    error::HyphaError,
     gossipsub::{
         GossipsubAction, GossipsubBehaviour, GossipsubDriver, GossipsubInterface, Subscriptions,
     },
@@ -20,7 +19,7 @@ use hypha_network::{
         RequestResponseInterface,
     },
     stream::{StreamInterface, StreamSenderInterface},
-    swarm::SwarmDriver,
+    swarm::{SwarmDriver, SwarmError},
 };
 use libp2p::{
     PeerId, StreamProtocol, Swarm, SwarmBuilder, dcutr, gossipsub, identify, kad, ping, relay,
@@ -78,16 +77,16 @@ impl Network {
         private_key: PrivateKeyDer<'static>,
         ca_certs: Vec<CertificateDer<'static>>,
         crls: Vec<CertificateRevocationListDer<'static>>,
-    ) -> Result<(Self, NetworkDriver), HyphaError> {
+    ) -> Result<(Self, NetworkDriver), SwarmError> {
         let (action_sender, action_receiver) = mpsc::channel(5);
 
         // Create a libp2p identity keypair from provided private key.
         let identity = cert::identity_from_private_key(&private_key)
-            .map_err(|e| HyphaError::SwarmError(format!("Failed to create identity: {e}")))?;
+            .map_err(|e| SwarmError::SwarmConfig(format!("Failed to create identity: {e}")))?;
 
         // Create mTLS config
         let mtls_config = mtls::Config::try_new(cert_chain, private_key, ca_certs, crls)
-            .map_err(|e| HyphaError::SwarmError(format!("Failed to create mTLS config: {e}")))?;
+            .map_err(|e| SwarmError::SwarmConfig(format!("Failed to create mTLS config: {e}")))?;
 
         // Build libp2p Swarm using the derived identity and mTLS config
         let swarm = SwarmBuilder::with_existing_identity(identity)
@@ -101,7 +100,7 @@ impl Network {
                 yamux::Config::default,
             )
             .map_err(|_: Box<dyn std::error::Error>| {
-                HyphaError::SwarmError("Failed to create TCP transport with mTLS.".to_string())
+                SwarmError::TransportConfig("Failed to create TCP transport with mTLS.".to_string())
             })?
             .with_relay_client(
                 {
@@ -111,35 +110,41 @@ impl Network {
                 yamux::Config::default,
             )
             .map_err(|_: Box<dyn std::error::Error>| {
-                HyphaError::SwarmError("Failed to create relay client with mTLS.".to_string())
+                SwarmError::TransportConfig("Failed to create relay client with mTLS.".to_string())
             })?
-            .with_behaviour(|key, relay_client| Behaviour {
-                ping: ping::Behaviour::new(ping::Config::new()),
-                identify: identify::Behaviour::new(identify::Config::new(
-                    "/hypha-identify/0.0.1".to_string(),
-                    key.public(),
-                )),
-                relay_client,
-                dcutr: dcutr::Behaviour::new(key.public().to_peer_id()),
-                stream: stream::Behaviour::new(),
-                kademlia: kad::Behaviour::new(
-                    key.public().to_peer_id(),
-                    kad::store::MemoryStore::new(key.public().to_peer_id()),
-                ),
-                gossipsub: gossipsub::Behaviour::new(
+            .with_behaviour(|key, relay_client| {
+                let gossipsub = gossipsub::Behaviour::new(
                     gossipsub::MessageAuthenticity::Signed(key.clone()),
                     gossipsub::Config::default(),
                 )
-                .unwrap(),
-                request_response: request_response::Behaviour::<HyphaCodec>::new(
-                    [(
-                        StreamProtocol::new("/hypha-api/0.0.1"),
-                        request_response::ProtocolSupport::Full,
-                    )],
-                    request_response::Config::default(),
-                ),
+                .expect("Failed to create gossipsub behaviour");
+
+                Behaviour {
+                    ping: ping::Behaviour::new(ping::Config::new()),
+                    identify: identify::Behaviour::new(identify::Config::new(
+                        "/hypha-identify/0.0.1".to_string(),
+                        key.public(),
+                    )),
+                    relay_client,
+                    dcutr: dcutr::Behaviour::new(key.public().to_peer_id()),
+                    stream: stream::Behaviour::new(),
+                    kademlia: kad::Behaviour::new(
+                        key.public().to_peer_id(),
+                        kad::store::MemoryStore::new(key.public().to_peer_id()),
+                    ),
+                    gossipsub,
+                    request_response: request_response::Behaviour::<HyphaCodec>::new(
+                        [(
+                            StreamProtocol::new("/hypha-api/0.0.1"),
+                            request_response::ProtocolSupport::Full,
+                        )],
+                        request_response::Config::default(),
+                    ),
+                }
             })
-            .map_err(|_| HyphaError::SwarmError("Failed to create swarm behavior.".to_string()))?
+            .map_err(|_| {
+                SwarmError::BehaviourCreation("Failed to create swarm behavior.".to_string())
+            })?
             .build();
 
         Ok((
@@ -163,7 +168,7 @@ impl Network {
 }
 
 impl SwarmDriver<Behaviour> for NetworkDriver {
-    async fn run(mut self) -> Result<(), HyphaError> {
+    async fn run(mut self) -> Result<(), SwarmError> {
         loop {
             tokio::select! {
                 event = self.swarm.select_next_some() => {
@@ -235,7 +240,9 @@ impl SwarmDriver<Behaviour> for NetworkDriver {
 
 impl DialInterface for Network {
     async fn send(&self, action: DialAction) {
-        self.action_sender.send(Action::Dial(action)).await.unwrap();
+        if let Err(e) = self.action_sender.send(Action::Dial(action)).await {
+            tracing::error!(?e, "failed to send dial action");
+        }
     }
 }
 
@@ -249,10 +256,9 @@ impl DialDriver<Behaviour> for NetworkDriver {
 
 impl ListenInterface for Network {
     async fn send(&self, action: ListenAction) {
-        self.action_sender
-            .send(Action::Listen(action))
-            .await
-            .unwrap();
+        if let Err(e) = self.action_sender.send(Action::Listen(action)).await {
+            tracing::error!(?e, "failed to send listen action");
+        }
     }
 }
 
@@ -285,10 +291,9 @@ impl KademliaDriver<Behaviour> for NetworkDriver {
 }
 impl KademliaInterface for Network {
     async fn send(&self, action: KademliaAction) {
-        self.action_sender
-            .send(Action::Kademlia(action))
-            .await
-            .unwrap();
+        if let Err(e) = self.action_sender.send(Action::Kademlia(action)).await {
+            tracing::error!(?e, "failed to send kademlia action");
+        }
     }
 }
 
@@ -306,10 +311,9 @@ impl GossipsubDriver<Behaviour> for NetworkDriver {
 
 impl GossipsubInterface for Network {
     async fn send(&self, action: GossipsubAction) {
-        self.action_sender
-            .send(Action::Gossipsub(action))
-            .await
-            .unwrap();
+        if let Err(e) = self.action_sender.send(Action::Gossipsub(action)).await {
+            tracing::error!(?e, "failed to send gossipsub action");
+        }
     }
 }
 
@@ -338,7 +342,7 @@ impl RequestResponseInterface<HyphaCodec> for Network {
         self.action_sender
             .send(Action::RequestResponse(action))
             .await
-            .unwrap();
+            .expect("network driver is running");
     }
 
     fn try_send(

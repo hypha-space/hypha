@@ -158,7 +158,13 @@ where
     N: Clone + Send + 'static,
 {
     tracing::trace!("GET /tasks");
-    let task = state.rx.lock().await.recv().await.unwrap();
+    let task = state
+        .rx
+        .lock()
+        .await
+        .recv()
+        .await
+        .expect("task channel is open");
     tracing::trace!(task_id = %task.id, "Providing training config for task");
     // TODO
     Ok(Json(TrainingConfig {
@@ -254,7 +260,10 @@ where
             // Streaming a large file can take a while, therefore we spawn a task here.
             // TODO: Have a separate actor-like class keep track of this and handle errors.
             tokio::spawn(async move {
-                let mut tensor_stream = network.stream(parameter_server_peer_id).await.unwrap();
+                let mut tensor_stream = network
+                    .stream(parameter_server_peer_id)
+                    .await
+                    .expect("stream to parameter server can be established");
 
                 let header = hypha_api::ArtifactHeader {
                     task_id,
@@ -267,8 +276,10 @@ where
                 // Therefore we delete it once it has been sent.
                 send_file(&header, &result.path, &mut tensor_stream)
                     .await
-                    .unwrap();
-                tokio::fs::remove_file(&result.path).await.unwrap();
+                    .expect("training result file can be sent");
+                tokio::fs::remove_file(&result.path)
+                    .await
+                    .expect("training result file can be removed after sending");
             });
         }
 

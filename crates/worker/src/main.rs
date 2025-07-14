@@ -148,13 +148,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
         })
     };
 
-    let mut tensor_stream = network.streams().unwrap();
+    let mut tensor_stream = network.streams()?;
 
     let stream_future = tokio::spawn(async move {
         while let Some((peer_id, mut stream)) = tensor_stream.next().await {
             tracing::debug!(peer_id = %peer_id, "Received tensor stream");
 
-            receive_file(work_dir.path(), &mut stream).await.unwrap();
+            if let Err(e) = receive_file(work_dir.path(), &mut stream).await {
+                tracing::error!(error = ?e, "Failed to receive file");
+            }
         }
     });
 
@@ -162,8 +164,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let announce_future = tokio::spawn(async move {
         while let Some(Ok(data)) = announce_stream.next().await {
-            let announce: hypha_api::RequestAnnounce =
-                ciborium::from_reader(data.as_slice()).unwrap();
+            let announce: hypha_api::RequestAnnounce = match ciborium::from_reader(data.as_slice())
+            {
+                Ok(announce) => announce,
+                Err(e) => {
+                    tracing::error!(error = ?e, "Failed to deserialize announce message");
+                    continue;
+                }
+            };
 
             tracing::debug!(
                 peer_id = %announce.scheduler_peer_id,

@@ -101,9 +101,12 @@ where
                     // TODO: This is only available in UNIX environment.
                     //       We need to have a Windows-specific code-path
                     //       if we want it to work there as well.
-                    let pid = driver_process.id().unwrap();
-                    if let Err(e) = signal::kill(Pid::from_raw(pid as pid_t), Signal::SIGTERM) {
-                        tracing::warn!(error = ?e, "Failed to send SIGTERM to driver process");
+                    if let Some(pid) = driver_process.id() {
+                        if let Err(e) = signal::kill(Pid::from_raw(pid as pid_t), Signal::SIGTERM) {
+                            tracing::warn!(error = ?e, "Failed to send SIGTERM to driver process");
+                        }
+                    } else {
+                        tracing::trace!("Driver process already exited");
                     }
                     break;
                 }
@@ -185,9 +188,11 @@ where
             "test.yaml",
             "training.py",
             "--socket",
-            path.to_str().unwrap(),
+            path.to_str().expect("socket path is valid UTF-8"),
             "--work-dir",
-            work_path.to_str().unwrap(),
+            work_path
+                .to_str()
+                .expect("work directory path is valid UTF-8"),
         ],
         cancel,
     )

@@ -1,5 +1,7 @@
 disallowed-methods = [
     { path = "futures::channel::mpsc::unbounded", reason = "does not enforce backpressure" },
     { path = "tokio::sync::mpsc::unbounded_channel", reason = "does not enforce backpressure" },
+    { path = "std::result::Result::unwrap", reason = "can panic which is not acceptable for expected failures", replacement = "use `expect()` with descriptive message for unexpected failures, or proper error handling for expected failures" },
+    { path = "std::option::Option::unwrap", reason = "can panic which is not acceptable for expected `None` values", replacement = "use `expect()` with descriptive message when None is unexpected, or handle the None case explicitly" },
 ]
 avoid-breaking-exported-api = false

@@ -8,7 +8,10 @@ use std::{
 };
 
 use futures::StreamExt;
-use hypha_network::{error::HyphaError, request_response::*, swarm::SwarmDriver};
+use hypha_network::{
+    request_response::*,
+    swarm::{SwarmDriver, SwarmError},
+};
 use libp2p::{
     Swarm,
     request_response::{self, ProtocolSupport, cbor::codec::Codec},
@@ -60,7 +63,7 @@ impl SwarmDriver<TestBehaviour> for TestDriver {
         &mut self.swarm
     }
 
-    async fn run(mut self) -> Result<(), HyphaError> {
+    async fn run(mut self) -> Result<(), SwarmError> {
         loop {
             tokio::select! {
                 event = self.swarm.select_next_some() => {

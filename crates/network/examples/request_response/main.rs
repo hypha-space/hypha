@@ -5,7 +5,6 @@ use futures::StreamExt;
 use hypha_network::{
     cert::{load_certs_from_pem, load_crls_from_pem, load_private_key_from_pem},
     dial::{DialAction, DialDriver, DialInterface, PendingDials},
-    error::HyphaError,
     listen::{ListenAction, ListenDriver, ListenInterface, PendingListens},
     mtls,
     request_response::{
@@ -13,7 +12,7 @@ use hypha_network::{
         RequestResponseBehaviour, RequestResponseDriver, RequestResponseError,
         RequestResponseInterface, RequestResponseInterfaceExt,
     },
-    swarm::SwarmDriver,
+    swarm::{SwarmDriver, SwarmError},
 };
 use libp2p::{
     Multiaddr, Swarm, SwarmBuilder,
@@ -231,7 +230,7 @@ impl SwarmDriver<Behaviour> for NetworkDriver {
         &mut self.swarm
     }
 
-    async fn run(mut self) -> Result<(), HyphaError> {
+    async fn run(mut self) -> Result<(), SwarmError> {
         loop {
             tokio::select! {
                 event = self.swarm.select_next_some() => {
