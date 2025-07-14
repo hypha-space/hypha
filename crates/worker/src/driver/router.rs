@@ -109,7 +109,7 @@ pub fn new<N, P>(
 ) -> Router
 where
     N: StreamSenderInterface
-        + RequestResponseInterface<Codec<hypha_api::Request, hypha_api::Response>>
+        + RequestResponseInterface<Codec<hypha_messages::Request, hypha_messages::Response>>
         + Clone
         + Sync
         + Send
@@ -229,7 +229,7 @@ async fn status<N>(
 ) -> Result<(), Error>
 where
     N: StreamSenderInterface
-        + RequestResponseInterface<Codec<hypha_api::Request, hypha_api::Response>>
+        + RequestResponseInterface<Codec<hypha_messages::Request, hypha_messages::Response>>
         + Clone
         + Sync
         + Send
@@ -265,7 +265,7 @@ where
                     .await
                     .expect("stream to parameter server can be established");
 
-                let header = hypha_api::ArtifactHeader {
+                let header = hypha_messages::ArtifactHeader {
                     task_id,
                     epoch: result.epoch,
                 };
@@ -287,12 +287,12 @@ where
             .network
             .request(
                 scheduler_peer_id,
-                hypha_api::Request::Worker(hypha_api::WorkerRequest::TaskStatus {
+                hypha_messages::Request::Worker(hypha_messages::WorkerRequest::TaskStatus {
                     task_id,
                     status: status
                         .status
                         .parse()
-                        .unwrap_or(hypha_api::TaskStatus::Unknown),
+                        .unwrap_or(hypha_messages::TaskStatus::Unknown),
                 }),
             )
             .await?;
@@ -324,10 +324,10 @@ mod tests {
             fn clone(&self) -> Self;
         }
 
-        impl RequestResponseInterface<Codec<hypha_api::Request, hypha_api::Response>> for TestNetwork {
-            async fn send(&self, action: hypha_network::request_response::RequestResponseAction<Codec<hypha_api::Request,hypha_api::Response>>);
-            fn try_send(&self, action: hypha_network::request_response::RequestResponseAction<Codec<hypha_api::Request,hypha_api::Response>>) -> Result<(), RequestResponseError>;
-            async fn request(&self, peer_id: PeerId, request: <Codec<hypha_api::Request, hypha_api::Response> as request_response::Codec>::Request) -> Result<<Codec<hypha_api::Request, hypha_api::Response> as request_response::Codec>::Response, RequestResponseError>;
+        impl RequestResponseInterface<Codec<hypha_messages::Request, hypha_messages::Response>> for TestNetwork {
+            async fn send(&self, action: hypha_network::request_response::RequestResponseAction<Codec<hypha_messages::Request,hypha_messages::Response>>);
+            fn try_send(&self, action: hypha_network::request_response::RequestResponseAction<Codec<hypha_messages::Request,hypha_messages::Response>>) -> Result<(), RequestResponseError>;
+            async fn request(&self, peer_id: PeerId, request: <Codec<hypha_messages::Request, hypha_messages::Response> as request_response::Codec>::Request) -> Result<<Codec<hypha_messages::Request, hypha_messages::Response> as request_response::Codec>::Response, RequestResponseError>;
         }
 
         impl StreamInterface for TestNetwork {
@@ -446,8 +446,8 @@ mod tests {
             .times(1)
             .returning(move |peer_id, _| {
                 if peer_id == scheduler_peer_id {
-                    Ok(hypha_api::Response::Worker(
-                        hypha_api::WorkerResponse::TaskStatus {},
+                    Ok(hypha_messages::Response::Worker(
+                        hypha_messages::WorkerResponse::TaskStatus {},
                     ))
                 } else {
                     Err(RequestResponseError::Other("wrong peer ID".to_string()))

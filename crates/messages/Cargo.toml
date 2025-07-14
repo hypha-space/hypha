@@ -1,5 +1,5 @@
 [package]
-name = "hypha-api"
+name = "hypha-messages"
 version = "0.0.0"
 publish.workspace = true
 edition.workspace = true

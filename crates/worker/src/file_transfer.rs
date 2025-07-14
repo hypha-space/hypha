@@ -9,7 +9,7 @@ const MAX_HEADER_SIZE: u64 = 1024 * 1024; // 1 MB
 
 /// Send a file to a libp2p stream.
 pub async fn send_file(
-    header: &hypha_api::ArtifactHeader,
+    header: &hypha_messages::ArtifactHeader,
     file_path: impl AsRef<Path>,
     stream: &mut Stream,
 ) -> Result<(), std::io::Error> {
@@ -65,7 +65,7 @@ pub async fn receive_file(
     // TODO: use a maximum header size, don't blindly trust the provided value
     stream.read_exact(&mut header_bytes).await?;
 
-    let header: hypha_api::ArtifactHeader = ciborium::from_reader(header_bytes.as_slice())
+    let header: hypha_messages::ArtifactHeader = ciborium::from_reader(header_bytes.as_slice())
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
 
     // TODO: Add header validation

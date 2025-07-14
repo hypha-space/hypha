@@ -26,7 +26,7 @@ use tokio::{
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use uuid::Uuid;
 
-use crate::Network;
+use crate::network::Network;
 
 mod router;
 

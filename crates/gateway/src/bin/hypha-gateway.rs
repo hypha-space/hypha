@@ -1,19 +1,17 @@
 //! Gateway binary.
 
-mod network;
-
 use std::{error::Error, fs, net::SocketAddr, path::PathBuf};
 
 use clap::Parser;
+use hypha_gateway::network::Network;
 use hypha_network::{
     cert::{load_certs_from_pem, load_crls_from_pem, load_private_key_from_pem},
     listen::ListenInterface,
     swarm::SwarmDriver,
     utils::multiaddr_from_socketaddr,
 };
+use tokio::signal::unix::{SignalKind, signal};
 use tracing_subscriber::EnvFilter;
-
-use crate::network::Network;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -62,13 +60,26 @@ async fn main() -> Result<(), Box<dyn Error>> {
     };
 
     let (network, network_driver) = Network::create(cert_chain, private_key, ca_certs, crls)?;
-    let task = tokio::spawn(network_driver.run());
+    let driver_future = tokio::spawn(network_driver.run());
 
     network
         .listen(multiaddr_from_socketaddr(opt.listen_address)?)
         .await?;
     tracing::info!("Successfully listening");
 
-    let _ = task.await?;
+    let mut sigterm = signal(SignalKind::terminate())?;
+
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {
+            tracing::info!("Received SIGINT, shutting down");
+        }
+        _ = sigterm.recv() => {
+            tracing::info!("Received SIGTERM, shutting down");
+        }
+        _ = driver_future => {
+            tracing::warn!("Network driver terminated, shutting down");
+        }
+    }
+
     Ok(())
 }

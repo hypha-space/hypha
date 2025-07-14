@@ -1,8 +1,5 @@
 //! Scheduler binary.
 
-mod network;
-mod tasks;
-
 use std::{error::Error, fs, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
 use clap::Parser;
@@ -18,14 +15,13 @@ use hypha_network::{
     swarm::SwarmDriver,
     utils::multiaddr_from_socketaddr,
 };
-use libp2p::PeerId;
-use tokio::{sync::Mutex, task::JoinSet};
-use tracing_subscriber::EnvFilter;
-
-use crate::{
+use hypha_scheduler::{
     network::Network,
     tasks::{TaskId, Tasks},
 };
+use libp2p::PeerId;
+use tokio::{sync::Mutex, task::JoinSet};
+use tracing_subscriber::EnvFilter;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -99,7 +95,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let scheduler = Arc::new(Mutex::new(Tasks::new()));
 
     let handler = network
-        .on(|req: &hypha_api::Request| matches!(req, hypha_api::Request::Worker(_)))
+        .on(|req: &hypha_messages::Request| matches!(req, hypha_messages::Request::Worker(_)))
         .into_stream()
         .await?;
 
@@ -112,29 +108,30 @@ async fn main() -> Result<(), Box<dyn Error>> {
             let scheduler = scheduler.clone();
             async move {
                 match req {
-                    hypha_api::Request::Worker(worker) => match worker {
-                        hypha_api::WorkerRequest::Available { task_id, role } => {
+                    hypha_messages::Request::Worker(worker) => match worker {
+                        hypha_messages::WorkerRequest::Available { task_id, role } => {
                             tracing::debug!(
                                 task_id = %task_id,
                                 peer_id = %peer_id,
                                 "Received available worker request",
                             );
-                            let (participants, parameter_server_peer_id) = if let Some(task) =
-                                scheduler.lock().await.get_task(&task_id)
-                            {
-                                match role {
-                                    hypha_api::WorkerRole::TaskExecutor => task.add_worker(peer_id),
-                                    hypha_api::WorkerRole::ParameterExecutor => {
-                                        task.add_parameter_server(peer_id)
-                                    }
+                            let (participants, parameter_server_peer_id) =
+                                if let Some(task) = scheduler.lock().await.get_task(&task_id) {
+                                    match role {
+                                        hypha_messages::WorkerRole::TaskExecutor => {
+                                            task.add_worker(peer_id)
+                                        }
+                                        hypha_messages::WorkerRole::ParameterExecutor => {
+                                            task.add_parameter_server(peer_id)
+                                        }
+                                    };
+                                    (
+                                        task.workers().cloned().collect::<Vec<_>>(),
+                                        task.parameter_server(),
+                                    )
+                                } else {
+                                    (Vec::new(), None)
                                 };
-                                (
-                                    task.workers().cloned().collect::<Vec<_>>(),
-                                    task.parameter_server(),
-                                )
-                            } else {
-                                (Vec::new(), None)
-                            };
 
                             // TODO: This is very simple and hard-coded scheduling:
                             // Once 2 workers and a parameter server have connected, we start a task.
@@ -150,9 +147,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                 }
                             }
 
-                            hypha_api::Response::Worker(hypha_api::WorkerResponse::Available {})
+                            hypha_messages::Response::Worker(
+                                hypha_messages::WorkerResponse::Available {},
+                            )
                         }
-                        hypha_api::WorkerRequest::TaskStatus { task_id, status } => {
+                        hypha_messages::WorkerRequest::TaskStatus { task_id, status } => {
                             tracing::info!(
                                 task_id = %task_id,
                                 peer_id = %peer_id,
@@ -168,7 +167,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             // a scheduler needs to inform workers about that so that they no longer
                             // keep track of that task/no longer expect messages related to that task.
 
-                            hypha_api::Response::Worker(hypha_api::WorkerResponse::TaskStatus {})
+                            hypha_messages::Response::Worker(
+                                hypha_messages::WorkerResponse::TaskStatus {},
+                            )
                         }
                     },
                     _ => {
@@ -186,7 +187,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut data = Vec::new();
 
     ciborium::into_writer(
-        &hypha_api::RequestAnnounce {
+        &hypha_messages::RequestAnnounce {
             task_id,
             scheduler_peer_id: local_peer_id,
         },
@@ -216,7 +217,7 @@ async fn start_task(
             network
                 .request(
                     worker_peer_id,
-                    hypha_api::Request::Scheduler(hypha_api::SchedulerRequest::Work {
+                    hypha_messages::Request::Scheduler(hypha_messages::SchedulerRequest::Work {
                         task_id,
                         parameter_server_peer_id,
                     }),
