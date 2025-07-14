@@ -1,0 +1,17 @@
+[package]
+name = "hypha-config"
+version = "0.1.0"
+publish.workspace = true
+edition.workspace = true
+license = "Apache-2.0"
+
+[dependencies]
+documented = "0.9.2"
+figment = { version = "0.10", features = ["toml", "env"] }
+miette.workspace = true
+serde = { version = "1.0", features = ["derive"] }
+thiserror = "1.0"
+toml = "0.8"
+
+[dev-dependencies]
+tempfile = "3.0"

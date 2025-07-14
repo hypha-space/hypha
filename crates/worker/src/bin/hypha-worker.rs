@@ -2,10 +2,11 @@
 
 use std::{error::Error, fs, net::SocketAddr, path::PathBuf};
 
-use clap::{Parser, ValueEnum};
+use clap::{Parser, Subcommand, ValueEnum};
+use figment::providers::{Env, Format, Serialized, Toml};
 use futures_util::StreamExt;
+use hypha_config::LayeredConfig;
 use hypha_network::{
-    cert::{load_certs_from_pem, load_crls_from_pem, load_private_key_from_pem},
     dial::DialInterface,
     gossipsub::GossipsubInterface,
     kad::KademliaInterface,
@@ -15,12 +16,14 @@ use hypha_network::{
     swarm::SwarmDriver,
     utils::{multiaddr_from_socketaddr, multiaddr_from_socketaddr_quic},
 };
-use hypha_worker::{driver, file_transfer::receive_file, network::Network};
+use hypha_worker::{config::Config, driver, file_transfer::receive_file, network::Network};
+use miette::{IntoDiagnostic, Result};
+use serde::{Deserialize, Serialize};
 use tokio::signal::unix::{SignalKind, signal};
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::EnvFilter;
 
-#[derive(Clone, Debug, ValueEnum)]
+#[derive(Clone, Debug, ValueEnum, Serialize, Deserialize)]
 enum Role {
     Worker,
     ParameterServer,
@@ -34,68 +37,72 @@ enum Role {
     long_about = "Runs a Hypha Worker which executes tasks.",
     after_help = "For more information, see the project documentation."
 )]
-struct Opt {
-    #[clap(long)]
-    cert_file: PathBuf,
-    #[clap(long)]
-    key_file: PathBuf,
-    #[clap(long)]
-    ca_cert_file: PathBuf,
-    #[clap(long)]
-    crl_file: Option<PathBuf>,
-    #[clap(long)]
-    gateway_address: SocketAddr,
-    #[clap(long, default_value = "[::1]:0")]
-    listen_address: SocketAddr,
-    /// Socket to use for driver communication.
-    #[clap(long, default_value = "/tmp/hypha.sock")]
-    socket: PathBuf,
-    /// Role of the worker in DiLoCo tasks.
-    #[arg(value_enum)]
-    role: Role,
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
-        .init();
+#[derive(Debug, Subcommand, Serialize)]
+enum Commands {
+    Init {
+        /// Path where the configuration file will be written
+        #[clap(short, long, default_value = "config.toml")]
+        output: PathBuf,
+    },
+    #[serde(untagged)]
+    Run {
+        /// Path to the configuration file.
+        #[clap(short, long("config"), default_value = "config.toml")]
+        #[serde(skip)]
+        config_file: PathBuf,
 
-    let opt = Opt::parse();
+        /// Address of the gateway.
+        #[clap(long("gateway"))]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        gateway_address: Option<SocketAddr>,
 
+        /// Address to listen on.
+        #[clap(long("listen"))]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        listen_address: Option<SocketAddr>,
+
+        /// Socket to use for driver communication.
+        #[clap(long("socket"))]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        socket_address: Option<PathBuf>,
+
+        // NOTE: Defining the role via command-line argument is a workaround used to determine the worker's role in DiLoCo tasks. The role will be assigned by the scheduler in the future.
+        /// Role of the worker in DiLoCo tasks.
+        #[arg(value_enum)]
+        #[serde(skip)]
+        role: Role,
+    },
+}
+
+async fn run(config: Config, role: Role) -> Result<(), Box<dyn Error>> {
     // Load certificates and private key
-    let cert_pem = fs::read(&opt.cert_file)?;
-    let key_pem = fs::read(&opt.key_file)?;
-    let ca_cert_pem = fs::read(&opt.ca_cert_file)?;
-
-    let cert_chain = load_certs_from_pem(&cert_pem)?;
-    let private_key = load_private_key_from_pem(&key_pem)?;
-    let ca_certs = load_certs_from_pem(&ca_cert_pem)?;
-
-    // Optionally load CRLs
-    let crls = if let Some(crl_file) = opt.crl_file {
-        let crl_pem = fs::read(&crl_file)?;
-        load_crls_from_pem(&crl_pem)?
-    } else {
-        vec![]
-    };
-
-    let gateway_address = multiaddr_from_socketaddr_quic(opt.gateway_address)?;
+    let cert_chain = config.load_cert_chain()?;
+    let private_key = config.load_key()?;
+    let ca_certs = config.load_trust_chain()?;
+    let crls = config.load_crls()?;
 
     let (network, network_driver) = Network::create(cert_chain, private_key, ca_certs, crls)?;
     let driver_future = tokio::spawn(network_driver.run());
 
     network
-        .listen(multiaddr_from_socketaddr(opt.listen_address)?)
+        .listen(multiaddr_from_socketaddr(config.listen_address()).into_diagnostic()?)
         .await?;
     network
-        .listen(multiaddr_from_socketaddr_quic(opt.listen_address)?)
+        .listen(multiaddr_from_socketaddr(config.listen_address()).into_diagnostic()?)
         .await?;
     tracing::info!("Successfully listening");
 
     // Dial the gateway address
     // TODO: fall back to TCP if QUIC doesn't work
-    let _gateway_peer_id = network.dial(gateway_address).await?;
+    let _gateway_peer_id = network
+        .dial(multiaddr_from_socketaddr_quic(config.gateway_address()).into_diagnostic()?)
+        .await
+        .into_diagnostic()?;
 
     tracing::info!(gateway_id = %_gateway_peer_id, "Connected to gateway");
 
@@ -104,20 +111,22 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let token = CancellationToken::new();
 
-    let work_dir = tempfile::tempdir()?;
+    let work_dir = tempfile::tempdir().into_diagnostic()?;
 
     let driver = driver::try_new_accelerate(
         network.clone(),
-        opt.socket.as_path(),
+        config.socket_path(),
         work_dir.path(),
         token.clone(),
     )
-    .await?;
+    .await
+    .into_diagnostic()?;
 
     let handler = network
         .on(|req: &hypha_messages::Request| matches!(req, hypha_messages::Request::Scheduler(_)))
         .into_stream()
-        .await?;
+        .await
+        .into_diagnostic()?;
 
     let handler_future = {
         let driver = driver.clone();
@@ -151,7 +160,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         })
     };
 
-    let mut tensor_stream = network.streams()?;
+    let mut tensor_stream = network.streams().into_diagnostic()?;
 
     let stream_future = tokio::spawn(async move {
         while let Some((peer_id, mut stream)) = tensor_stream.next().await {
@@ -163,7 +172,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     });
 
-    let mut announce_stream = network.subscribe("announce").await?;
+    let mut announce_stream = network.subscribe("announce").await.into_diagnostic()?;
 
     let announce_future = tokio::spawn(async move {
         while let Some(Ok(data)) = announce_stream.next().await {
@@ -180,7 +189,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 peer_id = %announce.scheduler_peer_id,
                 "Sending availability to scheduler"
             );
-            let role = match opt.role {
+            let role = match role {
                 Role::Worker => hypha_messages::WorkerRole::TaskExecutor,
                 Role::ParameterServer => hypha_messages::WorkerRole::ParameterExecutor,
             };
@@ -196,7 +205,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     });
 
-    let mut sigterm = signal(SignalKind::terminate())?;
+    let mut sigterm = signal(SignalKind::terminate()).into_diagnostic()?;
 
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {
@@ -227,4 +236,32 @@ async fn main() -> Result<(), Box<dyn Error>> {
     driver.wait().await;
 
     Ok(())
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env())
+        .init();
+
+    let cli = Cli::parse();
+    match &cli.command {
+        Commands::Init { output } => {
+            fs::write(output, &Config::default().to_toml().into_diagnostic()?).into_diagnostic()?;
+
+            println!("Configuration written to: {output:?}");
+            Ok(())
+        }
+        args @ Commands::Run {
+            config_file, role, ..
+        } => {
+            let config = Config::builder()
+                .with_provider(Toml::file(config_file))
+                .with_provider(Env::prefixed("HYPHA_"))
+                .with_provider(Serialized::defaults(args))
+                .build()?;
+
+            run(config, role.clone()).await
+        }
+    }
 }
