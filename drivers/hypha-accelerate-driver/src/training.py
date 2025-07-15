@@ -1,59 +1,66 @@
 import argparse
 import os
+from collections.abc import Iterable
+from typing import Any, cast
 
 import torch
 import torch.utils.data
 from accelerate import Accelerator
-from datasets import load_dataset
-from transformers import GPT2Tokenizer, GPTNeoForCausalLM
+from datasets import DatasetDict, load_dataset
 from safetensors import safe_open
 from safetensors.torch import save_model
 from tqdm import tqdm
+from transformers import GPT2Tokenizer, GPTNeoForCausalLM
+from transformers.tokenization_utils import PreTrainedTokenizer
 
 from api import Session
 
 
-def get_model(model_config: str):
+def get_model(model_config: str) -> tuple[torch.nn.Module, PreTrainedTokenizer]:
     # Initializing a model (with random weights) from the EleutherAI/gpt-neo-1.3B style configuration
     model = GPTNeoForCausalLM.from_pretrained(model_config)
     tokenizer = GPT2Tokenizer.from_pretrained(model_config)
     return model, tokenizer
 
 
-def get_optimizer(optimizer_name: str, learning_rate: float, parameters):
+def get_optimizer(
+    optimizer_name: str, learning_rate: float, parameters: Iterable[torch.Tensor]
+) -> torch.optim.Optimizer:
     if optimizer_name == "AdamW":
         return torch.optim.AdamW(parameters, learning_rate)
     else:
         raise RuntimeError(f"Optimizer {optimizer_name} doesn't exist.")
 
 
-def get_data_loader(data_set_name: str, batch_size: int, tokenizer):
+def get_data_loader(
+    data_set_name: str, batch_size: int, tokenizer: PreTrainedTokenizer
+) -> torch.utils.data.DataLoader[int]:
     # TODO: data needs to be provided by the task
-    ds = load_dataset(data_set_name)["train"]
+    ds = cast(DatasetDict, load_dataset(data_set_name))["train"]
     train_ds, test_ds = ds.train_test_split(0.2, 0.8, True, seed=40).values()
     train_ds = CustomC4(train_ds["text"][:40], tokenizer, context_length=2048)
     return torch.utils.data.DataLoader(train_ds, batch_size=batch_size)
 
 
-def merge_models(a, weight_path: str, alpha):
+def merge_models(a: torch.nn.Module, weight_path: str, alpha: float) -> torch.nn.Module:
     # All weights need to be on CPU
     a.to("cpu")
     state_dict = a.state_dict()
-    with safe_open(weight_path, framework="pt", device="cpu") as b:
-        for name in b.keys():
+    with safe_open(weight_path, framework="pt", device="cpu") as b:  # type: ignore
+        for name in b.keys():  # noqa: SIM118
             state_dict[name] += alpha * (b.get_tensor(name) - state_dict[name])
     a.load_state_dict(state_dict)
     return a
 
 
 # TODO: This needs to be generic and support user-provided datasets.
-class CustomC4(torch.utils.data.Dataset):
-    def __init__(self, data, tokenizer, context_length):
+class CustomC4(torch.utils.data.Dataset[int]):
+    def __init__(self, data: Any, tokenizer: PreTrainedTokenizer, context_length: int) -> None:
         tokenizer.pad_token = tokenizer.eos_token
         self.tokenizer = tokenizer
         self.tokenized_data = self._tokenize(data, context_length)
 
-    def _tokenize(self, data, context_length):
+    def _tokenize(self, data: Any, context_length: int) -> list[int]:
         tokenized_inputs = self.tokenizer(
             data,
             return_tensors="pt",
@@ -61,16 +68,16 @@ class CustomC4(torch.utils.data.Dataset):
             truncation=True,
             padding="max_length",
         )
-        return tokenized_inputs["input_ids"]
+        return cast(list[int], tokenized_inputs["input_ids"])
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.tokenized_data)
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx: int) -> int:
         return self.tokenized_data[idx]
 
 
-def main(socket_path: str, work_dir: str):
+def main(socket_path: str, work_dir: str) -> None:
     with Session(socket_path) as client:
         while True:
             train_config = client.wait_for_task()
@@ -104,9 +111,7 @@ def main(socket_path: str, work_dir: str):
                 schedulers=[scheduler_warmup, scheduler_cool_down],
                 milestones=[milestone],
             )
-            data_loader = get_data_loader(
-                train_config["dataset"], train_config["batch_size"], tokenizer
-            )
+            data_loader = get_data_loader(train_config["dataset"], train_config["batch_size"], tokenizer)
 
             model, optimizer, training_dataloader, scheduler = accelerator.prepare(
                 model, optimizer, data_loader, scheduler
@@ -123,9 +128,7 @@ def main(socket_path: str, work_dir: str):
                     optimizer.zero_grad()
                     # check for model updates
                     if not update_in_epoch:
-                        latest_version, weights_path = client.get_parameters(
-                            train_config["task_id"]
-                        )
+                        latest_version, weights_path = client.get_parameters(train_config["task_id"])
 
                         if latest_version > latest_model:
                             model = merge_models(model, weights_path, 0.9)
@@ -145,25 +148,24 @@ def main(socket_path: str, work_dir: str):
                     scheduler.step()
                     if accelerator.is_main_process:
                         progress_bar.update(1)
-                if accelerator.is_main_process:
-                    if epoch % train_config["checkpointing"] == 0:
-                        # For testing purposes set to global!
-                        result_path = os.path.join(
-                            work_dir,
-                            f"{train_config['task_id']}_{epoch}_global_weights.pt",
-                        )
-                        save_model(model, result_path)
+                if accelerator.is_main_process and epoch % train_config["checkpointing"] == 0:
+                    # For testing purposes set to global!
+                    result_path = os.path.join(
+                        work_dir,
+                        f"{train_config['task_id']}_{epoch}_global_weights.pt",
+                    )
+                    save_model(model, result_path)
 
-                        # Once we notify the driver about the result file, ownership of that file
-                        # is transferred to the driver.
-                        client.set_task_status(
-                            train_config["task_id"],
-                            "Finished",
-                            {
-                                "epoch": epoch,
-                                "path": result_path,
-                            },
-                        )
+                    # Once we notify the driver about the result file, ownership of that file
+                    # is transferred to the driver.
+                    client.set_task_status(
+                        train_config["task_id"],
+                        "Finished",
+                        {
+                            "epoch": epoch,
+                            "path": result_path,
+                        },
+                    )
 
 
 if __name__ == "__main__":

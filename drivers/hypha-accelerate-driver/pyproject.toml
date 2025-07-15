@@ -1,0 +1,42 @@
+[project]
+name = "hypha-accelerate-driver"
+version = "0.1.0"
+license = "Apache-2.0"
+requires-python = ">=3.12"
+dependencies = [
+    "accelerate>=1.6.0",
+    "datasets>=3.5.0",
+    "httpx>=0.28.1",
+    "requests>=2.32.3",
+    "safetensors>=0.5.3",
+    "torch>=2.6.0",
+    "tqdm>=4.67.1",
+    "transformers>=4.51.2",
+]
+
+[dependency-groups]
+dev = [
+    "mypy>=1.17.0",
+    "ruff>=0.11.9",
+    "types-tqdm>=4.67.0.20250516",
+]
+
+[tool.mypy]
+strict = true
+
+[[tool.mypy.overrides]]
+module = "accelerate"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "datasets"
+ignore_missing_imports = true
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.format]
+docstring-code-format = true
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "SIM", "ARG", "PL"]
