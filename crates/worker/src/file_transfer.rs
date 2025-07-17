@@ -36,7 +36,7 @@ pub async fn send_file(
     // We should also check if memory-mapping the file increases performance.
     let nbytes = copy(&mut file, &mut stream.compat_write()).await?;
 
-    tracing::trace!(file_path = %file_path.display(), bytes = nbytes, "Sent file");
+    tracing::info!(file_path = %file_path.display(), bytes = nbytes, "Sent file");
 
     // TODO: assert nbytes = file_metadata.len()
     Ok(())

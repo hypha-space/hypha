@@ -173,8 +173,8 @@ where
         task_id: task.id,
         model: "EleutherAI/gpt-neo-125m".to_string(),
         dataset: "datablations/c4-filter-small".to_string(),
-        epochs: 2,
-        batch_size: 4,
+        epochs: 1,
+        batch_size: 1,
         learning_rate: 1e-5,
         learning_rate_scheduler: "".to_string(),
         optimizer: "AdamW".to_string(),
@@ -264,6 +264,8 @@ where
                     .stream(parameter_server_peer_id)
                     .await
                     .expect("stream to parameter server can be established");
+
+                tracing::info!("Starting file transfer");
 
                 let header = hypha_messages::ArtifactHeader {
                     task_id,

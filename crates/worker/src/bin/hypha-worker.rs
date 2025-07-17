@@ -161,7 +161,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let stream_future = tokio::spawn(async move {
         while let Some((peer_id, mut stream)) = tensor_stream.next().await {
-            tracing::debug!(peer_id = %peer_id, "Received tensor stream");
+            tracing::info!(peer_id = %peer_id, "Received tensor stream");
 
             if let Err(e) = receive_file(work_dir.path(), &mut stream).await {
                 tracing::error!(error = ?e, "Failed to receive file");
