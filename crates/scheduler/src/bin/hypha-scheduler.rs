@@ -19,7 +19,7 @@ use hypha_scheduler::{
     network::Network,
     tasks::{TaskId, Tasks},
 };
-use libp2p::PeerId;
+use libp2p::{multiaddr::Protocol, PeerId};
 use tokio::{sync::Mutex, task::JoinSet};
 use tracing_subscriber::EnvFilter;
 
@@ -85,8 +85,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
     tracing::info!("Successfully listening");
 
     // Dial the gateway address
-    let _gateway_peer_id = network.dial(gateway_address).await?;
+    let gateway_peer_id = network.dial(gateway_address.clone()).await?;
 
+    network
+        .listen(
+            gateway_address
+                .with_p2p(gateway_peer_id)
+                .unwrap()
+                .with(Protocol::P2pCircuit),
+        )
+        .await?;
     // Wait a bit until DHT bootstrapping is done.
     // Once we receive an 'Identify' message, bootstrapping will start.
     // TODO: Provide a way to wait for this event
