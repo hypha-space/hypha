@@ -366,7 +366,7 @@ where
                 // NOTE: Add known addresses of peers to the Kademlia routing table
                 tracing::warn!(peer_id=%peer_id, info=?info, "Adding address to Kademlia routing table");
 
-                // self.swarm().add_external_address(info.observed_addr);
+                self.swarm().add_external_address(info.observed_addr);
 
                 for addr in info.listen_addrs {
                     self.swarm()

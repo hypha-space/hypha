@@ -4,7 +4,7 @@
 //! It ties together the networking primitives and drives the swarm. This
 //! documentation follows the [rustdoc guidelines](https://doc.rust-lang.org/rustdoc/how-to-write-documentation.html).
 
-use std::collections::HashMap;
+use std::{collections::HashMap, time::Duration};
 
 use futures_util::stream::StreamExt;
 use hypha_network::{
@@ -25,12 +25,13 @@ use hypha_network::{
     swarm::{SwarmDriver, SwarmError},
 };
 use libp2p::{
-    StreamProtocol, Swarm, SwarmBuilder, dcutr, gossipsub, identify, kad, ping, relay,
+    StreamProtocol, Swarm, SwarmBuilder, autonat, dcutr, gossipsub, identify, kad, ping, relay,
     request_response::{self, cbor::codec::Codec},
     swarm::{NetworkBehaviour, SwarmEvent},
     tcp, yamux,
 };
 use libp2p_stream as stream;
+use rand::rngs::OsRng;
 use tokio::sync::mpsc;
 
 type HyphaCodec = Codec<hypha_messages::Request, hypha_messages::Response>;
@@ -44,6 +45,7 @@ pub struct Network {
 
 #[derive(NetworkBehaviour)]
 pub struct Behaviour {
+    autonat: autonat::v2::client::Behaviour,
     ping: ping::Behaviour,
     identify: identify::Behaviour,
     relay_client: relay::client::Behaviour,
@@ -122,6 +124,11 @@ impl Network {
                 .expect("Failed to create gossipsub behaviour");
 
                 Behaviour {
+                    autonat: autonat::v2::client::Behaviour::new(
+                        OsRng,
+                        autonat::v2::client::Config::default()
+                            .with_probe_interval(Duration::from_secs(2)),
+                    ),
                     ping: ping::Behaviour::new(ping::Config::new()),
                     identify: identify::Behaviour::new(identify::Config::new(
                         "/hypha-identify/0.0.1".to_string(),
@@ -187,10 +194,10 @@ impl SwarmDriver<Behaviour> for NetworkDriver {
                         }
                         SwarmEvent::NewExternalAddrCandidate { address } => {
                             tracing::info!(address=%address, "New external address candidate");
-                            self.swarm.add_external_address(address);
                         }
                         SwarmEvent::ExternalAddrConfirmed { address, .. } => {
                             tracing::info!("External address confirmed: {:?}", address);
+                             self.swarm.add_external_address(address);
                         }
                         SwarmEvent::Behaviour(BehaviourEvent::Identify(event)) => {
                             self.process_identify_event(event);

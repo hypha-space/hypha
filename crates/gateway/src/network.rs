@@ -19,11 +19,12 @@ use hypha_network::{
     swarm::{SwarmDriver, SwarmError},
 };
 use libp2p::{
-    Swarm, SwarmBuilder, gossipsub, identify, kad, ping, relay,
+    Swarm, SwarmBuilder, autonat, gossipsub, identify, kad, ping, relay,
     swarm::{NetworkBehaviour, SwarmEvent},
     tcp, yamux,
 };
 use libp2p_stream as stream;
+use rand::rngs::OsRng;
 use tokio::sync::mpsc;
 
 #[derive(Clone)]
@@ -34,6 +35,7 @@ pub struct Network {
 
 #[derive(NetworkBehaviour)]
 pub struct Behaviour {
+    autonat: autonat::v2::server::Behaviour,
     ping: ping::Behaviour,
     identify: identify::Behaviour,
     relay: relay::Behaviour,
@@ -92,6 +94,7 @@ impl Network {
             })?
             .with_behaviour(|key| Behaviour {
                 relay: relay::Behaviour::new(key.public().to_peer_id(), Default::default()),
+                autonat: autonat::v2::server::Behaviour::new(OsRng),
                 ping: ping::Behaviour::new(ping::Config::new()),
                 identify: identify::Behaviour::new(identify::Config::new(
                     "/hypha-identify/0.0.1".to_string(),

@@ -45,6 +45,7 @@ libp2p = { version = "0.56.0", features = [
     "tls",
     "tokio",
     "yamux",
+    "autonat",
 ] }
 libp2p-stream = { version = "0.4.0-alpha" }
 mime = "0.3.17"
@@ -78,6 +79,7 @@ utoipa = { version = "5.4.0", features = ["axum_extras", "url", "uuid"] }
 uuid = { version = "1.17.0", features = ["serde", "v4"] }
 webpki = { version = "0.103", package = "rustls-webpki", features = ["std"] }
 x509-parser = "0.16"
+rand = "0.8.5"
 
 [profile.profiling]
 inherits = "release"
