@@ -364,7 +364,11 @@ where
         match event {
             identify::Event::Received { peer_id, info, .. } => {
                 // NOTE: Add known addresses of peers to the Kademlia routing table
-                tracing::debug!(peer_id=%peer_id, info=?info, "Adding address to Kademlia routing table");
+                tracing::warn!(peer_id=%peer_id, info=?info, "Adding address to Kademlia routing table");
+
+                tracing::warn!(observed_addr=%info.observed_addr, "Observed address");
+                self.swarm().add_external_address(info.observed_addr);
+
                 for addr in info.listen_addrs {
                     self.swarm()
                         .behaviour_mut()
@@ -376,7 +380,7 @@ where
                 tracing::trace!(peer_id=%peer_id, "Sent identify info to peer");
             }
             identify::Event::Pushed { peer_id, info, .. } => {
-                tracing::debug!(peer_id=%peer_id, info=?info, "Received identify push from peer");
+                tracing::warn!(peer_id=%peer_id, info=?info, "Received identify push from peer");
                 // NOTE: Handle pushed identify info similar to received info
                 for addr in info.listen_addrs {
                     self.swarm()

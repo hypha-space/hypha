@@ -15,6 +15,7 @@ use hypha_network::{
     utils::multiaddr_from_socketaddr,
 };
 use hypha_worker::{driver, file_transfer::receive_file, network::Network};
+use libp2p::multiaddr::Protocol;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::EnvFilter;
@@ -90,9 +91,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
     tracing::info!("Successfully listening");
 
     // Dial the gateway address
-    let _gateway_peer_id = network.dial(gateway_address).await?;
+    let gateway_peer_id = network.dial(gateway_address.clone()).await?;
 
-    tracing::info!(gateway_id = %_gateway_peer_id, "Connected to gateway");
+    network
+        .listen(
+            gateway_address
+                .with_p2p(gateway_peer_id)
+                .unwrap()
+                .with(Protocol::P2pCircuit),
+        )
+        .await?;
+
+    tracing::info!(gateway_id = %gateway_peer_id, "Connected to gateway");
     // Wait a bit until DHT bootstrapping is done.
     // Once we receive an 'Identify' message, bootstrapping will start.
     // TODO: Provide a way to wait for this event
