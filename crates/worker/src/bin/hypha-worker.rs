@@ -93,6 +93,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Dial the gateway address
     let gateway_peer_id = network.dial(gateway_address.clone()).await?;
 
+    tracing::info!(gateway_id = %gateway_peer_id, "Connected to gateway");
+    // Wait a bit until DHT bootstrapping is done.
+    // Once we receive an 'Identify' message, bootstrapping will start.
+    // TODO: Provide a way to wait for this event
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
     network
         .listen(
             gateway_address
@@ -101,12 +107,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 .with(Protocol::P2pCircuit),
         )
         .await?;
-
-    tracing::info!(gateway_id = %gateway_peer_id, "Connected to gateway");
-    // Wait a bit until DHT bootstrapping is done.
-    // Once we receive an 'Identify' message, bootstrapping will start.
-    // TODO: Provide a way to wait for this event
-    tokio::time::sleep(Duration::from_secs(2)).await;
 
     let token = CancellationToken::new();
 

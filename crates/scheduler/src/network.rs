@@ -188,6 +188,10 @@ impl SwarmDriver<Behaviour> for NetworkDriver {
                             tracing::info!(address=%address, "New listen address");
                             self.process_new_listen_addr(&listener_id).await;
                         }
+                        SwarmEvent::NewExternalAddrCandidate { address } => {
+                            tracing::info!(address=%address, "New external address candidate");
+                            self.swarm.add_external_address(address);
+                        }
                         SwarmEvent::ExternalAddrConfirmed { address, .. } => {
                             tracing::info!("External address confirmed: {:?}", address);
                         }

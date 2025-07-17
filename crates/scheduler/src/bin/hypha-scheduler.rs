@@ -19,7 +19,7 @@ use hypha_scheduler::{
     network::Network,
     tasks::{TaskId, Tasks},
 };
-use libp2p::{multiaddr::Protocol, PeerId};
+use libp2p::{PeerId, multiaddr::Protocol};
 use tokio::{sync::Mutex, task::JoinSet};
 use tracing_subscriber::EnvFilter;
 

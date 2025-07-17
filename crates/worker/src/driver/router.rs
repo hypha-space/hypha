@@ -265,7 +265,10 @@ where
                     .await
                     .expect("stream to parameter server can be established");
 
-                tracing::info!("Starting file transfer");
+                tracing::info!(
+                    peer_id = %parameter_server_peer_id,
+                    "Starting file transfer"
+                );
 
                 let header = hypha_messages::ArtifactHeader {
                     task_id,
