@@ -1,6 +1,6 @@
 //! Worker binary.
 
-use std::{error::Error, fs, net::SocketAddr, path::PathBuf, time::Duration};
+use std::{error::Error, fs, net::SocketAddr, path::PathBuf};
 
 use clap::{Parser, ValueEnum};
 use futures_util::StreamExt;
@@ -8,6 +8,7 @@ use hypha_network::{
     cert::{load_certs_from_pem, load_crls_from_pem, load_private_key_from_pem},
     dial::DialInterface,
     gossipsub::GossipsubInterface,
+    kad::KademliaInterface,
     listen::ListenInterface,
     request_response::{RequestResponseInterface, RequestResponseInterfaceExt},
     stream::StreamReceiverInterface,
@@ -97,10 +98,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let _gateway_peer_id = network.dial(gateway_address).await?;
 
     tracing::info!(gateway_id = %_gateway_peer_id, "Connected to gateway");
-    // Wait a bit until DHT bootstrapping is done.
-    // Once we receive an 'Identify' message, bootstrapping will start.
-    // TODO: Provide a way to wait for this event
-    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    // Wait until DHT bootstrapping is done.
+    network.wait_for_bootstrap().await?;
 
     let token = CancellationToken::new();
 

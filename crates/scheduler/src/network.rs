@@ -3,7 +3,7 @@
 //! The scheduler orchestrates workers via libp2p. This module brings together
 //! the networking primitives and drives the underlying swarm.
 
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use futures_util::stream::StreamExt;
 use hypha_network::{
@@ -32,7 +32,7 @@ use libp2p::{
     tcp, tls, yamux,
 };
 use libp2p_stream as stream;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{SetOnce, mpsc, oneshot};
 
 type HyphaCodec = Codec<hypha_messages::Request, hypha_messages::Response>;
 type HyphaRequestHandlers = Vec<RequestHandler<HyphaCodec>>;
@@ -60,6 +60,7 @@ pub struct NetworkDriver {
     pending_dials_map: PendingDials,
     pending_listen_map: PendingListens,
     pending_queries_map: PendingQueries,
+    pending_bootstrap: Arc<SetOnce<()>>,
     subscriptions: Subscriptions,
     action_receiver: mpsc::Receiver<Action>,
     outbound_requests_map: OutboundRequests<HyphaCodec>,
@@ -144,6 +145,7 @@ impl Network {
                 pending_dials_map: HashMap::default(),
                 pending_listen_map: HashMap::default(),
                 pending_queries_map: HashMap::default(),
+                pending_bootstrap: Arc::new(SetOnce::new()),
                 subscriptions: HashMap::default(),
                 outbound_requests_map: HashMap::default(),
                 outbound_responses_map: HashMap::default(),
@@ -270,6 +272,10 @@ impl KademliaDriver<Behaviour> for NetworkDriver {
         &mut self,
     ) -> &mut HashMap<libp2p::kad::QueryId, mpsc::Sender<KademliaResult>> {
         &mut self.pending_queries_map
+    }
+
+    fn pending_bootstrap(&mut self) -> &mut Arc<SetOnce<()>> {
+        &mut self.pending_bootstrap
     }
 }
 impl KademliaInterface for Network {

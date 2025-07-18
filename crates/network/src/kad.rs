@@ -9,6 +9,7 @@ use std::{
     collections::{HashMap, HashSet},
     error::Error,
     fmt::Display,
+    sync::Arc,
 };
 
 use libp2p::{
@@ -19,7 +20,7 @@ use libp2p::{
     },
     swarm::NetworkBehaviour,
 };
-use tokio::sync::mpsc;
+use tokio::sync::{SetOnce, mpsc};
 use tokio_stream::{StreamExt, wrappers::ReceiverStream};
 
 use crate::swarm::SwarmDriver;
@@ -75,6 +76,11 @@ pub enum KademliaAction {
     ///
     /// This queries the DHT to find peers that are closest to the target peer.
     GetClosestPeers(PeerId, mpsc::Sender<KademliaResult>),
+
+    /// Wait for the network to be fully bootstrapped.
+    ///
+    /// This waits for the network to be fully bootstrapped before proceeding.
+    WaitForBootstrap(mpsc::Sender<()>),
 }
 
 /// Type alias for Kademlia operation results.
@@ -172,6 +178,11 @@ where
     /// are used to send results as they arrive.
     fn pending_queries(&mut self) -> &mut PendingQueries;
 
+    /// Returns a mutable reference to the pending 'SetOnce' cell.
+    ///
+    /// This is used to signal when the network is fully bootstrapped.
+    fn pending_bootstrap(&mut self) -> &mut Arc<SetOnce<()>>;
+
     /// Process a Kademlia action by initiating the appropriate DHT operation.
     ///
     /// This method handles all types of Kademlia actions by calling the
@@ -243,6 +254,13 @@ where
                         .get_closest_peers(peer);
 
                     self.pending_queries().insert(query_id, tx);
+                }
+                KademliaAction::WaitForBootstrap(tx) => {
+                    let pending_bootstrap = self.pending_bootstrap().clone();
+                    tokio::spawn(async move {
+                        pending_bootstrap.wait().await;
+                        let _ = tx.send(()).await;
+                    });
                 }
             }
         }
@@ -350,6 +368,13 @@ where
                     )
                     .await;
                 }
+                kad::QueryResult::Bootstrap(Ok(_)) => {
+                    // This event is emitted multiple times during the lifetime of a swarm.
+                    // We are only interested in the first time it is emitted.
+                    // Calling `set()` will return an error after it has been called once.
+                    // We ignore this error here.
+                    let _ = self.pending_bootstrap().set(());
+                }
                 other => {
                     tracing::debug!("Unhandled Kademlia Queryresult: {:?}", other);
                 }
@@ -377,13 +402,6 @@ where
             }
             identify::Event::Pushed { peer_id, info, .. } => {
                 tracing::debug!(peer_id=%peer_id, info=?info, "Received identify push from peer");
-                // NOTE: Handle pushed identify info similar to received info
-                for addr in info.listen_addrs {
-                    self.swarm()
-                        .behaviour_mut()
-                        .kademlia()
-                        .add_address(&peer_id, addr);
-                }
             }
             identify::Event::Error { peer_id, error, .. } => {
                 tracing::warn!(peer_id=%peer_id, error=?error, "Identify protocol error");
@@ -448,6 +466,24 @@ pub trait KademliaInterface: Sync {
     /// [`get`](Self::get), [`provide`](Self::provide), etc.
     fn send(&self, action: KademliaAction) -> impl Future<Output = ()> + Send;
 
+    /// Wait for Kademlia to be fully bootstrapped.
+    ///
+    /// This method waits for Kademlia to be fully bootstrapped before
+    /// returning. It is useful for ensuring that Kademlia is ready to
+    /// perform operations like storing and retrieving records.
+    fn wait_for_bootstrap(&self) -> impl Future<Output = Result<(), KademliaError>> + Send {
+        async move {
+            let (tx, mut rx) = mpsc::channel(1);
+            tracing::trace!("Waiting for bootstrap");
+
+            self.send(KademliaAction::WaitForBootstrap(tx)).await;
+
+            rx.recv().await.ok_or_else(|| {
+                KademliaError::Other("No response received from the network".to_string())
+            })
+        }
+    }
+
     /// Store a record in the DHT.
     ///
     /// This method stores the given record in the distributed hash table,
@@ -475,7 +511,7 @@ pub trait KademliaInterface: Sync {
     fn store(&self, record: kad::Record) -> impl Future<Output = Result<(), KademliaError>> + Send {
         async move {
             let (tx, rx) = mpsc::channel(1);
-            tracing::info!(record=?record,"Store record", );
+            tracing::trace!(record = ?record, "Store record");
 
             self.send(KademliaAction::PutRecord(record, tx)).await;
 
@@ -516,7 +552,7 @@ pub trait KademliaInterface: Sync {
     fn get(&self, key: &str) -> impl Future<Output = Result<kad::Record, KademliaError>> + Send {
         async move {
             let (tx, mut rx) = mpsc::channel(1);
-            tracing::info!(key=%key,"Get key", );
+            tracing::trace!(key = %key, "Get key");
 
             self.send(KademliaAction::GetRecord(key.to_string(), tx))
                 .await;
@@ -556,7 +592,7 @@ pub trait KademliaInterface: Sync {
     fn provide(&self, key: &str) -> impl Future<Output = Result<(), KademliaError>> + Send {
         async move {
             let (tx, rx) = mpsc::channel(1);
-            tracing::info!(key=%key, "Provide key");
+            tracing::trace!(key = %key, "Provide key");
 
             self.send(KademliaAction::StartProviding(key.to_string(), tx))
                 .await;
@@ -603,7 +639,7 @@ pub trait KademliaInterface: Sync {
         async move {
             // TODO: Determine rigth channel size, I suspect a small size like 5 is already sufficient.
             let (tx, rx) = mpsc::channel(5);
-            tracing::info!(key=%key, "Find key providers");
+            tracing::trace!(key = %key, "Find key providers");
 
             self.send(KademliaAction::GetProvider(key.to_string(), tx))
                 .await;
@@ -658,7 +694,7 @@ pub trait KademliaInterface: Sync {
     ) -> impl Future<Output = Result<Vec<PeerInfo>, KademliaError>> + Send {
         async move {
             let (tx, rx) = mpsc::channel(5);
-            tracing::info!(peer_id=?peer_id, "Get closest peers");
+            tracing::trace!(peer_id = ?peer_id, "Get closest peers");
 
             self.send(KademliaAction::GetClosestPeers(peer_id, tx))
                 .await;
