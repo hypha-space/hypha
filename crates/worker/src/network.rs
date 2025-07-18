@@ -45,7 +45,6 @@ pub struct Network {
 
 #[derive(NetworkBehaviour)]
 pub struct Behaviour {
-    autonat: autonat::v2::client::Behaviour,
     ping: ping::Behaviour,
     identify: identify::Behaviour,
     relay_client: relay::client::Behaviour,
@@ -124,11 +123,6 @@ impl Network {
                 .expect("Failed to create gossipsub behaviour");
 
                 Behaviour {
-                    autonat: autonat::v2::client::Behaviour::new(
-                        OsRng,
-                        autonat::v2::client::Config::default()
-                            .with_probe_interval(Duration::from_secs(2)),
-                    ),
                     ping: ping::Behaviour::new(ping::Config::new()),
                     identify: identify::Behaviour::new(identify::Config::new(
                         "/hypha-identify/0.0.1".to_string(),
@@ -197,7 +191,7 @@ impl SwarmDriver<Behaviour> for NetworkDriver {
                         }
                         SwarmEvent::ExternalAddrConfirmed { address, .. } => {
                             tracing::info!("External address confirmed: {:?}", address);
-                             self.swarm.add_external_address(address);
+                             // self.swarm.add_external_address(address);
                         }
                         SwarmEvent::Behaviour(BehaviourEvent::Identify(event)) => {
                             self.process_identify_event(event);

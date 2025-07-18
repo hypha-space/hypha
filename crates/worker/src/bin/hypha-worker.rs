@@ -3,19 +3,18 @@
 use std::{error::Error, fs, net::SocketAddr, path::PathBuf, time::Duration};
 
 use clap::{Parser, ValueEnum};
-use futures_util::StreamExt;
+use futures_util::{AsyncReadExt, AsyncWriteExt, StreamExt};
 use hypha_network::{
     cert::{load_certs_from_pem, load_crls_from_pem, load_private_key_from_pem},
     dial::DialInterface,
-    gossipsub::GossipsubInterface,
     listen::ListenInterface,
-    request_response::{RequestResponseInterface, RequestResponseInterfaceExt},
-    stream::StreamReceiverInterface,
+    stream::{StreamReceiverInterface, StreamSenderInterface},
     swarm::SwarmDriver,
     utils::multiaddr_from_socketaddr,
 };
-use hypha_worker::{driver, file_transfer::receive_file, network::Network};
-use libp2p::multiaddr::Protocol;
+use hypha_worker::network::Network;
+use libp2p::{PeerId, multiaddr::Protocol};
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::signal::unix::{SignalKind, signal};
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::EnvFilter;
@@ -83,7 +82,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let gateway_address = multiaddr_from_socketaddr(opt.gateway_address)?;
 
     let (network, network_driver) = Network::create(cert_chain, private_key, ca_certs, crls)?;
-    let driver_future = tokio::spawn(network_driver.run());
+    let network_driver_handle = tokio::spawn(network_driver.run());
 
     network
         .listen(multiaddr_from_socketaddr(opt.listen_address)?)
@@ -97,7 +96,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Wait a bit until DHT bootstrapping is done.
     // Once we receive an 'Identify' message, bootstrapping will start.
     // TODO: Provide a way to wait for this event
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    tokio::time::sleep(Duration::from_secs(5)).await;
 
     network
         .listen(
@@ -108,97 +107,105 @@ async fn main() -> Result<(), Box<dyn Error>> {
         )
         .await?;
 
-    let token = CancellationToken::new();
+    tracing::info!(gateway_id = %gateway_peer_id, "p2p circuit setup");
 
-    let work_dir = tempfile::tempdir()?;
+    let cancellation_token = CancellationToken::new();
 
-    let driver = driver::try_new_accelerate(
-        network.clone(),
-        opt.socket.as_path(),
-        work_dir.path(),
-        token.clone(),
-    )
-    .await?;
+    let mut stream = network.streams()?;
 
-    let handler = network
-        .on(|req: &hypha_messages::Request| matches!(req, hypha_messages::Request::Scheduler(_)))
-        .into_stream()
-        .await?;
+    let stream_token = cancellation_token.clone();
+    let stream_handle = tokio::spawn(async move {
+        tokio::select! {
+            _ = stream_token.cancelled() => {
+                tracing::info!("Stream handler cancelled");
+            }
+            _ = async {
+                while let Some((peer_id, mut stream)) = stream.next().await {
+                    tracing::info!(peer_id = %peer_id, "Openend stream");
 
-    let handler_future = {
-        let driver = driver.clone();
-        handler.respond_with_concurrent(None, move |(peer_id, req)| {
-            let mut driver = driver.clone();
-            async move {
-                match req {
-                    hypha_messages::Request::Scheduler(scheduler) => match scheduler {
-                        hypha_messages::SchedulerRequest::Work {
-                            task_id,
-                            parameter_server_peer_id,
-                        } => {
-                            tracing::info!(
-                                task_id = %task_id,
-                                peer_id = %peer_id,
-                                "Received work request"
-                            );
-
-                            driver
-                                .start_training(peer_id, parameter_server_peer_id, task_id)
-                                .await;
-
-                            hypha_messages::Response::Scheduler(
-                                hypha_messages::SchedulerResponse::Work {},
-                            )
-                        }
-                    },
-                    _ => panic!("Unexpected request received"),
+                    let mut buf = Vec::new();
+                    stream.read_to_end(&mut buf).await.expect("read stream");
+                    tracing::info!(peer_id = %peer_id, "Recieved {buf:?}");
                 }
-            }
-        })
-    };
-
-    let mut tensor_stream = network.streams()?;
-
-    let stream_future = tokio::spawn(async move {
-        while let Some((peer_id, mut stream)) = tensor_stream.next().await {
-            tracing::info!(peer_id = %peer_id, "Received tensor stream");
-
-            if let Err(e) = receive_file(work_dir.path(), &mut stream).await {
-                tracing::error!(error = ?e, "Failed to receive file");
-            }
+            } => {}
         }
     });
 
-    let mut announce_stream = network.subscribe("announce").await?;
+    let network_clone = network.clone();
+    let stdin_token = cancellation_token.clone();
+    let stdin_handle = tokio::spawn(async move {
+        tracing::info!("Starting stdin handle");
+        let stdin = tokio::io::stdin();
+        let mut reader = BufReader::new(stdin);
 
-    let announce_future = tokio::spawn(async move {
-        while let Some(Ok(data)) = announce_stream.next().await {
-            let announce: hypha_messages::RequestAnnounce =
-                match ciborium::from_reader(data.as_slice()) {
-                    Ok(announce) => announce,
-                    Err(e) => {
-                        tracing::error!(error = ?e, "Failed to deserialize announce message");
+        loop {
+            let mut input = String::new();
+            tokio::select! {
+                _ = stdin_token.cancelled() => {
+                    tracing::info!("Stdin handler cancelled");
+                    break;
+                }
+                result = reader.read_line(&mut input) => {
+                    match result {
+                        Ok(0) => break, // EOF
+                        Ok(_) => {
+                    tracing::info!("Received input: {}", input);
+                    let input = input.trim();
+                    if input.is_empty() {
                         continue;
                     }
-                };
 
-            tracing::debug!(
-                peer_id = %announce.scheduler_peer_id,
-                "Sending availability to scheduler"
-            );
-            let role = match opt.role {
-                Role::Worker => hypha_messages::WorkerRole::TaskExecutor,
-                Role::ParameterServer => hypha_messages::WorkerRole::ParameterExecutor,
-            };
-            let _ = network
-                .request(
-                    announce.scheduler_peer_id,
-                    hypha_messages::Request::Worker(hypha_messages::WorkerRequest::Available {
-                        task_id: announce.task_id,
-                        role,
-                    }),
-                )
-                .await;
+                    // Parse input as "peer_id message"
+                    let parts: Vec<&str> = input.splitn(2, ' ').collect();
+                    if parts.len() != 2 {
+                        tracing::error!("Invalid input format. Expected: <peer_id> <message>");
+                        continue;
+                    }
+
+                    let peer_id_str = parts[0];
+                    let message = parts[1];
+
+                    // Parse peer ID
+                    let peer_id = match peer_id_str.parse::<PeerId>() {
+                        Ok(id) => id,
+                        Err(e) => {
+                            tracing::error!("Invalid peer ID '{}': {}", peer_id_str, e);
+                            continue;
+                        }
+                    };
+
+                    // Open stream to peer and send message
+                    match network_clone.stream(peer_id).await {
+                        Ok(mut stream) => {
+                            if let Err(e) = stream.write_all(message.as_bytes()).await {
+                                tracing::error!(
+                                    "Failed to send message to peer {}: {}",
+                                    peer_id,
+                                    e
+                                );
+                            } else {
+                                tracing::info!("Sent message to peer {}: {}", peer_id, message);
+                            }
+                            if let Err(e) = stream.close().await {
+                                tracing::error!(
+                                    peer_id=%peer_id,
+                                    error=?e,
+                                    "Failed to close stream"
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to open stream to peer {}: {}", peer_id, e);
+                        }
+                    }
+                }
+                        Err(e) => {
+                            tracing::error!("Failed to read from stdin: {}", e);
+                            break;
+                        }
+                    }
+                }
+            }
         }
     });
 
@@ -215,22 +222,23 @@ async fn main() -> Result<(), Box<dyn Error>> {
         // If any of them terminate on their own, it must be due to an error.
         // We warn about that, then shut down gracefully.
         // TODO: Log errors if futures return one.
-        _ = driver_future => {
+        _ = network_driver_handle => {
             tracing::warn!("Network driver error, shutting down");
         }
-        _ = handler_future => {
-            tracing::warn!("Network driver error, shutting down");
+
+        _ = stream_handle => {
+            tracing::warn!("Stream handler error, shutting down");
         }
-        _ = announce_future => {
-            tracing::warn!("Network driver error, shutting down");
-        }
-        _ = stream_future => {
-            tracing::warn!("Network driver error, shutting down");
+
+        _ = stdin_handle => {
+            tracing::info!("Stdin handler finished, shutting down");
         }
     }
 
-    token.cancel();
-    driver.wait().await;
+    // Cancel all running tasks
+    cancellation_token.cancel();
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
 
     Ok(())
 }
