@@ -186,7 +186,7 @@ where
             "launch",
             "--config-file",
             "test.yaml",
-            "training.py",
+            "src/training.py",
             "--socket",
             path.to_str().expect("socket path is valid UTF-8"),
             "--work-dir",
