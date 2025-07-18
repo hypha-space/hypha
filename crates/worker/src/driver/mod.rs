@@ -181,7 +181,7 @@ where
         vec![
             "run",
             "--directory",
-            "python/hypha-accelerate-driver",
+            "drivers/hypha-accelerate-driver",
             "accelerate",
             "launch",
             "--config-file",
