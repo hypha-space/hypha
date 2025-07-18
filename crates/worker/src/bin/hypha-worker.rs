@@ -125,7 +125,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
                     let mut buf = Vec::new();
                     stream.read_to_end(&mut buf).await.expect("read stream");
-                    tracing::info!(peer_id = %peer_id, "Recieved {buf:?}");
+
+                    // convert bytes to string
+                    let message = String::from_utf8_lossy(&buf);
+                    tracing::info!(peer_id = %peer_id, "Recieved {message}");
                 }
             } => {}
         }
