@@ -36,6 +36,7 @@
 
 pub mod cert;
 pub mod dial;
+pub mod external_address;
 pub mod gossipsub;
 pub mod kad;
 pub mod listen;

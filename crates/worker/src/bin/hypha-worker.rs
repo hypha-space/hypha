@@ -1,10 +1,10 @@
 //! Worker binary.
 
-use std::{fs, net::SocketAddr, path::PathBuf};
+use std::{fs, path::PathBuf};
 
 use clap::{Parser, Subcommand, ValueEnum};
 use figment::providers::{Env, Format, Serialized, Toml};
-use futures_util::StreamExt;
+use futures_util::{StreamExt, future::join_all};
 use hypha_config::{ConfigWithMetadata, ConfigWithMetadataTLSExt, builder, to_toml};
 use hypha_network::{
     dial::DialInterface,
@@ -14,9 +14,9 @@ use hypha_network::{
     request_response::{RequestResponseInterface, RequestResponseInterfaceExt},
     stream::StreamReceiverInterface,
     swarm::SwarmDriver,
-    utils::{multiaddr_from_socketaddr, multiaddr_from_socketaddr_quic},
 };
 use hypha_worker::{config::Config, driver, file_transfer::receive_file, network::Network};
+use libp2p::Multiaddr;
 use miette::{IntoDiagnostic, Result};
 use serde::{Deserialize, Serialize};
 use tokio::signal::unix::{SignalKind, signal};
@@ -56,15 +56,15 @@ enum Commands {
         #[serde(skip)]
         config_file: PathBuf,
 
-        /// Address of the gateway.
+        /// Addresses of the gateways (can be specified multiple times).
         #[clap(long("gateway"))]
         #[serde(skip_serializing_if = "Option::is_none")]
-        gateway_address: Option<SocketAddr>,
+        gateway_addresses: Option<Vec<Multiaddr>>,
 
-        /// Address to listen on.
+        /// Addresses to listen on (can be specified multiple times).
         #[clap(long("listen"))]
         #[serde(skip_serializing_if = "Option::is_none")]
-        listen_address: Option<SocketAddr>,
+        listen_addresses: Option<Vec<Multiaddr>>,
 
         /// Socket to use for driver communication.
         #[clap(long("socket"))]
@@ -81,10 +81,6 @@ enum Commands {
 
 async fn run(config: ConfigWithMetadata<Config>, role: Role) -> Result<()> {
     // Load certificates and private key
-
-    let gateway_address =
-        multiaddr_from_socketaddr_quic(config.gateway_address()).into_diagnostic()?;
-
     let (network, network_driver) = Network::create(
         config.load_cert_chain()?,
         config.load_key()?,
@@ -92,22 +88,40 @@ async fn run(config: ConfigWithMetadata<Config>, role: Role) -> Result<()> {
         config.load_crls()?,
     )
     .into_diagnostic()?;
+
     let driver_future = tokio::spawn(network_driver.run());
 
-    network
-        .listen(multiaddr_from_socketaddr(config.listen_address()).into_diagnostic()?)
-        .await
-        .into_diagnostic()?;
-    network
-        .listen(multiaddr_from_socketaddr_quic(config.listen_address()).into_diagnostic()?)
-        .await
-        .into_diagnostic()?;
-    tracing::info!("Successfully listening");
+    join_all(
+        config
+            .listen_addresses()
+            .iter()
+            .map(|address| network.listen(address.clone()))
+            .collect::<Vec<_>>(),
+    )
+    .await
+    .into_iter()
+    .collect::<Result<Vec<_>, _>>()
+    .into_diagnostic()?;
 
-    // Dial the gateway address
-    let _gateway_peer_id = network.dial(gateway_address).await.into_diagnostic()?;
+    tracing::info!("Successfully listening on all addresses");
 
-    tracing::info!(gateway_id = %_gateway_peer_id, "Connected to gateway");
+    let gateway_peer_ids: Vec<_> = join_all(
+        config
+            .gateway_addresses()
+            .iter()
+            .map(|address| network.dial(address.clone()))
+            .collect::<Vec<_>>(),
+    )
+    .await
+    .into_iter()
+    .filter_map(|result| result.ok())
+    .collect();
+
+    if gateway_peer_ids.is_empty() {
+        return Err(miette::miette!("Failed to connect to any gateway"));
+    }
+
+    tracing::info!(gateway_ids = ?gateway_peer_ids, "Connected to gateway(s)");
 
     // Wait until DHT bootstrapping is done.
     network.wait_for_bootstrap().await.into_diagnostic()?;
