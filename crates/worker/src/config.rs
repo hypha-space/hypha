@@ -130,6 +130,19 @@ impl Config {
     pub fn work_dir(&self) -> &PathBuf {
         &self.work_dir
     }
+
+    pub fn resources(&self) -> ComputeResources {
+        ComputeResources {
+            cpu: self.resources.cpu.into(),
+            gpu: self.resources.gpu.into(),
+            memory: self.resources.memory.into(),
+            storage: self.resources.storage.into(),
+        }
+    }
+
+    pub fn driver(&self) -> Vec<String> {
+        self.driver.clone()
+    }
 }
 
 impl TLSConfig for Config {

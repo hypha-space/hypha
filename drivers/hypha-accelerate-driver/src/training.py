@@ -1,9 +1,14 @@
 import argparse
 import json
 import os
-from collections.abc import Iterable
-from typing import Any, cast
-
+import threading
+import time
+from collections.abc import Iterator
+from contextlib import AbstractContextManager, contextmanager
+from types import TracebackType
+from queue import Empty, Queue
+from typing import Any, Optional, Iterable, cast
+import httpx
 import torch
 import torch.utils.data
 from accelerate import Accelerator
@@ -13,8 +18,6 @@ from safetensors.torch import save_model
 from tqdm import tqdm
 from transformers import GPT2Tokenizer, GPTNeoForCausalLM
 from transformers.tokenization_utils import PreTrainedTokenizer
-
-from api import Session
 
 
 def get_model(model_config: str) -> tuple[torch.nn.Module, PreTrainedTokenizer]:
@@ -53,6 +56,49 @@ def merge_models(a: torch.nn.Module, weight_path: str, alpha: float) -> torch.nn
     a.load_state_dict(state_dict)
     return a
 
+
+class Session(AbstractContextManager["Session", None]):
+    def __init__(self, socket_path: str) -> None:
+        transport = httpx.HTTPTransport(uds=socket_path)
+        self._client = httpx.Client(transport=transport)
+
+    def __enter__(self) -> "Session":
+        return self
+
+    def __exit__(
+        self, exc_type: type[BaseException] | None, exc_value: BaseException | None, traceback: TracebackType | None
+    ) -> None:
+        self._client.close()
+
+    @contextmanager
+    def receive(self, req) -> Iterator["EventSource"]:
+        with self._client.stream(
+            "POST",
+            "http://hypha/resources/receive",
+            json=req,
+            headers={"Accept": "text/event-stream"},
+            timeout=None,  # block indefinitely for SSE updates
+        ) as resp:
+            yield EventSource(resp)
+
+
+class EventSource:
+    def __init__(self, response: httpx.Response) -> None:
+        self._response = response
+
+    @property
+    def response(self) -> httpx.Response:
+        return self._response
+
+    def __iter__(self) -> Iterator[Any]:
+        for line in self._response.iter_lines():
+            fieldname, _, value = line.rstrip("\n").partition(":")
+
+            if fieldname == "data":
+                result = json.loads(value)
+
+                yield result
+            # Ignore other SSE fields (e.g., event:, id:, retry:)
 
 # TODO: This needs to be generic and support user-provided datasets.
 class CustomC4(torch.utils.data.Dataset[int]):
