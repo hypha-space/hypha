@@ -6,6 +6,8 @@ edition.workspace = true
 license = "Apache-2.0"
 
 [dependencies]
+async-trait.workspace = true
+chrono.workspace = true
 ed25519-dalek = { version = "2.1", features = ["alloc", "pkcs8", "pem"] }
 futures-util.workspace = true
 libp2p.workspace = true

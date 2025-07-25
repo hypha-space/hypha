@@ -9,6 +9,22 @@ use hypha_network::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::resources::Resources;
+
+#[derive(Deserialize, Serialize, Documented, DocumentedFieldsOpt)]
+/// Configure available resources.
+pub struct ResourceConfig {
+    /// Available CPU cores.
+    cpu: u32,
+    /// Available memory in GB.
+    memory: u32,
+    /// Available storage in GB.
+    storage: u32,
+    // TODO: How do we want to map multiple GPUs?
+    /// Available GPU memory in GB.
+    gpu: u32,
+}
+
 #[derive(Deserialize, Serialize, Documented, DocumentedFieldsOpt)]
 /// Configure network settings, security certificates, and runtime parameters.
 pub struct Config {
@@ -28,6 +44,8 @@ pub struct Config {
     listen_address: SocketAddr,
     /// Path to the socket file.
     socket_path: PathBuf,
+    /// Available resources.
+    resources: ResourceConfig,
 }
 
 impl Default for Config {
@@ -41,6 +59,18 @@ impl Default for Config {
             gateway_address: SocketAddr::from(([127, 0, 0, 1], 8080)),
             listen_address: SocketAddr::from(([127, 0, 0, 1], 8081)),
             socket_path: PathBuf::from("/var/run/hypha.sock"),
+            resources: ResourceConfig::default(),
+        }
+    }
+}
+
+impl Default for ResourceConfig {
+    fn default() -> Self {
+        Self {
+            cpu: 1,
+            memory: 8,
+            storage: 20,
+            gpu: 16,
         }
     }
 }
@@ -107,5 +137,14 @@ impl Config {
 
     pub fn socket_path(&self) -> &PathBuf {
         &self.socket_path
+    }
+
+    pub fn resources(&self) -> Resources {
+        Resources {
+            cpu: self.resources.cpu.into(),
+            gpu: self.resources.gpu.into(),
+            memory: self.resources.memory.into(),
+            storage: self.resources.storage.into(),
+        }
     }
 }

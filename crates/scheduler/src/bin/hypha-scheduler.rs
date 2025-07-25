@@ -1,28 +1,28 @@
 //! Scheduler binary.
 
-use std::{error::Error, fs, sync::Arc};
+use std::{collections::HashSet, error::Error, fs, time::Duration};
 
 use clap::{Parser, Subcommand};
 use figment::providers::{Env, Format, Serialized, Toml};
 use hypha_config::LayeredConfig;
+use hypha_messages::{
+    Executor, Fetch, JobSpec, JobStatus, Receive, Reference, Requirement, Resources,
+    SelectionStrategy, Send, WorkerSpec,
+};
 use hypha_network::{
-    cert::identity_from_private_key,
     dial::DialInterface,
-    gossipsub::GossipsubInterface,
     kad::KademliaInterface,
     listen::ListenInterface,
-    request_response::{RequestResponseInterface, RequestResponseInterfaceExt},
     swarm::SwarmDriver,
     utils::{multiaddr_from_socketaddr, multiaddr_from_socketaddr_quic},
 };
 use hypha_scheduler::{
+    allocator::{Allocator, GreedyWorkerAllocator},
     config::Config,
     network::Network,
-    tasks::{TaskId, Tasks},
 };
-use libp2p::PeerId;
 use serde::Serialize;
-use tokio::{sync::Mutex, task::JoinSet};
+use tokio::time::sleep;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Debug, Parser, Serialize)]
@@ -70,10 +70,7 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
     let ca_certs = config.load_trust_chain()?;
     let crls = config.load_crls()?;
 
-    let local_peer_id = identity_from_private_key(&private_key)?
-        .public()
-        .to_peer_id();
-    let gateway_address = multiaddr_from_socketaddr_quic(config.gateway_address())?;
+    let gateway_address = multiaddr_from_socketaddr(config.gateway_address())?;
 
     let (network, network_driver) = Network::create(cert_chain, private_key, ca_certs, crls)?;
     tokio::spawn(network_driver.run());
@@ -94,142 +91,222 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
     // Wait until DHT bootstrapping is done.
     network.wait_for_bootstrap().await?;
 
-    let scheduler = Arc::new(Mutex::new(Tasks::new()));
+    // NOTE: Create allocator for resource allocation alongside existing job management
+    let allocator = GreedyWorkerAllocator::new(network.clone());
 
-    let handler = network
-        .on(|req: &hypha_messages::Request| matches!(req, hypha_messages::Request::Worker(_)))
-        .into_stream()
-        .await?;
+    // tokio::spawn(async move {
+    //     if let Err(e) = allocator_driver.run().await {
+    //         tracing::error!(error = %e, "Allocator driver failed");
+    //     }
+    // });
 
-    let handler_future = {
-        let network = network.clone();
-        let scheduler = scheduler.clone();
+    tracing::info!("Starting worker allocation and job creation process");
 
-        handler.respond_with_concurrent(None, move |(peer_id, req)| {
-            let network = network.clone();
-            let scheduler = scheduler.clone();
-            async move {
-                match req {
-                    hypha_messages::Request::Worker(worker) => match worker {
-                        hypha_messages::WorkerRequest::Available { task_id, role } => {
-                            tracing::debug!(
-                                task_id = %task_id,
-                                peer_id = %peer_id,
-                                "Received available worker request",
-                            );
-                            let (participants, parameter_server_peer_id) =
-                                if let Some(task) = scheduler.lock().await.get_task(&task_id) {
-                                    match role {
-                                        hypha_messages::WorkerRole::TaskExecutor => {
-                                            task.add_worker(peer_id)
-                                        }
-                                        hypha_messages::WorkerRole::ParameterExecutor => {
-                                            task.add_parameter_server(peer_id)
-                                        }
-                                    };
-                                    (
-                                        task.workers().cloned().collect::<Vec<_>>(),
-                                        task.parameter_server(),
-                                    )
-                                } else {
-                                    (Vec::new(), None)
-                                };
-
-                            // TODO: This is very simple and hard-coded scheduling:
-                            // Once 2 workers and a parameter server have connected, we start a task.
-                            // The criteria when and with whom to start a task need to be added later.
-                            if participants.len() == 2 {
-                                if let Some(parameter_server_peer_id) = parameter_server_peer_id {
-                                    tokio::spawn(start_task(
-                                        network.clone(),
-                                        task_id,
-                                        parameter_server_peer_id,
-                                        participants,
-                                    ));
-                                }
-                            }
-
-                            hypha_messages::Response::Worker(
-                                hypha_messages::WorkerResponse::Available {},
-                            )
-                        }
-                        hypha_messages::WorkerRequest::TaskStatus { task_id, status } => {
-                            tracing::info!(
-                                task_id = %task_id,
-                                peer_id = %peer_id,
-                                status = ?status,
-                                "Received status update",
-                            );
-
-                            if let Some(task) = scheduler.lock().await.get_task(&task_id) {
-                                task.update_status(&peer_id, status);
-                            }
-
-                            // TODO: At some point a task is completed. Once that is the case
-                            // a scheduler needs to inform workers about that so that they no longer
-                            // keep track of that task/no longer expect messages related to that task.
-
-                            hypha_messages::Response::Worker(
-                                hypha_messages::WorkerResponse::TaskStatus {},
-                            )
-                        }
-                    },
-                    _ => {
-                        panic!("Unexpected request received");
-                    }
-                }
-            }
-        })
+    // NOTE: Phase 1 - Allocate workers using the new allocator/arbiter protocol
+    // First, request worker nodes for job execution
+    let worker_spec = WorkerSpec {
+        requirements: vec![
+            Requirement::Resource(Resources::Gpu { min: 1.0 }),
+            Requirement::Resource(Resources::Cpu { min: 1.0 }),
+            Requirement::Resource(Resources::Memory { min: 1.0 }),
+        ],
     };
 
-    tracing::info!("Publishing task announcement");
+    // Request multiple workers to increase chances of two distinct peers
+    let mut allocated_workers = Vec::new();
+    for i in 0..6 {
+        tracing::info!(worker_index = i, "Requesting worker allocation");
+        match allocator.request(worker_spec.clone(), 100.0, None).await {
+            Ok(worker) => {
+                tracing::info!(
+                    peer_id = %worker.peer_id(),
+                    lease_id = %worker.lease_id(),
+                    "Successfully allocated worker"
+                );
+                allocated_workers.push(worker);
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to allocate worker");
+            }
+        }
+        sleep(Duration::from_millis(100)).await;
+    }
 
-    let task_id = scheduler.lock().await.create_task();
+    // Deduplicate by peer id to ensure we pick two distinct workers
+    let mut unique_workers = Vec::new();
+    let mut seen: HashSet<libp2p::PeerId> = HashSet::new();
+    for w in allocated_workers.into_iter() {
+        if seen.insert(w.peer_id()) {
+            unique_workers.push(w);
+        }
+    }
 
-    let mut data = Vec::new();
+    if unique_workers.len() >= 2 {
+        let a = &unique_workers[0];
+        let b = &unique_workers[1];
 
-    ciborium::into_writer(
-        &hypha_messages::RequestAnnounce {
-            task_id,
-            scheduler_peer_id: local_peer_id,
-        },
-        &mut data,
-    )
-    .expect("hardcoded task announcement should serialize successfully");
+        // Worker A listens for updates from B and sends its results to B
+        let _a_rx = a
+            .dispatch(JobSpec {
+                executor: Executor::DiLoCoTransformer {
+                    model: Fetch::uri("https://example.com/"),
+                    data: Fetch::uri("https://example.com/"),
+                    updates: Receive::peers(vec![b.peer_id()]),
+                    results: Send::peers(vec![b.peer_id()], SelectionStrategy::One),
+                },
+            })
+            .await?;
 
-    let _ = network.publish("announce", data).await;
+        // Worker B listens for updates from A and sends its results to A
+        let _b_rx = b
+            .dispatch(JobSpec {
+                executor: Executor::DiLoCoTransformer {
+                    model: Fetch::uri("https://example.com/"),
+                    data: Fetch::uri("https://example.com/"),
+                    updates: Receive::peers(vec![a.peer_id()]),
+                    results: Send::peers(vec![a.peer_id()], SelectionStrategy::One),
+                },
+            })
+            .await?;
 
-    handler_future.await;
+        tracing::info!(
+            a = %a.peer_id(),
+            b = %b.peer_id(),
+            "Dispatched cross-updating jobs between workers"
+        );
+    } else {
+        tracing::warn!(
+            allocated = unique_workers.len(),
+            "Insufficient workers allocated for cross-updates (need 2)"
+        );
+    }
+    // for worker in allocated_workers {
+    //     tracing::info!(
+    //         peer_id = %worker.peer_id(),
+    //         lease_id = %worker.lease_id(),
+    //         "Successfully allocated worker"
+    //     );
 
+    // loop {
+    //     match job_events.recv().await {
+    //         Some(JobStatus::Running) => {
+    //             tracing::info!("Running job");
+    //         }
+    //         Some(JobStatus::Failed) => {
+    //             tracing::error!("Failed to allocate worker");
+    //             break;
+    //         }
+    //         Some(JobStatus::Finished) => {
+    //             tracing::info!("Completed job");
+    //             break;
+    //         }
+    //         Some(JobStatus::Unknown) => {
+    //             tracing::warn!("Unexpected job status");
+    //             break;
+    //         }
+    //         None => {
+    //             tracing::error!("Failed to complete job");
+    //             break;
+    //         }
+    //     }
+    // }
+
+    // NOTE: Phase 2 - If we have sufficient workers, dispatch jobs
+    // if allocated_workers.len() >= 2 && parameter_server.is_some() {
+    //     tracing::info!(
+    //         worker_count = allocated_workers.len(),
+    //         "Starting job with allocated workers"
+    //     );
+
+    //     start_job(
+    //         network.clone(),
+    //         job_id,
+    //         parameter_server_peer_id.unwrap(),
+    //         allocated_workers,
+    //     )
+    //     .await;
+    // } else {
+    //     tracing::warn!(
+    //         allocated_workers = allocated_workers.len(),
+    //         has_parameter_server = parameter_server_peer_id.is_some(),
+    //         "Insufficient workers allocated - falling back to legacy announcement"
+    //     );
+
+    //     // Fallback to legacy announcement for existing workers
+    //     let mut data = Vec::new();
+    //     ciborium::into_writer(
+    //         &hypha_messages::RequestAnnounce {
+    //             job_id,
+    //             scheduler_peer_id: local_peer_id,
+    //         },
+    //         &mut data,
+    //     )
+    //     .unwrap();
+    //     let _ = network.publish("announce", data).await;
+
+    //     // NOTE: In legacy mode, we need to handle worker responses
+    //     // Uncomment and enable the handler for legacy worker requests
+    //     tracing::info!("Running in legacy mode, waiting for worker responses");
+    //     // TODO: Re-enable legacy handler when needed
+    //     tokio::time::sleep(Duration::from_secs(60)).await;
+    // }
+
+    tokio::signal::ctrl_c().await;
     Ok(())
 }
 
-async fn start_task(
-    network: Network,
-    task_id: TaskId,
-    parameter_server_peer_id: PeerId,
-    worker_peer_ids: Vec<PeerId>,
-) {
-    let mut set = JoinSet::new();
+// async fn start_job(
+//     network: Network,
+//     job_id: TaskId,
+//     parameter_server_peer_id: PeerId,
+//     worker_peer_ids: Vec<PeerId>,
+// ) {
+//     let mut set = JoinSet::new();
 
-    for worker_peer_id in worker_peer_ids {
-        tracing::info!(task_id = %task_id, peer_id = %worker_peer_id, "Requesting work");
-        let network = network.clone();
-        set.spawn(async move {
-            network
-                .request(
-                    worker_peer_id,
-                    hypha_messages::Request::Scheduler(hypha_messages::SchedulerRequest::Work {
-                        task_id,
-                        parameter_server_peer_id,
-                    }),
-                )
-                .await
-        });
-    }
+//     for worker_peer_id in worker_peer_ids {
+//         tracing::info!(job_id = %job_id, peer_id = %worker_peer_id, "Requesting work");
+//         let network = network.clone();
+//         set.spawn(async move {
+//             let result = network
+//                 .request(
+//                     worker_peer_id,
+//                     hypha_messages::Request::Scheduler(hypha_messages::SchedulerRequest::Work {
+//                         job_id,
+//                         parameter_server_peer_id,
+//                     }),
+//                 )
+//                 .await;
 
-    let _result = set.join_all().await;
-}
+//             match &result {
+//                 Ok(_) => {
+//                     tracing::info!(
+//                         job_id = %job_id,
+//                         peer_id = %worker_peer_id,
+//                         "Successfully sent work request"
+//                     );
+//                 }
+//                 Err(e) => {
+//                     tracing::error!(
+//                         job_id = %job_id,
+//                         peer_id = %worker_peer_id,
+//                         error = %e,
+//                         "Failed to send work request"
+//                     );
+//                 }
+//             }
+//             result
+//         });
+//     }
+
+//     let results = set.join_all().await;
+//     let successful_requests = results.iter().filter(|r| r.is_ok()).count();
+//     tracing::info!(
+//         job_id = %job_id,
+//         successful_requests = successful_requests,
+//         total_requests = results.len(),
+//         "Task dispatch completed"
+//     );
+// }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {

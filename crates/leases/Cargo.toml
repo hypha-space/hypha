@@ -1,0 +1,13 @@
+[package]
+name = "hypha-leases"
+version = "0.1.0"
+publish.workspace = true
+edition.workspace = true
+
+[dependencies]
+libp2p.workspace = true
+uuid.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+serde.workspace = true

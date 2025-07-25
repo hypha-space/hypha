@@ -1,0 +1,11 @@
+[package]
+name = "hypha-clock"
+version = "0.0.0"
+publish.workspace = true
+edition.workspace = true
+
+[dependencies]
+chrono.workspace = true
+
+[features]
+testing = []
