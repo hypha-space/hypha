@@ -34,7 +34,7 @@ use libp2p::{
 use libp2p_stream as stream;
 use tokio::sync::{SetOnce, mpsc, oneshot};
 
-type HyphaCodec = Codec<hypha_messages::Request, hypha_messages::Response>;
+pub type HyphaCodec = Codec<hypha_messages::Request, hypha_messages::Response>;
 type HyphaRequestHandlers = Vec<RequestHandler<HyphaCodec>>;
 
 #[derive(Clone)]
@@ -96,6 +96,7 @@ impl Network {
             .map_err(|_| {
                 SwarmError::TransportConfig("Failed to create TCP transport with mTLS.".to_string())
             })?
+            .with_quic()
             .with_relay_client(tls::Config::new, yamux::Config::default)
             .map_err(|_| {
                 SwarmError::TransportConfig("Failed to create relay client with mTLS.".to_string())
