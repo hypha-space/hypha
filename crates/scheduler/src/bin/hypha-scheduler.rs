@@ -13,7 +13,7 @@ use hypha_network::{
     listen::ListenInterface,
     request_response::{RequestResponseInterface, RequestResponseInterfaceExt},
     swarm::SwarmDriver,
-    utils::multiaddr_from_socketaddr,
+    utils::{multiaddr_from_socketaddr, multiaddr_from_socketaddr_quic},
 };
 use hypha_scheduler::{
     network::Network,
@@ -74,7 +74,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let local_peer_id = identity_from_private_key(&private_key)?
         .public()
         .to_peer_id();
-    let gateway_address = multiaddr_from_socketaddr(opt.gateway_address)?;
+    let gateway_address = multiaddr_from_socketaddr_quic(opt.gateway_address)?;
 
     let (network, network_driver) = Network::create(cert_chain, private_key, ca_certs, crls)?;
     tokio::spawn(network_driver.run());
@@ -82,9 +82,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
     network
         .listen(multiaddr_from_socketaddr(opt.listen_address)?)
         .await?;
+    network
+        .listen(multiaddr_from_socketaddr_quic(opt.listen_address)?)
+        .await?;
     tracing::info!("Successfully listening");
 
     // Dial the gateway address
+    // TODO: fall back to TCP if QUIC doesn't work
     let _gateway_peer_id = network.dial(gateway_address).await?;
 
     // Wait a bit until DHT bootstrapping is done.

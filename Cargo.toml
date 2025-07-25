@@ -82,3 +82,13 @@ x509-parser = "0.16"
 [profile.profiling]
 inherits = "release"
 debug = true
+
+[patch.crates-io]
+# Patch 'libp2p' to enable mTLS support
+libp2p = { git = "https://github.com/hypha-space/rust-libp2p", tag = "v0.56.0-mtls1" }
+libp2p-quic = { git = "https://github.com/hypha-space/rust-libp2p", tag = "v0.56.0-mtls1" }
+libp2p-tls = { git = "https://github.com/hypha-space/rust-libp2p", tag = "v0.56.0-mtls1" }
+# These crates don't have any mTLS-related changes, but need to be patched anyways
+# for 'libp2p-stream' to compile.
+libp2p-core = { git = "https://github.com/hypha-space/rust-libp2p", tag = "v0.56.0-mtls1" }
+libp2p-swarm = { git = "https://github.com/hypha-space/rust-libp2p", tag = "v0.56.0-mtls1" }

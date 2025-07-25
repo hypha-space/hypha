@@ -12,7 +12,7 @@ use hypha_network::{
     request_response::{RequestResponseInterface, RequestResponseInterfaceExt},
     stream::StreamReceiverInterface,
     swarm::SwarmDriver,
-    utils::multiaddr_from_socketaddr,
+    utils::{multiaddr_from_socketaddr, multiaddr_from_socketaddr_quic},
 };
 use hypha_worker::{driver, file_transfer::receive_file, network::Network};
 use tokio::signal::unix::{SignalKind, signal};
@@ -79,7 +79,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         vec![]
     };
 
-    let gateway_address = multiaddr_from_socketaddr(opt.gateway_address)?;
+    let gateway_address = multiaddr_from_socketaddr_quic(opt.gateway_address)?;
 
     let (network, network_driver) = Network::create(cert_chain, private_key, ca_certs, crls)?;
     let driver_future = tokio::spawn(network_driver.run());
@@ -87,9 +87,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
     network
         .listen(multiaddr_from_socketaddr(opt.listen_address)?)
         .await?;
+    network
+        .listen(multiaddr_from_socketaddr_quic(opt.listen_address)?)
+        .await?;
     tracing::info!("Successfully listening");
 
     // Dial the gateway address
+    // TODO: fall back to TCP if QUIC doesn't work
     let _gateway_peer_id = network.dial(gateway_address).await?;
 
     tracing::info!(gateway_id = %_gateway_peer_id, "Connected to gateway");
