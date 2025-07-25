@@ -4,18 +4,16 @@ use std::{fs, path::PathBuf};
 
 use clap::{Parser, Subcommand, ValueEnum};
 use figment::providers::{Env, Format, Serialized, Toml};
-use futures_util::{StreamExt, future::join_all};
+use futures_util::future::join_all;
 use hypha_config::{ConfigWithMetadata, ConfigWithMetadataTLSExt, builder, to_toml};
 use hypha_network::{
-    dial::DialInterface,
-    gossipsub::GossipsubInterface,
-    kad::KademliaInterface,
-    listen::ListenInterface,
-    request_response::{RequestResponseInterface, RequestResponseInterfaceExt},
-    stream::StreamReceiverInterface,
-    swarm::SwarmDriver,
+    dial::DialInterface, kad::KademliaInterface, listen::ListenInterface, swarm::SwarmDriver,
 };
-use hypha_worker::{config::Config, driver, file_transfer::receive_file, network::Network};
+use hypha_worker::{
+    arbiter::Arbiter, config::Config, connector::Connector, job_manager::JobManager,
+    lease_manager::ResourceLeaseManager, network::Network,
+    request_evaluator::WeightedResourceRequestEvaluator, resources::StaticResourceManager,
+};
 use libp2p::Multiaddr;
 use miette::{IntoDiagnostic, Result};
 use serde::{Deserialize, Serialize};
@@ -34,7 +32,7 @@ enum Role {
     name = "hypha-worker",
     version,
     about = "Hypha Worker Node",
-    long_about = "Runs a Hypha Worker which executes tasks.",
+    long_about = "Runs a Hypha Worker which executes jobs.",
     after_help = "For more information, see the project documentation."
 )]
 struct Cli {
@@ -70,16 +68,10 @@ enum Commands {
         #[clap(long("socket"))]
         #[serde(skip_serializing_if = "Option::is_none")]
         socket_address: Option<PathBuf>,
-
-        // NOTE: Defining the role via command-line argument is a workaround used to determine the worker's role in DiLoCo tasks. The role will be assigned by the scheduler in the future.
-        /// Role of the worker in DiLoCo tasks.
-        #[arg(value_enum)]
-        #[serde(skip)]
-        role: Role,
     },
 }
 
-async fn run(config: ConfigWithMetadata<Config>, role: Role) -> Result<()> {
+async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
     // Load certificates and private key
     let (network, network_driver) = Network::create(
         config.load_cert_chain()?,
@@ -89,7 +81,7 @@ async fn run(config: ConfigWithMetadata<Config>, role: Role) -> Result<()> {
     )
     .into_diagnostic()?;
 
-    let driver_future = tokio::spawn(network_driver.run());
+    let network_handle = tokio::spawn(network_driver.run());
 
     join_all(
         config
@@ -123,102 +115,25 @@ async fn run(config: ConfigWithMetadata<Config>, role: Role) -> Result<()> {
 
     tracing::info!(gateway_ids = ?gateway_peer_ids, "Connected to gateway(s)");
 
-    // Wait until DHT bootstrapping is done.
+    // NOTE: Wait until DHT bootstrapping is done.
     network.wait_for_bootstrap().await.into_diagnostic()?;
 
     let token = CancellationToken::new();
 
-    let work_dir = tempfile::tempdir().into_diagnostic()?;
-
-    let driver = driver::try_new_accelerate(
+    // NOTE: Create arbiter for resource allocation - this is the primary worker allocation mechanism
+    let arbiter = Arbiter::new(
+        ResourceLeaseManager::new(StaticResourceManager::new(
+            config.resources(),
+            config.driver(),
+        )),
+        WeightedResourceRequestEvaluator::default(),
         network.clone(),
-        config.socket_path(),
-        work_dir.path(),
-        token.clone(),
     )
-    .await
-    .into_diagnostic()?;
+    .with_job_manager(JobManager::new(Connector::new(network.clone())));
 
-    let handler = network
-        .on(|req: &hypha_messages::Request| matches!(req, hypha_messages::Request::Scheduler(_)))
-        .into_stream()
-        .await
-        .into_diagnostic()?;
-
-    let handler_future = {
-        let driver = driver.clone();
-        handler.respond_with_concurrent(None, move |(peer_id, req)| {
-            let mut driver = driver.clone();
-            async move {
-                match req {
-                    hypha_messages::Request::Scheduler(scheduler) => match scheduler {
-                        hypha_messages::SchedulerRequest::Work {
-                            task_id,
-                            parameter_server_peer_id,
-                        } => {
-                            tracing::info!(
-                                task_id = %task_id,
-                                peer_id = %peer_id,
-                                "Received work request"
-                            );
-
-                            driver
-                                .start_training(peer_id, parameter_server_peer_id, task_id)
-                                .await;
-
-                            hypha_messages::Response::Scheduler(
-                                hypha_messages::SchedulerResponse::Work {},
-                            )
-                        }
-                    },
-                    _ => panic!("Unexpected request received"),
-                }
-            }
-        })
-    };
-
-    let mut tensor_stream = network.streams().into_diagnostic()?;
-
-    let stream_future = tokio::spawn(async move {
-        while let Some((peer_id, mut stream)) = tensor_stream.next().await {
-            tracing::debug!(peer_id = %peer_id, "Received tensor stream");
-
-            if let Err(e) = receive_file(work_dir.path(), &mut stream).await {
-                tracing::error!(error = ?e, "Failed to receive file");
-            }
-        }
-    });
-
-    let mut announce_stream = network.subscribe("announce").await.into_diagnostic()?;
-
-    let announce_future = tokio::spawn(async move {
-        while let Some(Ok(message)) = announce_stream.next().await {
-            let announce: hypha_messages::RequestAnnounce =
-                match ciborium::from_reader(message.data.as_slice()) {
-                    Ok(announce) => announce,
-                    Err(e) => {
-                        tracing::error!(error = ?e, "Failed to deserialize announce message");
-                        continue;
-                    }
-                };
-
-            tracing::debug!(
-                peer_id = %announce.scheduler_peer_id,
-                "Sending availability to scheduler"
-            );
-            let role = match role {
-                Role::Worker => hypha_messages::WorkerRole::TaskExecutor,
-                Role::ParameterServer => hypha_messages::WorkerRole::ParameterExecutor,
-            };
-            let _ = network
-                .request(
-                    announce.scheduler_peer_id,
-                    hypha_messages::Request::Worker(hypha_messages::WorkerRequest::Available {
-                        task_id: announce.task_id,
-                        role,
-                    }),
-                )
-                .await;
+    let arbiter_handle = tokio::spawn(async move {
+        if let Err(e) = arbiter.run().await {
+            tracing::error!(error = %e, "Arbiter failed");
         }
     });
 
@@ -235,22 +150,15 @@ async fn run(config: ConfigWithMetadata<Config>, role: Role) -> Result<()> {
         // If any of them terminate on their own, it must be due to an error.
         // We warn about that, then shut down gracefully.
         // TODO: Log errors if futures return one.
-        _ = driver_future => {
+        _ = network_handle => {
             tracing::warn!("Network driver error, shutting down");
         }
-        _ = handler_future => {
-            tracing::warn!("Network driver error, shutting down");
-        }
-        _ = announce_future => {
-            tracing::warn!("Network driver error, shutting down");
-        }
-        _ = stream_future => {
-            tracing::warn!("Network driver error, shutting down");
+        _ = arbiter_handle => {
+            tracing::warn!("Arbiter error, shutting down");
         }
     }
 
     token.cancel();
-    driver.wait().await;
 
     Ok(())
 }
@@ -269,16 +177,14 @@ async fn main() -> miette::Result<()> {
             println!("Configuration written to: {output:?}");
             Ok(())
         }
-        args @ Commands::Run {
-            config_file, role, ..
-        } => {
+        args @ Commands::Run { config_file, .. } => {
             let config: ConfigWithMetadata<Config> = builder()
                 .with_provider(Toml::file(config_file))
                 .with_provider(Env::prefixed("HYPHA_"))
                 .with_provider(Serialized::defaults(args))
                 .build()?;
 
-            run(config, role.clone()).await
+            run(config).await
         }
     }
 }

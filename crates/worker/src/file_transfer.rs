@@ -73,12 +73,12 @@ pub async fn receive_file(
     stream.read_exact(&mut buf).await?;
     let _payload_len = u64::from_le_bytes(buf);
 
-    // NOTE: `task_id` is a `Uuid` and `epoch` is a `u64`. Their string representations are
+    // NOTE: `job_id` is a `Uuid` and `epoch` is a `u64`. Their string representations are
     // restricted to ASCII hex-digits plus dashes (`[0-9a-f-]`) and never start with "/" or
     // include any path separator.  That guarantees the join below stays inside `work_dir`.
     // If either field type ever changes you MUST re-audit this line and potentially add explicit
     // validation, as it could otherwise be used to write files outside the sandbox.
-    let result_path = work_dir.join(format!("result-{}-{}", header.task_id, header.epoch));
+    let result_path = work_dir.join(format!("result-{}-{}", header.job_id, header.epoch));
     let mut file = File::create(&result_path).await?;
 
     // TODO: fine-tune copy performance by using 'copy_buf' instead.

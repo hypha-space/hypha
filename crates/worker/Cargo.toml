@@ -7,18 +7,27 @@ license = "Apache-2.0"
 
 [dependencies]
 axum.workspace = true
+candle-core.workspace = true
 ciborium.workspace = true
 clap.workspace = true
 documented.workspace = true
+figment.workspace = true
+futures.workspace = true
 futures-util.workspace = true
+hf-hub = { version = "0.4", features = ["tokio"] }
 hypha-config.workspace = true
+hypha-leases.workspace = true
 hypha-messages.workspace = true
 hypha-network.workspace = true
 libp2p.workspace = true
 libp2p-stream.workspace = true
 miette.workspace = true
 nix.workspace = true
+ordered-float = "5"
+reqwest = { version = "0.12", features = ["stream", "json"] }
+safetensors.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
@@ -28,8 +37,6 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 utoipa.workspace = true
 uuid.workspace = true
-figment.workspace = true
-
 
 [dev-dependencies]
 http-body-util.workspace = true
