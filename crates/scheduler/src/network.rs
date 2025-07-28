@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use futures_util::stream::StreamExt;
 use hypha_network::{
-    CertificateDer, CertificateRevocationListDer, PrivateKeyDer, cert,
+    CertificateDer, CertificateRevocationListDer, PrivateKeyDer,
     dial::{DialAction, DialDriver, DialInterface, PendingDials},
     gossipsub::{
         GossipsubAction, GossipsubBehaviour, GossipsubDriver, GossipsubInterface, Subscriptions,
@@ -17,7 +17,6 @@ use hypha_network::{
         PendingQueries,
     },
     listen::{ListenAction, ListenDriver, ListenInterface, PendingListens},
-    mtls,
     request_response::{
         OutboundRequests, OutboundResponses, RequestHandler, RequestResponseAction,
         RequestResponseBehaviour, RequestResponseDriver, RequestResponseError,
@@ -30,7 +29,7 @@ use libp2p::{
     PeerId, StreamProtocol, Swarm, SwarmBuilder, dcutr, gossipsub, identify, kad, ping, relay,
     request_response::{self, cbor::codec::Codec},
     swarm::{ConnectionId, DialError, NetworkBehaviour, SwarmEvent},
-    tcp, yamux,
+    tcp, tls, yamux,
 };
 use libp2p_stream as stream;
 use tokio::sync::{mpsc, oneshot};
@@ -85,36 +84,19 @@ impl Network {
     ) -> Result<(Self, NetworkDriver), SwarmError> {
         let (action_sender, action_receiver) = mpsc::channel(5);
 
-        // Create a libp2p identity keypair from provided private key.
-        let identity = cert::identity_from_private_key(&private_key)
-            .map_err(|e| SwarmError::SwarmConfig(format!("Failed to create identity: {e}")))?;
-
-        // Create mTLS config
-        let mtls_config = mtls::Config::try_new(cert_chain, private_key, ca_certs, crls)
-            .map_err(|e| SwarmError::SwarmConfig(format!("Failed to create mTLS config: {e}")))?;
-
         // Build libp2p Swarm using the derived identity and mTLS config
-        let swarm = SwarmBuilder::with_existing_identity(identity)
+        let swarm = SwarmBuilder::with_existing_identity(cert_chain, private_key, ca_certs, crls)
             .with_tokio()
             .with_tcp(
                 tcp::Config::default(),
-                {
-                    let mtls_config = mtls_config.clone();
-                    move |_: &_| Ok(mtls_config)
-                },
+                tls::Config::new,
                 yamux::Config::default,
             )
-            .map_err(|_: Box<dyn std::error::Error>| {
+            .map_err(|_| {
                 SwarmError::TransportConfig("Failed to create TCP transport with mTLS.".to_string())
             })?
-            .with_relay_client(
-                {
-                    let mtls_config = mtls_config.clone();
-                    move |_: &_| Ok(mtls_config)
-                },
-                yamux::Config::default,
-            )
-            .map_err(|_: Box<dyn std::error::Error>| {
+            .with_relay_client(tls::Config::new, yamux::Config::default)
+            .map_err(|_| {
                 SwarmError::TransportConfig("Failed to create relay client with mTLS.".to_string())
             })?
             .with_behaviour(|key, relay_client| {

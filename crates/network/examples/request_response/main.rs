@@ -6,7 +6,6 @@ use hypha_network::{
     cert::{load_certs_from_pem, load_crls_from_pem, load_private_key_from_pem},
     dial::{DialAction, DialDriver, DialInterface, PendingDials},
     listen::{ListenAction, ListenDriver, ListenInterface, PendingListens},
-    mtls,
     request_response::{
         OutboundRequests, OutboundResponses, RequestHandler, RequestResponseAction,
         RequestResponseBehaviour, RequestResponseDriver, RequestResponseError,
@@ -18,7 +17,7 @@ use libp2p::{
     Multiaddr, Swarm, SwarmBuilder,
     request_response::{self, ProtocolSupport, cbor::codec::Codec},
     swarm::{NetworkBehaviour, SwarmEvent},
-    tcp, yamux,
+    tcp, tls, yamux,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
@@ -165,23 +164,14 @@ async fn create_network(args: Args) -> Result<(Network, NetworkDriver), Box<dyn 
         vec![]
     };
 
-    let identity = hypha_network::cert::identity_from_private_key(&private_key)
-        .map_err(|e| format!("Failed to create identity: {e}"))?;
-
-    let mtls_config = mtls::Config::try_new(cert_chain, private_key, ca_certs, crls)
-        .map_err(|e| format!("Failed to create mTLS config: {e}"))?;
-
-    let swarm = SwarmBuilder::with_existing_identity(identity)
+    let swarm = SwarmBuilder::with_existing_identity(cert_chain, private_key, ca_certs, crls)
         .with_tokio()
         .with_tcp(
             tcp::Config::default(),
-            {
-                let mtls_config = mtls_config.clone();
-                move |_: &_| Ok(mtls_config)
-            },
+            tls::Config::new,
             yamux::Config::default,
         )
-        .map_err(|_: Box<dyn std::error::Error>| "Failed to create TCP transport.")?
+        .map_err(|_| "Failed to create TCP transport.")?
         .with_behaviour(|_key| Behaviour {
             request_response: request_response::Behaviour::<ExampleCodec>::new(
                 [(

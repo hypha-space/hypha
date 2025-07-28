@@ -8,7 +8,7 @@ use hypha_network::{
     cert::{load_certs_from_pem, load_crls_from_pem, load_private_key_from_pem},
     listen::ListenInterface,
     swarm::SwarmDriver,
-    utils::multiaddr_from_socketaddr,
+    utils::{multiaddr_from_socketaddr, multiaddr_from_socketaddr_quic},
 };
 use tokio::signal::unix::{SignalKind, signal};
 use tracing_subscriber::EnvFilter;
@@ -64,6 +64,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     network
         .listen(multiaddr_from_socketaddr(opt.listen_address)?)
+        .await?;
+    network
+        .listen(multiaddr_from_socketaddr_quic(opt.listen_address)?)
         .await?;
     tracing::info!("Successfully listening");
 

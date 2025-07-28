@@ -7,21 +7,20 @@ use std::collections::HashMap;
 
 use futures_util::stream::StreamExt;
 use hypha_network::{
-    CertificateDer, CertificateRevocationListDer, PrivateKeyDer, cert,
+    CertificateDer, CertificateRevocationListDer, PrivateKeyDer,
     dial::{DialAction, DialDriver, DialInterface, PendingDials},
     gossipsub::{
         GossipsubAction, GossipsubBehaviour, GossipsubDriver, GossipsubInterface, Subscriptions,
     },
     kad::{KademliaAction, KademliaBehavior, KademliaDriver, KademliaInterface, PendingQueries},
     listen::{ListenAction, ListenDriver, ListenInterface, PendingListens},
-    mtls,
     stream::{StreamInterface, StreamReceiverInterface},
     swarm::{SwarmDriver, SwarmError},
 };
 use libp2p::{
     Swarm, SwarmBuilder, gossipsub, identify, kad, ping, relay,
     swarm::{NetworkBehaviour, SwarmEvent},
-    tcp, yamux,
+    tcp, tls, yamux,
 };
 use libp2p_stream as stream;
 use tokio::sync::mpsc;
@@ -67,53 +66,42 @@ impl Network {
     ) -> Result<(Self, NetworkDriver), SwarmError> {
         let (action_sender, action_receiver) = mpsc::channel(5);
 
-        // Create a libp2p keypair from the certificate and private key
-        let identity = cert::identity_from_private_key(&private_key)
-            .map_err(|e| SwarmError::TransportConfig(format!("Failed to create identity: {e}")))?;
-
-        // Create mTLS config
-        let mtls_config =
-            mtls::Config::try_new(cert_chain, private_key, ca_certs, crls).map_err(|e| {
-                SwarmError::TransportConfig(format!("Failed to create mTLS config: {e}"))
-            })?;
-
-        let mut swarm = SwarmBuilder::with_existing_identity(identity)
-            .with_tokio()
-            .with_tcp(
-                tcp::Config::default(),
-                {
-                    let mtls_config = mtls_config.clone();
-                    move |_: &_| Ok(mtls_config)
-                },
-                yamux::Config::default,
-            )
-            .map_err(|_: Box<dyn std::error::Error>| {
-                SwarmError::TransportConfig("Failed to create TCP transport.".to_string())
-            })?
-            .with_behaviour(|key| Behaviour {
-                relay: relay::Behaviour::new(key.public().to_peer_id(), Default::default()),
-                ping: ping::Behaviour::new(ping::Config::new()),
-                identify: identify::Behaviour::new(identify::Config::new(
-                    "/hypha-identify/0.0.1".to_string(),
-                    key.public(),
-                )),
-                stream: stream::Behaviour::new(),
-                kademlia: kad::Behaviour::new(
-                    key.public().to_peer_id(),
-                    kad::store::MemoryStore::new(key.public().to_peer_id()),
-                ),
-                gossipsub: gossipsub::Behaviour::new(
-                    gossipsub::MessageAuthenticity::Signed(key.clone()),
-                    gossipsub::Config::default(),
+        let mut swarm =
+            SwarmBuilder::with_existing_identity(cert_chain, private_key, ca_certs, crls)
+                .with_tokio()
+                .with_tcp(
+                    tcp::Config::default(),
+                    tls::Config::new,
+                    yamux::Config::default,
                 )
-                .expect("Failed to create gossipsub behaviour"),
-            })
-            .map_err(|_| {
-                SwarmError::BehaviourCreation("Failed to create swarm behavior.".to_string())
-            })?
-            // TODO: Tune swarm configuration
-            .with_swarm_config(|config| config)
-            .build();
+                .map_err(|_| {
+                    SwarmError::TransportConfig("Failed to create TCP transport.".to_string())
+                })?
+                .with_quic()
+                .with_behaviour(|key| Behaviour {
+                    relay: relay::Behaviour::new(key.public().to_peer_id(), Default::default()),
+                    ping: ping::Behaviour::new(ping::Config::new()),
+                    identify: identify::Behaviour::new(identify::Config::new(
+                        "/hypha-identify/0.0.1".to_string(),
+                        key.public(),
+                    )),
+                    stream: stream::Behaviour::new(),
+                    kademlia: kad::Behaviour::new(
+                        key.public().to_peer_id(),
+                        kad::store::MemoryStore::new(key.public().to_peer_id()),
+                    ),
+                    gossipsub: gossipsub::Behaviour::new(
+                        gossipsub::MessageAuthenticity::Signed(key.clone()),
+                        gossipsub::Config::default(),
+                    )
+                    .expect("Failed to create gossipsub behaviour"),
+                })
+                .map_err(|_| {
+                    SwarmError::BehaviourCreation("Failed to create swarm behavior.".to_string())
+                })?
+                // TODO: Tune swarm configuration
+                .with_swarm_config(|config| config)
+                .build();
 
         swarm
             .behaviour_mut()
