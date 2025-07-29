@@ -1,6 +1,6 @@
 //! Scheduler binary.
 
-use std::{error::Error, fs, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
+use std::{error::Error, fs, net::SocketAddr, path::PathBuf, sync::Arc};
 
 use clap::Parser;
 use hypha_network::{
@@ -10,6 +10,7 @@ use hypha_network::{
     },
     dial::DialInterface,
     gossipsub::GossipsubInterface,
+    kad::KademliaInterface,
     listen::ListenInterface,
     request_response::{RequestResponseInterface, RequestResponseInterfaceExt},
     swarm::SwarmDriver,
@@ -91,10 +92,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // TODO: fall back to TCP if QUIC doesn't work
     let _gateway_peer_id = network.dial(gateway_address).await?;
 
-    // Wait a bit until DHT bootstrapping is done.
-    // Once we receive an 'Identify' message, bootstrapping will start.
-    // TODO: Provide a way to wait for this event
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    // Wait until DHT bootstrapping is done.
+    network.wait_for_bootstrap().await?;
 
     let scheduler = Arc::new(Mutex::new(Tasks::new()));
 
