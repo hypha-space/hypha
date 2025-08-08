@@ -139,15 +139,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             // TODO: This is very simple and hard-coded scheduling:
                             // Once 2 workers and a parameter server have connected, we start a task.
                             // The criteria when and with whom to start a task need to be added later.
-                            if participants.len() == 2 {
-                                if let Some(parameter_server_peer_id) = parameter_server_peer_id {
-                                    tokio::spawn(start_task(
-                                        network.clone(),
-                                        task_id,
-                                        parameter_server_peer_id,
-                                        participants,
-                                    ));
-                                }
+                            if participants.len() == 2
+                                && let Some(parameter_server_peer_id) = parameter_server_peer_id
+                            {
+                                tokio::spawn(start_task(
+                                    network.clone(),
+                                    task_id,
+                                    parameter_server_peer_id,
+                                    participants,
+                                ));
                             }
 
                             hypha_messages::Response::Worker(

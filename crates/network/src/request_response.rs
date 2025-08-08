@@ -746,10 +746,10 @@ where
                         "Outbound request-response failure"
                     );
 
-                    if let Some(tx) = self.outbound_requests().remove(&request_id) {
-                        if tx.send(Err(RequestResponseError::Request(error))).is_err() {
-                            tracing::debug!("Failed to send error to request handler");
-                        }
+                    if let Some(tx) = self.outbound_requests().remove(&request_id)
+                        && tx.send(Err(RequestResponseError::Request(error))).is_err()
+                    {
+                        tracing::debug!("Failed to send error to request handler");
                     }
                 }
                 Event::ResponseSent {
@@ -761,10 +761,10 @@ where
                         "Response sent successfully"
                     );
 
-                    if let Some(tx) = self.outbound_responses().remove(&request_id) {
-                        if tx.send(Ok(())).is_err() {
-                            tracing::debug!("Response confirmation receiver dropped");
-                        }
+                    if let Some(tx) = self.outbound_responses().remove(&request_id)
+                        && tx.send(Ok(())).is_err()
+                    {
+                        tracing::debug!("Response confirmation receiver dropped");
                     }
                 }
             }
