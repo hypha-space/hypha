@@ -78,9 +78,8 @@ class CustomC4(torch.utils.data.Dataset[int]):
 
 
 def main(socket_path: str, work_dir: str) -> None:
-    with Session(socket_path) as client:
-        while True:
-            train_config = client.wait_for_task()
+    with Session(socket_path) as client, client.tasks() as tasks:
+        for train_config in tasks:
             print(f"Training with configuration: {train_config}", flush=True)
 
             client.set_task_status(train_config["task_id"], "Running")
@@ -117,55 +116,58 @@ def main(socket_path: str, work_dir: str) -> None:
                 model, optimizer, data_loader, scheduler
             )
 
-            latest_model = 0
-            update_in_epoch = False
-            for epoch in range(train_config["epochs"]):
-                progress_bar = tqdm(
-                    range(len(data_loader)),
-                    disable=not accelerator.is_main_process,
-                )
-                for batch in training_dataloader:
-                    optimizer.zero_grad()
-                    # check for model updates
-                    if not update_in_epoch:
-                        latest_version, weights_path = client.get_parameters(train_config["task_id"])
+            with client.receive(train_config["parameter_server_peer_id"]) as receiver:
+                updates = iter(receiver)
 
-                        if latest_version > latest_model:
-                            model = merge_models(model, weights_path, 0.9)
-                            model.to(device)
-                            latest_model = latest_version
-                            update_in_epoch = True
-                            print("Weights updated", flush=True)
+                latest_model = 0
+                update_in_epoch = True
+                for epoch in range(train_config["epochs"]):
+                    progress_bar = tqdm(
+                        range(len(data_loader)),
+                        disable=not accelerator.is_main_process,
+                    )
+                    for batch in training_dataloader:
+                        optimizer.zero_grad()
+                        # check for model updates
+                        if not update_in_epoch:
+                            print("Waiting for model update", flush=True)
+                            update = next(updates)
+                            latest_version = update["parameters"]["version"]
+                            weights_path = update["parameters"]["path"]
 
-                    # This is specific for training transformer models
-                    # TODO: allow for other models
-                    inputs = batch
-                    outputs = model(input_ids=inputs, labels=inputs)
-                    loss = outputs["loss"]
-                    # loss = loss_function(outputs, targets)
-                    accelerator.backward(loss)
-                    optimizer.step()
-                    scheduler.step()
+                            if latest_version > latest_model:
+                                model = merge_models(model, weights_path, 0.9)
+                                model.to(device)
+                                latest_model = latest_version
+                                update_in_epoch = True
+                                print("Weights updated", flush=True)
+
+                        # This is specific for training transformer models
+                        # TODO: allow for other models
+                        inputs = batch
+                        outputs = model(input_ids=inputs, labels=inputs)
+                        loss = outputs["loss"]
+                        # loss = loss_function(outputs, targets)
+                        accelerator.backward(loss)
+                        optimizer.step()
+                        scheduler.step()
+                        if accelerator.is_main_process:
+                            progress_bar.update(1)
                     if accelerator.is_main_process:
-                        progress_bar.update(1)
-                if accelerator.is_main_process and epoch % train_config["checkpointing"] == 0:
-                    # For testing purposes set to global!
-                    result_path = os.path.join(
-                        work_dir,
-                        f"{train_config['task_id']}_{epoch}_global_weights.pt",
-                    )
-                    save_model(model, result_path)
+                        # For testing purposes set to global!
+                        result_path = os.path.join(
+                            work_dir,
+                            f"{train_config['task_id']}_{epoch}_global_weights.pt",
+                        )
+                        save_model(model, result_path)
 
-                    # Once we notify the driver about the result file, ownership of that file
-                    # is transferred to the driver.
-                    client.set_task_status(
-                        train_config["task_id"],
-                        "Finished",
-                        {
-                            "epoch": epoch,
-                            "path": result_path,
-                        },
-                    )
+                        # Once we notify the driver about the result file, ownership of that file
+                        # is transferred to the driver.
+                        client.set_task_status(train_config["task_id"], "Finished")
+                        print("Sending model updates to parameter server", flush=True)
+                        client.send(train_config["parameter_server_peer_id"], result_path)
+
+                    update_in_epoch = False
 
 
 if __name__ == "__main__":

@@ -1,4 +1,6 @@
-from contextlib import AbstractContextManager
+import json
+from collections.abc import Iterator
+from contextlib import AbstractContextManager, contextmanager
 from types import TracebackType
 from typing import Any
 
@@ -18,17 +20,16 @@ class Session(AbstractContextManager["Session", None]):
     ) -> None:
         self._client.close()
 
-    def wait_for_task(self) -> Any:
-        while True:
-            try:
-                resp = self._client.get("http://hypha/tasks", timeout=2)
-                task_config = resp.json()
-                return task_config
-            except httpx.ReadTimeout:
-                # Retry until we have a result.
-                # We use a request timeout to be able to react
-                # to SIGTERM signals.
-                pass
+    @property
+    def client(self) -> httpx.Client:
+        return self._client
+
+    @contextmanager
+    def tasks(self) -> Iterator["EventSource"]:
+        with self._client.stream(
+            "GET", "http://hypha/tasks", headers={"Accept": "text/event-stream"}, timeout=None
+        ) as resp:
+            yield EventSource(resp)
 
     def set_task_status(self, task_id: str, status: str, result: Any | None = None) -> None:
         status_json = {
@@ -38,10 +39,34 @@ class Session(AbstractContextManager["Session", None]):
         if result is not None:
             status_json["result"] = result
 
-        self._client.post(f"http://hypha/status/{task_id}", json=status_json)
+        self._client.post(f"http://hypha/status/{task_id}", json=status_json).raise_for_status()
 
-    def get_parameters(self, task_id: str) -> tuple[int, str]:
-        resp = self._client.get(f"http://hypha/inputs/{task_id}")
+    def send(self, peer_id: str, path: str) -> None:
+        self._client.post(
+            f"http://hypha/data/{peer_id}", json={"parameters": {"version": 0, "path": path}}
+        ).raise_for_status()
 
-        model = resp.json()
-        return model["parameters"]["version"], model["parameters"]["path"]
+    @contextmanager
+    def receive(self, peer_id: str) -> Iterator["EventSource"]:
+        with self._client.stream(
+            "GET", f"http://hypha/data/{peer_id}", headers={"Accept": "text/event-stream"}, timeout=None
+        ) as resp:
+            yield EventSource(resp)
+
+
+class EventSource:
+    def __init__(self, response: httpx.Response) -> None:
+        self._response = response
+
+    @property
+    def response(self) -> httpx.Response:
+        return self._response
+
+    def __iter__(self) -> Iterator[Any]:
+        for line in self._response.iter_lines():
+            fieldname, _, value = line.rstrip("\n").partition(":")
+
+            if fieldname == "data":
+                result = json.loads(value)
+
+                yield result

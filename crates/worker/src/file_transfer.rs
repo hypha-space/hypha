@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use futures_util::{AsyncReadExt, AsyncWriteExt};
 use libp2p::Stream;
@@ -46,7 +46,7 @@ pub async fn send_file(
 pub async fn receive_file(
     work_dir: impl AsRef<Path>,
     stream: &mut Stream,
-) -> Result<(), std::io::Error> {
+) -> Result<PathBuf, std::io::Error> {
     let work_dir = work_dir.as_ref();
 
     let mut buf = [0; 8];
@@ -87,5 +87,5 @@ pub async fn receive_file(
     tracing::trace!(file_path = %result_path.display(), bytes = nbytes, "Received file");
 
     // TODO: assert nbytes == payload_len
-    Ok(())
+    Ok(result_path)
 }

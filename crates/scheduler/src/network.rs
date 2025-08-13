@@ -96,6 +96,7 @@ impl Network {
             .map_err(|_| {
                 SwarmError::TransportConfig("Failed to create TCP transport with mTLS.".to_string())
             })?
+            .with_quic()
             .with_relay_client(tls::Config::new, yamux::Config::default)
             .map_err(|_| {
                 SwarmError::TransportConfig("Failed to create relay client with mTLS.".to_string())

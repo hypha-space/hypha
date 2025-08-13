@@ -9,7 +9,8 @@ use std::{
     time::Duration,
 };
 
-use libp2p::PeerId;
+use hypha_network::{request_response::RequestResponseInterface, stream::StreamSenderInterface};
+use libp2p::{PeerId, request_response::cbor::codec::Codec};
 use nix::{
     libc::pid_t,
     sys::signal::{self, Signal},
@@ -20,14 +21,20 @@ use tokio::{
     io::{AsyncBufReadExt, BufReader},
     net::UnixListener,
     process::Command,
-    sync::{Mutex, mpsc},
+    sync::{Mutex, broadcast, mpsc},
     time::sleep,
 };
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use uuid::Uuid;
 
-use crate::network::Network;
+use crate::{driver::router::TrainingConfig, network::Network};
 
+pub use crate::driver::{
+    parameter_server::try_new_parameter_server,
+    router::{Parameters, TrainingInputs},
+};
+
+mod parameter_server;
 mod router;
 
 /// Create a new driver instance.
@@ -36,29 +43,72 @@ mod router;
 /// specified by `command` with the given `arguments`.
 /// This command will be executed in the background and will be terminated when the driver is dropped.
 /// It communicates through the driver API provided by the socket.
-pub async fn try_new<P1, P2, S, I>(
+pub async fn try_new_command<P, S, I>(
     network: Network,
-    socket_path: P1,
-    work_dir: P2,
+    socket_path: P,
     command: S,
     arguments: I,
     token: CancellationToken,
 ) -> std::io::Result<Driver>
 where
-    P1: AsRef<Path>,
-    P2: AsRef<Path>,
+    P: AsRef<Path>,
     S: AsRef<OsStr>,
     I: IntoIterator<Item = S>,
 {
     tracing::info!("Starting driver");
 
-    let (tx, rx) = mpsc::channel(8);
+    let (message_tx, message_rx) = mpsc::channel(8);
+
+    let (tasks_channel, _) = broadcast::channel(8);
+    let (inputs_channel, _) = broadcast::channel(8);
+    let (outputs_tx, outputs_rx) = mpsc::channel(8);
     let server_tracker = TaskTracker::new();
     let driver_tracker = TaskTracker::new();
 
     let tasks = Arc::new(Mutex::new(HashMap::new()));
 
-    let app = router::new(network, work_dir, tasks.clone(), rx);
+    let message_dispatcher = {
+        let tasks_tx = tasks_channel.clone();
+        let inputs_tx = inputs_channel.clone();
+
+        tokio::select! {
+            Some(message) = message_rx.recv() => {
+                match message {
+                    Message::Send(peer_id, path) => {
+                        inputs_tx.send(TrainingInputs::Parameters(Parameters {
+                            version: 0,
+                            path: path.to_path_buf(),
+                        }));
+                    }
+                    Message::StartTraining(scheduler_peer_id, parameter_server_peer_id, task_id) => {
+                        tasks_tx.send(TrainingConfig {
+                            scheduler_peer_id: scheduler_peer_id,
+                            parameter_server_peer_id: parameter_server_peer_id,
+                            task_id: task_id,
+                            model: "EleutherAI/gpt-neo-125m".to_string(),
+                            dataset: "datablations/c4-filter-small".to_string(),
+                            epochs: 2,
+                            batch_size: 4,
+                            learning_rate: 1e-5,
+                            learning_rate_scheduler: "".to_string(),
+                            optimizer: "AdamW".to_string(),
+                            checkpointing: 1,
+                        });
+                    }
+                }
+            },
+            _ = outputs_rx.recv() => {
+
+            }
+        };
+    };
+
+    let app = router::new(
+        network,
+        tasks.clone(),
+        tasks_channel.clone(),
+        inputs_channel.clone(),
+    );
 
     // This will create a file that we later delete as part of 'wait'.
     let listener = UnixListener::bind(&socket_path)?;
@@ -85,6 +135,8 @@ where
         .args(arguments)
         .stdout(Stdio::piped())
         .spawn()?;
+
+    let socket_path = PathBuf::from(socket_path.as_ref());
 
     driver_tracker.spawn(async move {
         let stdout = driver_process.stdout.take().expect("stdout is available");
@@ -145,17 +197,16 @@ where
                 }
             }
         }
+
+        server_tracker.wait().await;
+
+        // If for some reason we can't remove the socket, ignore the error.;
+        let _ = std::fs::remove_file(&socket_path);
     });
 
     driver_tracker.close();
 
-    Ok(Driver {
-        tasks,
-        tx,
-        socket_path: PathBuf::from(socket_path.as_ref()),
-        server_tracker,
-        driver_tracker,
-    })
+    Ok(Driver::new(network, tasks, message_tx, driver_tracker))
 }
 
 // TODO: Remove this hardcoded driver, instead add configuration options
@@ -173,10 +224,9 @@ where
     let path = PathBuf::from(socket_path.as_ref());
     let work_path = PathBuf::from(work_dir.as_ref());
 
-    try_new(
+    try_new_command(
         network,
         socket_path,
-        work_dir,
         "uv",
         vec![
             "run",
@@ -200,22 +250,40 @@ where
 }
 
 #[derive(Debug, Clone)]
-struct Task {
+pub struct Task {
     id: Uuid,
     scheduler_peer_id: PeerId,
     parameter_server_peer_id: PeerId,
 }
 
+enum Message {
+    StartTraining(PeerId, PeerId, Uuid),
+    Send(PeerId, PathBuf),
+}
+
+// TODO: remove channels, only have mpsc for messages to the driver loop
+// Driver uses direct access to network for all messages on the network
 #[derive(Clone)]
 pub struct Driver {
     tasks: Arc<Mutex<HashMap<Uuid, Task>>>,
-    tx: mpsc::Sender<Task>,
-    socket_path: PathBuf,
-    server_tracker: TaskTracker,
+    message_sender: mpsc::Sender<Message>,
+
     driver_tracker: TaskTracker,
 }
 
 impl Driver {
+    pub fn new(
+        tasks: Arc<Mutex<HashMap<Uuid, Task>>>,
+        message_sender: mpsc::Sender<Message>,
+        driver_tracker: TaskTracker,
+    ) -> Driver {
+        Driver {
+            tasks,
+            message_sender,
+            driver_tracker,
+        }
+    }
+
     pub async fn start_training(
         &mut self,
         scheduler_peer_id: PeerId,
@@ -230,14 +298,19 @@ impl Driver {
                 parameter_server_peer_id,
             },
         );
-        let _ = self
-            .tx
-            .send(Task {
-                id: task_id,
-                scheduler_peer_id,
-                parameter_server_peer_id,
-            })
-            .await;
+        let _ = self.tasks_channel.send(TrainingConfig {
+            scheduler_peer_id: scheduler_peer_id,
+            parameter_server_peer_id: parameter_server_peer_id,
+            task_id: task_id,
+            model: "EleutherAI/gpt-neo-125m".to_string(),
+            dataset: "datablations/c4-filter-small".to_string(),
+            epochs: 2,
+            batch_size: 4,
+            learning_rate: 1e-5,
+            learning_rate_scheduler: "".to_string(),
+            optimizer: "AdamW".to_string(),
+            checkpointing: 1,
+        });
     }
 
     /// Wait for all driver tasks to be completed.
@@ -247,9 +320,19 @@ impl Driver {
         // The driver process is accessing the API provided by axum.
         // Wait for it to terminate before stopping axum.
         self.driver_tracker.wait().await;
-        self.server_tracker.wait().await;
+    }
 
-        // If for some reason we can't remove the socket, ignore the error.
-        let _ = std::fs::remove_file(&self.socket_path);
+    pub async fn send_data(&self, peer_id: PeerId, path: &Path) {
+        let _ = self.receive_channel.send((
+            peer_id,
+            TrainingInputs::Parameters(Parameters {
+                version: 0,
+                path: path.to_path_buf(),
+            }),
+        ));
+    }
+
+    pub fn receive_data(&self) -> broadcast::Receiver<(PeerId, TrainingInputs)> {
+        self.send_channel.subscribe()
     }
 }
