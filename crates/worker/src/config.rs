@@ -11,7 +11,7 @@ pub struct Config {
     cert_pem: PathBuf,
     /// Path to the private key pem.
     key_pem: PathBuf,
-    /// Path to the trust chain pem.
+    /// Path to the trust pem (bundle).
     trust_pem: PathBuf,
     /// Path to the certificate revocation list pem.
     crls_pem: Option<PathBuf>,

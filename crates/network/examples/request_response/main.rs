@@ -37,8 +37,8 @@ struct Args {
     cert_file: PathBuf,
     #[clap(long)]
     key_file: PathBuf,
-    #[clap(long)]
-    trust_chain_file: PathBuf,
+    #[clap(long = "trust-file")]
+    trust_file: PathBuf,
     #[clap(long)]
     crl_file: Option<PathBuf>,
 }
@@ -150,7 +150,7 @@ async fn create_network(args: Args) -> Result<(Network, NetworkDriver), Box<dyn 
     // Load certificates and private key
     let cert_pem = fs::read(&args.cert_file)?;
     let key_pem = fs::read(&args.key_file)?;
-    let ca_cert_pem = fs::read(&args.trust_chain_file)?;
+    let ca_cert_pem = fs::read(&args.trust_file)?;
 
     let cert_chain = load_certs_from_pem(&cert_pem)?;
     let private_key = load_private_key_from_pem(&key_pem)?;
