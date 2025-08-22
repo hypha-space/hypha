@@ -178,13 +178,14 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:
                     progress_bar.update(1)
             if accelerator.is_main_process and epoch % job_spec["executor"]["checkpointing"] == 0:
                 # For testing purposes set to global!
+                file_name = f"{epoch}_global_weights.pt"
                 result_path = os.path.join(
                     work_dir,
-                    f"{epoch}_global_weights.pt",
+                    file_name,
                 )
                 save_model(model, result_path)
                 with httpx.Client(transport=transport, timeout=10) as client:
-                    req = {"send": job_spec["executor"]["results"], "path": result_path}
+                    req = {"send": job_spec["executor"]["results"], "path": file_name}
                     try:
                         resp = client.post("http://hypha/resources/send", json=req, timeout=30.0)
                         print("send:", resp.status_code, resp.text)

@@ -108,7 +108,9 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
             Requirement::Resource(Resources::Gpu { min: 1.0 }),
             Requirement::Resource(Resources::Cpu { min: 1.0 }),
             Requirement::Resource(Resources::Memory { min: 1.0 }),
-            Requirement::Driver { kind: "diloco-transformer".into() }
+            Requirement::Driver {
+                kind: "diloco-transformer".into(),
+            },
         ],
     };
 
@@ -147,7 +149,9 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
         requirements: vec![
             Requirement::Resource(Resources::Cpu { min: 1.0 }),
             Requirement::Resource(Resources::Memory { min: 1.0 }),
-            Requirement::Driver { kind: "parameter-server".into() }
+            Requirement::Driver {
+                kind: "parameter-server".into(),
+            },
         ],
     };
 

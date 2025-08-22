@@ -86,6 +86,9 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
     network
         .listen(multiaddr_from_socketaddr(config.listen_address()).into_diagnostic()?)
         .await?;
+    network
+        .listen(multiaddr_from_socketaddr_quic(config.listen_address()).into_diagnostic()?)
+        .await?;
     tracing::info!("Successfully listening");
 
     // Dial the gateway address
@@ -108,7 +111,10 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
     // let resource_observer = ResourceObserver::with_config(config.observer.clone());
     //
     let arbiter = Arbiter::new(
-        ResourceLeaseManager::new(StaticResourceManager::new(config.resources(), config.driver())),
+        ResourceLeaseManager::new(StaticResourceManager::new(
+            config.resources(),
+            config.driver(),
+        )),
         WeightedResourceRequestEvaluator::default(),
         network.clone(),
     )

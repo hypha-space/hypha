@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use crate::{
     connector::Connector,
-    executor::{self, Execution, JobExecutor, ProcessExecutor},
+    executor::{self, Execution, JobExecutor, ParameterServerExecutor, ProcessExecutor},
     network::Network,
 };
 
@@ -98,7 +98,7 @@ impl JobManager {
                 Ok(())
             }
             Executor::ParameterServer { .. } => {
-                let executor = ProcessExecutor::new(self.connector.clone());
+                let executor = ParameterServerExecutor::new(self.connector.clone());
                 let execution = executor.execute(spec.clone(), cancel_token.clone()).await?;
                 let job = Job {
                     id,

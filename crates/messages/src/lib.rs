@@ -289,6 +289,13 @@ impl Receive {
     pub fn as_ref(&self) -> &Reference {
         &self.0
     }
+
+    pub fn get_peers(&self) -> &Vec<PeerId> {
+        match &self.0 {
+            Reference::Peers { peers, .. } => peers,
+            _ => panic!(),
+        }
+    }
 }
 
 impl TryFrom<Reference> for Receive {
@@ -346,9 +353,6 @@ pub enum Executor {
         updates: Receive,
         results: Send,
     },
-    // Candle {
-    //     model: Reference,
-    // },
     #[serde(rename = "parameter-server")]
     ParameterServer { updates: Receive, results: Send },
 }

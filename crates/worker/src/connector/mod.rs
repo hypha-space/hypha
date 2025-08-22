@@ -219,8 +219,7 @@ impl FetchConnector for HttpHfFetcher {
     fn fetch<'a>(
         &'a self,
         fetch: &'a Fetch,
-    ) -> Pin<Box<dyn futures::Future<Output = Result<ReadItemStream, ConnectorError>> + Send + 'a>>
-    {
+    ) -> Pin<Box<dyn Future<Output = Result<ReadItemStream, ConnectorError>> + Send + 'a>> {
         Box::pin(async move {
             match fetch.as_ref() {
                 Reference::Uri { value } => {
