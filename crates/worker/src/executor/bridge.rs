@@ -92,7 +92,7 @@ impl IntoResponse for Error {
 
 struct SockState {
     work_dir: PathBuf,
-    conduit: Connector<Network>,
+    connector: Connector<Network>,
 }
 
 pub struct Bridge {
@@ -113,7 +113,7 @@ impl Bridge {
     {
         let state = Arc::new(SockState {
             work_dir: PathBuf::from(work_dir.as_ref()),
-            conduit,
+            connector: conduit,
         });
 
         let router = Router::new()
@@ -186,7 +186,7 @@ async fn fetch_resource(
     fs::create_dir_all(&dir_abs).await?;
 
     let mut out: Vec<FileResponse> = Vec::new();
-    let mut items = state.conduit.fetch(fetch).await?;
+    let mut items = state.connector.fetch(fetch).await?;
     let mut idx: usize = 0;
     while let Some(item) = items.next().await.transpose().map_err(Error::Io)? {
         let (file_name, reader) = derive_name_and_reader(item, idx);
@@ -225,7 +225,7 @@ async fn send_resource(
 ) -> Result<Json<Vec<SendPerPeerResponse>>, Error> {
     let abs = safe_join(&state.work_dir, &req.path)?;
     let mut out: Vec<SendPerPeerResponse> = Vec::new();
-    let mut writers = state.conduit.send(req.send).await?;
+    let mut writers = state.connector.send(req.send).await?;
     while let Some(item) = writers.next().await.transpose().map_err(Error::Connector)? {
         let peer_id = item.meta.name.clone();
         let file = fs::File::open(&abs).await?;
@@ -315,7 +315,7 @@ async fn receive_subscribe(
 
     // Channel to push events to the SSE stream
     let (tx, rx) = tokio::sync::mpsc::channel::<Event>(64);
-    let conduit = state.conduit.clone();
+    let conduit = state.connector.clone();
     let work_dir = state.work_dir.clone();
     let receive = req.receive.clone();
 

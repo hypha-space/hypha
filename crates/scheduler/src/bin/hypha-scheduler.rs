@@ -1,6 +1,6 @@
 //! Scheduler binary.
 
-use std::{collections::HashSet, error::Error, fs, time::Duration};
+use std::{error::Error, fs, time::Duration};
 
 use clap::{Parser, Subcommand};
 use figment::providers::{Env, Format, Serialized, Toml};
@@ -116,7 +116,7 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
 
     // Request multiple workers to increase chances of two distinct peers
     let mut allocated_workers = Vec::new();
-    for i in 0..4 {
+    for i in 0..1 {
         tracing::info!(worker_index = i, "Requesting worker allocation");
         match allocator.request(worker_spec.clone(), 100.0, None).await {
             Ok(worker) => {
@@ -134,17 +134,6 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
         sleep(Duration::from_millis(100)).await;
     }
 
-    // Deduplicate by peer id to ensure we pick two distinct workers
-    let mut unique_workers = Vec::new();
-    let mut seen: HashSet<libp2p::PeerId> = HashSet::new();
-    for w in allocated_workers.into_iter() {
-        if seen.insert(w.peer_id()) {
-            unique_workers.push(w);
-        }
-    }
-
-    // NOTE: Phase 1 - Allocate workers using the new allocator/arbiter protocol
-    // First, request worker nodes for job execution
     let parameter_server_spec = WorkerSpec {
         requirements: vec![
             Requirement::Resource(Resources::Cpu { min: 1.0 }),
@@ -157,7 +146,7 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
 
     // Request multiple workers to increase chances of two distinct peers
     let mut allocated_parameter_servers = Vec::new();
-    for i in 0..2 {
+    for i in 0..1 {
         tracing::info!(worker_index = i, "Requesting worker allocation");
         match allocator
             .request(parameter_server_spec.clone(), 100.0, None)
@@ -178,66 +167,45 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
         sleep(Duration::from_millis(100)).await;
     }
 
-    // Deduplicate by peer id to ensure we pick two distinct workers
-    let mut unique_parameter_servers = Vec::new();
-    let mut seen_servers: HashSet<libp2p::PeerId> = HashSet::new();
-    for w in allocated_parameter_servers.into_iter() {
-        if seen_servers.insert(w.peer_id()) {
-            unique_parameter_servers.push(w);
+    if allocated_workers.len() >= 1 && allocated_parameter_servers.len() == 1 {
+        let parameterserver = &allocated_parameter_servers[0];
+
+        for worker in &allocated_workers {
+            worker
+                .dispatch(JobSpec {
+                    executor: Executor::DiLoCoTransformer {
+                        model: Fetch::uri("EleutherAI/gpt-neo-125m"), // Fetch::uri("https://example.com/"),
+                        data: Fetch::uri("datablations/c4-filter-small"),
+                        updates: Receive::peers(vec![parameterserver.peer_id()]),
+                        results: Send::peers(
+                            vec![parameterserver.peer_id()],
+                            SelectionStrategy::One,
+                        ),
+                    },
+                })
+                .await?;
         }
-    }
-
-    if unique_workers.len() >= 2 && unique_parameter_servers.len() == 1 {
-        let a = &unique_workers[0];
-        let b = &unique_workers[1];
-        let parameterserver = &unique_parameter_servers[0];
-
-        // Worker A listens for updates from B and sends its results to B
-        let _a_rx = a
-            .dispatch(JobSpec {
-                executor: Executor::DiLoCoTransformer {
-                    model: Fetch::uri("EleutherAI/gpt-neo-125m"), // Fetch::uri("https://example.com/"),
-                    data: Fetch::uri("datablations/c4-filter-small"),
-                    updates: Receive::peers(vec![parameterserver.peer_id()]),
-                    results: Send::peers(vec![parameterserver.peer_id()], SelectionStrategy::One),
-                },
-            })
-            .await?;
-
-        // Worker B listens for updates from A and sends its results to A
-        let _b_rx = b
-            .dispatch(JobSpec {
-                executor: Executor::DiLoCoTransformer {
-                    model: Fetch::uri("EleutherAI/gpt-neo-125m"), // Fetch::uri("https://example.com/"),
-                    data: Fetch::uri("datablations/c4-filter-small"),
-                    // updates: Receive::peers(vec![a.peer_id()]),
-                    // results: Send::peers(vec![a.peer_id()], SelectionStrategy::One),
-                    updates: Receive::peers(vec![parameterserver.peer_id()]),
-                    results: Send::peers(vec![parameterserver.peer_id()], SelectionStrategy::One),
-                },
-            })
-            .await?;
-
         let _p_rx = parameterserver
             .dispatch(JobSpec {
                 executor: Executor::ParameterServer {
-                    updates: Receive::peers(vec![a.peer_id(), b.peer_id()]),
-                    results: Send::peers(vec![a.peer_id(), b.peer_id()], SelectionStrategy::All),
+                    updates: Receive::peers(
+                        allocated_workers
+                            .iter()
+                            .map(|worker| worker.peer_id())
+                            .collect(),
+                    ),
+                    results: Send::peers(
+                        allocated_parameter_servers
+                            .iter()
+                            .map(|ps| ps.peer_id())
+                            .collect(),
+                        SelectionStrategy::All,
+                    ),
                 },
             })
             .await?;
-
-        tracing::info!(
-            a = %a.peer_id(),
-            b = %b.peer_id(),
-            ps = %parameterserver.peer_id(),
-            "Dispatched cross-updating jobs between workers"
-        );
     } else {
-        tracing::warn!(
-            allocated = unique_workers.len(),
-            "Insufficient workers allocated for cross-updates (need 2)"
-        );
+        tracing::warn!("Insufficient workers allocated for diloco training");
     }
     // for worker in allocated_workers {
     //     tracing::info!(
