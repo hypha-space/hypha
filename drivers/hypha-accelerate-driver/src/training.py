@@ -3,6 +3,7 @@ import os
 from collections.abc import Iterable
 from typing import Any, cast
 
+import httpx
 import torch
 import torch.utils.data
 from accelerate import Accelerator
@@ -13,7 +14,7 @@ from tqdm import tqdm
 from transformers import GPT2Tokenizer, GPTNeoForCausalLM
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from api import Session
+import json
 
 
 def get_model(model_config: str) -> tuple[torch.nn.Module, PreTrainedTokenizer]:
@@ -77,100 +78,125 @@ class CustomC4(torch.utils.data.Dataset[int]):
         return self.tokenized_data[idx]
 
 
-def main(socket_path: str, work_dir: str) -> None:
-    with Session(socket_path) as client:
-        while True:
-            train_config = client.wait_for_task()
-            print(f"Training with configuration: {train_config}", flush=True)
+def main(socket_path: str, work_dir: str, job_json: str) -> None:
+    transport = httpx.HTTPTransport(uds=socket_path)
+    client = httpx.Client(transport=transport, timeout=10)
+    
+    job_spec = json.loads(job_json)
+    # ensure that type is `parameter-server`
+    assert job_spec["executor"]["type"] == "diloco-transformer"
+    
+    print(json.dumps(job_spec))
+    job_spec["executor"]["optimizer"] = "AdamW"
+    job_spec["executor"]["learning_rate"] = 1e-4
+    job_spec["executor"]["epochs"] = 3
+    job_spec["executor"]["batch_size"] = 4
+    job_spec["executor"]["dataset"] = "datablations/c4-filter-small"
+    job_spec["executor"]["checkpointing"] = 2
+        
+    while True:
+        # train_config = client.wait_for_task()
+        # print(f"Training with configuration: {train_config}", flush=True)
 
-            client.set_task_status(train_config["task_id"], "Running")
+        # client.set_task_status(train_config["task_id"], "Running")
+        import os
+        print(os.listdir(work_dir))
+        print("workdir:", work_dir)
+        accelerator = Accelerator(project_dir=work_dir)
+        device = accelerator.device
+        
+        print("Device", device)
 
-            accelerator = Accelerator(project_dir=work_dir)
-            device = accelerator.device
+        model, tokenizer = get_model(job_spec["executor"]["model"]["value"])
+        optimizer = get_optimizer(
+            job_spec["executor"]["optimizer"],
+            job_spec["executor"]["learning_rate"],
+            model.parameters(),
+        )
 
-            model, tokenizer = get_model(train_config["model"])
-            optimizer = get_optimizer(
-                train_config["optimizer"],
-                train_config["learning_rate"],
-                model.parameters(),
+        # TODO: remove this
+        milestone = int(job_spec["executor"]["epochs"] / 3)
+        scheduler_warmup = torch.optim.lr_scheduler.LinearLR(
+            optimizer, job_spec["executor"]["learning_rate"], 1e-3, milestone
+        )
+        scheduler_cool_down = torch.optim.lr_scheduler.LinearLR(
+            optimizer,
+            1e-3,
+            job_spec["executor"]["learning_rate"],
+            job_spec["executor"]["epochs"] - milestone,
+        )
+        scheduler = torch.optim.lr_scheduler.SequentialLR(
+            optimizer,
+            schedulers=[scheduler_warmup, scheduler_cool_down],
+            milestones=[milestone],
+        )
+        data_loader = get_data_loader(job_spec["executor"]["data"]["value"], job_spec["executor"]["batch_size"], tokenizer)
+
+        model, optimizer, training_dataloader, scheduler = accelerator.prepare(
+            model, optimizer, data_loader, scheduler
+        )
+
+        update_in_epoch = False
+        for epoch in range(job_spec["executor"]["epochs"]):
+            progress_bar = tqdm(
+                range(len(data_loader)),
+                disable=not accelerator.is_main_process,
             )
-
-            # TODO: remove this
-            milestone = int(train_config["epochs"] / 3)
-            scheduler_warmup = torch.optim.lr_scheduler.LinearLR(
-                optimizer, train_config["learning_rate"], 1e-3, milestone
-            )
-            scheduler_cool_down = torch.optim.lr_scheduler.LinearLR(
-                optimizer,
-                1e-3,
-                train_config["learning_rate"],
-                train_config["epochs"] - milestone,
-            )
-            scheduler = torch.optim.lr_scheduler.SequentialLR(
-                optimizer,
-                schedulers=[scheduler_warmup, scheduler_cool_down],
-                milestones=[milestone],
-            )
-            data_loader = get_data_loader(train_config["dataset"], train_config["batch_size"], tokenizer)
-
-            model, optimizer, training_dataloader, scheduler = accelerator.prepare(
-                model, optimizer, data_loader, scheduler
-            )
-
-            latest_model = 0
-            update_in_epoch = False
-            for epoch in range(train_config["epochs"]):
-                progress_bar = tqdm(
-                    range(len(data_loader)),
-                    disable=not accelerator.is_main_process,
-                )
-                for batch in training_dataloader:
-                    optimizer.zero_grad()
-                    # check for model updates
-                    if not update_in_epoch:
-                        latest_version, weights_path = client.get_parameters(train_config["task_id"])
-
-                        if latest_version > latest_model:
-                            model = merge_models(model, weights_path, 0.9)
+            for batch in training_dataloader:
+                optimizer.zero_grad()
+                # check for model updates
+                # if not update_in_epoch:
+                try:
+                    with httpx.Client(transport=transport, timeout=10) as client:
+                        with client.stream(
+                            "POST",
+                            "http://hypha/resources/receive",
+                            json={"receive": job_spec["executor"]["updates"], "out_dir": work_dir},
+                            timeout=1,
+                        ) as r:
+                            print("subscribe:", r.status_code)
+                            r.raise_for_status()
+                            model = merge_models(model, work_dir, 0.9)
                             model.to(device)
-                            latest_model = latest_version
-                            update_in_epoch = True
                             print("Weights updated", flush=True)
+                except Exception as e:
+                    print(f"receive error {e}")
 
-                    # This is specific for training transformer models
-                    # TODO: allow for other models
-                    inputs = batch
-                    outputs = model(input_ids=inputs, labels=inputs)
-                    loss = outputs["loss"]
-                    # loss = loss_function(outputs, targets)
-                    accelerator.backward(loss)
-                    optimizer.step()
-                    scheduler.step()
-                    if accelerator.is_main_process:
-                        progress_bar.update(1)
-                if accelerator.is_main_process and epoch % train_config["checkpointing"] == 0:
-                    # For testing purposes set to global!
-                    result_path = os.path.join(
-                        work_dir,
-                        f"{train_config['task_id']}_{epoch}_global_weights.pt",
-                    )
-                    save_model(model, result_path)
-
-                    # Once we notify the driver about the result file, ownership of that file
-                    # is transferred to the driver.
-                    client.set_task_status(
-                        train_config["task_id"],
-                        "Finished",
-                        {
-                            "epoch": epoch,
-                            "path": result_path,
-                        },
-                    )
+                # This is specific for training transformer models
+                # TODO: allow for other models
+                inputs = batch
+                print("Batch", batch)
+                print("Model", model)
+                print("Model device", next(model.parameters()).device)
+                outputs = model(input_ids=inputs, labels=inputs)
+                loss = outputs["loss"]
+                # loss = loss_function(outputs, targets)
+                accelerator.backward(loss)
+                optimizer.step()
+                scheduler.step()
+                if accelerator.is_main_process:
+                    progress_bar.update(1)
+            if accelerator.is_main_process and epoch % job_spec["executor"]["checkpointing"] == 0:
+                # For testing purposes set to global!
+                result_path = os.path.join(
+                    work_dir,
+                    f"{epoch}_global_weights.pt",
+                )
+                save_model(model, result_path)
+                with httpx.Client(transport=transport, timeout=10) as client:
+                    req = {"send": job_spec["executor"]["results"], "path": result_path}
+                    try:
+                        resp = client.post("http://hypha/resources/send", json=req, timeout=30.0)
+                        print("send:", resp.status_code, resp.text)
+                    except Exception as e:
+                        print(f"send error on {result_path}: {e}")
+                        
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--socket", type=str, required=True)
-    parser.add_argument("--work-dir", type=str, required=True)
+    parser.add_argument("--socket", required=True)
+    parser.add_argument("--work-dir", required=True)
+    parser.add_argument("--job", required=True)
     args = parser.parse_args()
-    main(args.socket, args.work_dir)
+    main(args.socket, args.work_dir, args.job)

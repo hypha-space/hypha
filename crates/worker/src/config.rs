@@ -9,7 +9,7 @@ use hypha_network::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::resources::Resources;
+use crate::resources::ComputeResources;
 
 #[derive(Deserialize, Serialize, Documented, DocumentedFieldsOpt)]
 /// Configure available resources.
@@ -46,6 +46,8 @@ pub struct Config {
     socket_path: PathBuf,
     /// Available resources.
     resources: ResourceConfig,
+    /// Available driver.
+    driver: Vec<String>,
 }
 
 impl Default for Config {
@@ -60,6 +62,7 @@ impl Default for Config {
             listen_address: SocketAddr::from(([127, 0, 0, 1], 8081)),
             socket_path: PathBuf::from("/var/run/hypha.sock"),
             resources: ResourceConfig::default(),
+            driver: vec!["diloco-transformer".into()],
         }
     }
 }
@@ -139,12 +142,16 @@ impl Config {
         &self.socket_path
     }
 
-    pub fn resources(&self) -> Resources {
-        Resources {
+    pub fn resources(&self) -> ComputeResources {
+        ComputeResources {
             cpu: self.resources.cpu.into(),
             gpu: self.resources.gpu.into(),
             memory: self.resources.memory.into(),
             storage: self.resources.storage.into(),
         }
+    }
+
+    pub fn driver(&self) -> Vec<String> {
+        self.driver.clone()
     }
 }

@@ -6,8 +6,7 @@ use clap::{Parser, Subcommand};
 use figment::providers::{Env, Format, Serialized, Toml};
 use hypha_config::LayeredConfig;
 use hypha_messages::{
-    Executor, Fetch, JobSpec, JobStatus, Receive, Reference, Requirement, Resources,
-    SelectionStrategy, Send, WorkerSpec,
+    Executor, Fetch, JobSpec, Receive, Requirement, Resources, SelectionStrategy, Send, WorkerSpec,
 };
 use hypha_network::{
     dial::DialInterface,
@@ -109,12 +108,13 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
             Requirement::Resource(Resources::Gpu { min: 1.0 }),
             Requirement::Resource(Resources::Cpu { min: 1.0 }),
             Requirement::Resource(Resources::Memory { min: 1.0 }),
+            Requirement::Driver { kind: "diloco-transformer".into() }
         ],
     };
 
     // Request multiple workers to increase chances of two distinct peers
     let mut allocated_workers = Vec::new();
-    for i in 0..6 {
+    for i in 0..4 {
         tracing::info!(worker_index = i, "Requesting worker allocation");
         match allocator.request(worker_spec.clone(), 100.0, None).await {
             Ok(worker) => {
@@ -141,18 +141,61 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
         }
     }
 
-    if unique_workers.len() >= 2 {
+    // NOTE: Phase 1 - Allocate workers using the new allocator/arbiter protocol
+    // First, request worker nodes for job execution
+    let parameter_server_spec = WorkerSpec {
+        requirements: vec![
+            Requirement::Resource(Resources::Cpu { min: 1.0 }),
+            Requirement::Resource(Resources::Memory { min: 1.0 }),
+            Requirement::Driver { kind: "parameter-server".into() }
+        ],
+    };
+
+    // Request multiple workers to increase chances of two distinct peers
+    let mut allocated_parameter_servers = Vec::new();
+    for i in 0..2 {
+        tracing::info!(worker_index = i, "Requesting worker allocation");
+        match allocator
+            .request(parameter_server_spec.clone(), 100.0, None)
+            .await
+        {
+            Ok(worker) => {
+                tracing::info!(
+                    peer_id = %worker.peer_id(),
+                    lease_id = %worker.lease_id(),
+                    "Successfully allocated worker"
+                );
+                allocated_parameter_servers.push(worker);
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to allocate worker");
+            }
+        }
+        sleep(Duration::from_millis(100)).await;
+    }
+
+    // Deduplicate by peer id to ensure we pick two distinct workers
+    let mut unique_parameter_servers = Vec::new();
+    let mut seen_servers: HashSet<libp2p::PeerId> = HashSet::new();
+    for w in allocated_parameter_servers.into_iter() {
+        if seen_servers.insert(w.peer_id()) {
+            unique_parameter_servers.push(w);
+        }
+    }
+
+    if unique_workers.len() >= 2 && unique_parameter_servers.len() == 1 {
         let a = &unique_workers[0];
         let b = &unique_workers[1];
+        let parameterserver = &unique_parameter_servers[0];
 
         // Worker A listens for updates from B and sends its results to B
         let _a_rx = a
             .dispatch(JobSpec {
                 executor: Executor::DiLoCoTransformer {
-                    model: Fetch::uri("https://example.com/"),
-                    data: Fetch::uri("https://example.com/"),
-                    updates: Receive::peers(vec![b.peer_id()]),
-                    results: Send::peers(vec![b.peer_id()], SelectionStrategy::One),
+                    model: Fetch::uri("EleutherAI/gpt-neo-125m"), // Fetch::uri("https://example.com/"),
+                    data: Fetch::uri("datablations/c4-filter-small"),
+                    updates: Receive::peers(vec![parameterserver.peer_id()]),
+                    results: Send::peers(vec![parameterserver.peer_id()], SelectionStrategy::One),
                 },
             })
             .await?;
@@ -161,10 +204,21 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
         let _b_rx = b
             .dispatch(JobSpec {
                 executor: Executor::DiLoCoTransformer {
-                    model: Fetch::uri("https://example.com/"),
-                    data: Fetch::uri("https://example.com/"),
-                    updates: Receive::peers(vec![a.peer_id()]),
-                    results: Send::peers(vec![a.peer_id()], SelectionStrategy::One),
+                    model: Fetch::uri("EleutherAI/gpt-neo-125m"), // Fetch::uri("https://example.com/"),
+                    data: Fetch::uri("datablations/c4-filter-small"),
+                    // updates: Receive::peers(vec![a.peer_id()]),
+                    // results: Send::peers(vec![a.peer_id()], SelectionStrategy::One),
+                    updates: Receive::peers(vec![parameterserver.peer_id()]),
+                    results: Send::peers(vec![parameterserver.peer_id()], SelectionStrategy::One),
+                },
+            })
+            .await?;
+
+        let _p_rx = parameterserver
+            .dispatch(JobSpec {
+                executor: Executor::ParameterServer {
+                    updates: Receive::peers(vec![a.peer_id(), b.peer_id()]),
+                    results: Send::peers(vec![a.peer_id(), b.peer_id()], SelectionStrategy::All),
                 },
             })
             .await?;
@@ -172,6 +226,7 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
         tracing::info!(
             a = %a.peer_id(),
             b = %b.peer_id(),
+            ps = %parameterserver.peer_id(),
             "Dispatched cross-updating jobs between workers"
         );
     } else {
@@ -251,7 +306,7 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
     //     tokio::time::sleep(Duration::from_secs(60)).await;
     // }
 
-    tokio::signal::ctrl_c().await;
+    let _ = tokio::signal::ctrl_c().await;
     Ok(())
 }
 

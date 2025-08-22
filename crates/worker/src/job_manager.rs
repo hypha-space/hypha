@@ -97,6 +97,22 @@ impl JobManager {
 
                 Ok(())
             }
+            Executor::ParameterServer { .. } => {
+                let executor = ProcessExecutor::new(self.connector.clone());
+                let execution = executor.execute(spec.clone(), cancel_token.clone()).await?;
+                let job = Job {
+                    id,
+                    lease,
+                    scheduler,
+                    spec: spec.clone(),
+                    cancel_token: cancel_token.clone(),
+                    // NOTE: Box the concrete execution handle as a trait object.
+                    execution: Box::new(execution),
+                };
+                self.active_jobs.lock().await.insert(id, job);
+
+                Ok(())
+            }
             _ => Err(JobManagerError::ExecutorNotSupported),
         }
     }

@@ -145,6 +145,9 @@ pub enum Requirement {
     Resource(Resources),
     // We're currently ignoring driver requirements
     // Driver, Service
+    Driver {
+        kind: String,
+    },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -346,6 +349,8 @@ pub enum Executor {
     // Candle {
     //     model: Reference,
     // },
+    #[serde(rename = "parameter-server")]
+    ParameterServer { updates: Receive, results: Send },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

@@ -188,7 +188,7 @@ impl Worker {
                 .respond_with_concurrent(None, move |request| {
                     let tx = tx.clone();
                     async move {
-                        if let (peer_id, Request::JobStatus(job_status::Request { status, .. })) =
+                        if let (_peer_id, Request::JobStatus(job_status::Request { status, .. })) =
                             request
                         {
                             let _ = tx.send(status).await;

@@ -23,7 +23,7 @@ use uuid::Uuid;
 
 use crate::{
     network::Network,
-    worker::{Worker, WorkerFailure, WorkerInfo},
+    worker::Worker,
 };
 
 const WORKER_TOPIC: &str = "hypha/worker";

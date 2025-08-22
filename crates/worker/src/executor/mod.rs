@@ -1,4 +1,4 @@
-use std::{future::Future, path::PathBuf, pin::Pin, process::Stdio, time::Duration};
+use std::{fs::File, future::Future, io::Write, path::PathBuf, pin::Pin, process::Stdio, time::Duration};
 
 use nix::{
     libc::pid_t,
@@ -7,9 +7,7 @@ use nix::{
 };
 use thiserror::Error;
 use tokio::{
-    io::{AsyncBufReadExt, BufReader},
-    process::Command,
-    time::sleep,
+    fs::{self, create_dir}, io::{AsyncBufReadExt, BufReader}, process::Command, time::sleep
 };
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use uuid::Uuid;
@@ -17,9 +15,12 @@ use uuid::Uuid;
 use crate::{connector::Connector, network::Network};
 
 mod bridge;
+mod process;
+pub mod parameter_server;
 
 // Re-export Job from socket module
 use bridge::Bridge;
+use process::{get_process_args, get_process_call};
 
 #[derive(Error, Debug)]
 pub enum Error {
@@ -81,6 +82,7 @@ impl JobExecutor for ProcessExecutor {
         let id = Uuid::new_v4();
         let sock_path = PathBuf::from(format!("/tmp/hypha-{}.sock", id));
         let work_dir = PathBuf::from(format!("/tmp/hypha-{}", id));
+        create_dir(&work_dir).await?;
 
         // NOTE: Create a bridge to allow for process <> network communication via conduit
         let bridge = Bridge::try_new(
@@ -92,15 +94,14 @@ impl JobExecutor for ProcessExecutor {
         .await?;
 
         let job_json = serde_json::to_string(&job).expect("valid JobSpec JSON");
+        
+        // let mut config_path = work_dir.clone().into_os_string();
+        // config_path.push("/config.yaml");
+        // fs::copy("/Users/leonhardkunczik/Projects/hypha/drivers/hypha-accelerate-driver/test.yaml".to_string(), config_path).await?;
 
         // This should come from the config and should be bassed when crearting the executor
-        let mut process = Command::new("uv")
-            .args([
-                "run",
-                "--directory",
-                "drivers/hypha-accelerate-driver/src",
-                "dummy.py",
-            ])
+        let mut process = Command::new(get_process_call(&job.executor))
+            .args(get_process_args(&job.executor))
             .arg("--socket")
             .args([&sock_path]) // passes the actual path
             .args(["--work-dir"])

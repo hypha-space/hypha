@@ -1,10 +1,5 @@
 use std::{
-    cmp::Ordering,
-    collections::HashMap,
-    future::Future,
-    iter::Sum,
-    ops::{Add, AddAssign, Sub, SubAssign},
-    sync::Arc,
+    cmp::Ordering, collections::{HashMap, HashSet}, future::Future, iter::Sum, ops::{Add, AddAssign, Sub, SubAssign}, sync::Arc
 };
 
 use hypha_messages::Requirement;
@@ -14,16 +9,16 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub struct Resources {
+pub struct ComputeResources {
     pub cpu: f64,
     pub memory: f64,
     pub gpu: f64,
     pub storage: f64,
 }
 
-impl Resources {
+impl ComputeResources {
     pub fn new() -> Self {
-        Resources {
+        ComputeResources {
             cpu: 0.0,
             memory: 0.0,
             gpu: 0.0,
@@ -52,11 +47,11 @@ impl Resources {
     }
 }
 
-impl Sub for Resources {
-    type Output = Resources;
+impl Sub for ComputeResources {
+    type Output = ComputeResources;
 
-    fn sub(self, other: Resources) -> Self::Output {
-        Resources {
+    fn sub(self, other: ComputeResources) -> Self::Output {
+        ComputeResources {
             cpu: self.cpu - other.cpu,
             memory: self.memory - other.memory,
             gpu: self.gpu - other.gpu,
@@ -65,8 +60,8 @@ impl Sub for Resources {
     }
 }
 
-impl SubAssign for Resources {
-    fn sub_assign(&mut self, other: Resources) {
+impl SubAssign for ComputeResources {
+    fn sub_assign(&mut self, other: ComputeResources) {
         self.cpu -= other.cpu;
         self.memory -= other.memory;
         self.gpu -= other.gpu;
@@ -74,11 +69,11 @@ impl SubAssign for Resources {
     }
 }
 
-impl Add for Resources {
-    type Output = Resources;
+impl Add for ComputeResources {
+    type Output = ComputeResources;
 
-    fn add(self, other: Resources) -> Self::Output {
-        Resources {
+    fn add(self, other: ComputeResources) -> Self::Output {
+        ComputeResources {
             cpu: self.cpu + other.cpu,
             memory: self.memory + other.memory,
             gpu: self.gpu + other.gpu,
@@ -87,8 +82,8 @@ impl Add for Resources {
     }
 }
 
-impl AddAssign for Resources {
-    fn add_assign(&mut self, other: Resources) {
+impl AddAssign for ComputeResources {
+    fn add_assign(&mut self, other: ComputeResources) {
         self.cpu += other.cpu;
         self.memory += other.memory;
         self.gpu += other.gpu;
@@ -96,7 +91,7 @@ impl AddAssign for Resources {
     }
 }
 
-impl PartialEq for Resources {
+impl PartialEq for ComputeResources {
     fn eq(&self, other: &Self) -> bool {
         self.cpu == other.cpu
             && self.memory == other.memory
@@ -105,7 +100,7 @@ impl PartialEq for Resources {
     }
 }
 
-impl PartialOrd for Resources {
+impl PartialOrd for ComputeResources {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         [
             (self.cpu, other.cpu),
@@ -127,36 +122,53 @@ impl PartialOrd for Resources {
     }
 }
 
-impl Sum for Resources {
+impl Sum for ComputeResources {
     fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
-        iter.fold(Resources::new(), |acc, x| acc + x)
+        iter.fold(ComputeResources::new(), |acc, x| acc + x)
     }
 }
 
-impl<'a> Sum<&'a Resources> for Resources {
+impl<'a> Sum<&'a ComputeResources> for ComputeResources {
     fn sum<I: Iterator<Item = &'a Self>>(iter: I) -> Self {
-        iter.fold(Resources::new(), |acc, x| acc + x.clone())
+        iter.fold(ComputeResources::new(), |acc, x| acc + x.clone())
     }
 }
 
 /// Extracts resource requirements from a worker specification
-pub fn extract_resource_requirements(requirements: &Vec<Requirement>) -> Resources {
+pub fn extract_compute_resource_requirements(requirements: &Vec<Requirement>) -> ComputeResources {
     requirements
         .iter()
-        .fold(Resources::new(), |acc, req| match req {
+        .fold(ComputeResources::new(), |acc, req| match req {
             Requirement::Resource(hypha_messages::Resources::Cpu { min }) => {
-                acc + Resources::new().with_cpu(*min)
+                acc + ComputeResources::new().with_cpu(*min)
             }
             Requirement::Resource(hypha_messages::Resources::Gpu { min }) => {
-                acc + Resources::new().with_gpu(*min)
+                acc + ComputeResources::new().with_gpu(*min)
             }
             Requirement::Resource(hypha_messages::Resources::Memory { min }) => {
-                acc + Resources::new().with_memory(*min)
+                acc + ComputeResources::new().with_memory(*min)
             }
             Requirement::Resource(hypha_messages::Resources::Storage { min }) => {
-                acc + Resources::new().with_storage(*min)
+                acc + ComputeResources::new().with_storage(*min)
+            }
+            Requirement::Driver { .. } => {
+                acc
             }
         })
+}
+
+/// Extracts resource requirements from a worker specification
+pub fn extract_other_resource_requirements(requirements: &Vec<Requirement>) -> Vec<String> {
+    requirements
+        .iter()
+        .filter_map(|x| match x {
+            Requirement::Resource(..) => {
+                None
+            },
+            Requirement::Driver { kind } => {
+                Some(kind.clone())
+            }
+        }).collect()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Error)]
@@ -170,21 +182,24 @@ pub enum ResourceManagerError {
 
 pub trait ResourceManager: Send + Sync {
     /// Returns a reference to the current available resources.
-    fn resources(&self) -> impl Future<Output = Resources> + Send;
+    fn compute_resources(&self) -> impl Future<Output = ComputeResources> + Send;
+    fn other_resources(&self) -> impl Future<Output = Vec<String>> + Send;
     fn reserve(
         &self,
-        resources: Resources,
+        compute_resources: ComputeResources,
+        other_resources: Vec<String>,
     ) -> impl Future<Output = Result<Uuid, ResourceManagerError>> + Send;
     fn release(
         &self,
         id: Uuid,
-    ) -> impl Future<Output = Result<Resources, ResourceManagerError>> + Send;
+    ) -> impl Future<Output = Result<ComputeResources, ResourceManagerError>> + Send;
 }
 
 #[derive(Debug)]
 struct StaticResourceManagerState {
-    resources: Resources,
-    reservations: HashMap<Uuid, Resources>,
+    compute_resources: ComputeResources,
+    other_resources: Vec<String>,
+    reservations: HashMap<Uuid, ComputeResources>,
 }
 
 #[derive(Debug, Clone)]
@@ -193,10 +208,11 @@ pub struct StaticResourceManager {
 }
 
 impl StaticResourceManager {
-    pub fn new(resources: Resources) -> Self {
+    pub fn new(compute_resources: ComputeResources, other_resources: Vec<String>) -> Self {
         StaticResourceManager {
             state: Arc::new(RwLock::new(StaticResourceManagerState {
-                resources,
+                compute_resources,
+                other_resources,
                 reservations: HashMap::default(),
             })),
         }
@@ -204,22 +220,31 @@ impl StaticResourceManager {
 }
 
 impl ResourceManager for StaticResourceManager {
-    async fn resources(&self) -> Resources {
+    async fn compute_resources(&self) -> ComputeResources {
         let state = self.state.read().await;
-        state.resources - state.reservations.values().sum()
+        state.compute_resources - state.reservations.values().sum()
+    }
+    
+    async fn other_resources(&self) -> Vec<String> {
+        let state = self.state.read().await;
+        state.other_resources.clone()
     }
 
-    async fn reserve(&self, resources: Resources) -> Result<Uuid, ResourceManagerError> {
-        let available = self.resources().await;
-        tracing::info!("Reserving resources: {:?} of {:?}", resources, available);
+    async fn reserve(&self, compute_resources: ComputeResources, other_resources: Vec<String>) -> Result<Uuid, ResourceManagerError> {
+        let available = self.compute_resources().await;
+        let hard_constrains = self.other_resources().await;
+        tracing::info!("Reserving resources: {:?} of {:?} and {:?} of {:?}", compute_resources, available, other_resources, hard_constrains);
+        
+        let other_resources_set = HashSet::<&String>::from_iter(other_resources.iter());
+        let driver_miss_match = HashSet::from_iter(hard_constrains.iter()).is_disjoint(&other_resources_set) ;
 
-        if available >= resources {
+        if available >= compute_resources && !driver_miss_match {
             let mut state = self.state.write().await;
             // Re-check after acquiring write lock
-            let current_available = state.resources - state.reservations.values().sum();
-            if current_available >= resources {
+            let current_available = state.compute_resources - state.reservations.values().sum();
+            if current_available >= compute_resources {
                 let id = Uuid::new_v4();
-                state.reservations.insert(id, resources);
+                state.reservations.insert(id, compute_resources);
                 return Ok(id);
             }
         }
@@ -227,7 +252,7 @@ impl ResourceManager for StaticResourceManager {
         Err(ResourceManagerError::InsufficientResources)
     }
 
-    async fn release(&self, id: Uuid) -> Result<Resources, ResourceManagerError> {
+    async fn release(&self, id: Uuid) -> Result<ComputeResources, ResourceManagerError> {
         let mut state = self.state.write().await;
         let result = state.reservations.remove(&id);
         if let Some(resources) = result {
