@@ -1,3 +1,4 @@
+from abc import update_abstractmethods
 import argparse
 import os
 from collections.abc import Iterable
@@ -13,9 +14,53 @@ from safetensors.torch import save_model
 from tqdm import tqdm
 from transformers import GPT2Tokenizer, GPTNeoForCausalLM
 from transformers.tokenization_utils import PreTrainedTokenizer
+import threading
 
 import json
+import time
+from queue import Queue
+from pathlib import Path
+import os
 
+# Queue to hold shared data
+update_queue = Queue(maxsize=5)
+
+def sse_subscribe(socket_path: str, work_dir: Path, subscribe_req: dict) -> None:
+    """Listen for update pointers over SSE and print them. Reconnects on errors."""
+    timeout = httpx.Timeout(None, connect=10.0)
+    while True:
+        try:
+            transport = httpx.HTTPTransport(uds=socket_path)
+            with httpx.Client(transport=transport, timeout=10) as client:
+                with client.stream(
+                    "POST",
+                    "http://hypha/resources/receive",
+                    json=subscribe_req,
+                    timeout=timeout,
+                ) as r:
+                    print("subscribe:", r.status_code)
+                    r.raise_for_status()
+                    for line in r.iter_lines():
+                        if not line:
+                            continue
+                        if line.startswith(":"):
+                            continue  # keepalive/comment
+                        if line.startswith("data:"):
+                            payload = line[len("data:") :].strip()
+                            try:
+                                pointer = json.loads(payload)
+                                print("update pointer from", pointer.get("from_peer"), ":", pointer)
+                                # Attempt to read and print the full file contents
+                                rel_path = pointer.get("path")
+                                if isinstance(rel_path, str):
+                                    file_path = work_dir / rel_path
+                                    update_queue.put(file_path)
+                            except Exception:
+                                print("event:", line)
+        except Exception as e:
+            print(f"SSE error: {e}. Reconnecting in 1s...")
+            time.sleep(1)
+            
 
 def get_model(model_config: str) -> tuple[torch.nn.Module, PreTrainedTokenizer]:
     # Initializing a model (with random weights) from the EleutherAI/gpt-neo-1.3B style configuration
@@ -90,108 +135,92 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:
     job_spec["executor"]["optimizer"] = "AdamW"
     job_spec["executor"]["learning_rate"] = 1e-4
     job_spec["executor"]["epochs"] = 3
-    job_spec["executor"]["batch_size"] = 4
+    job_spec["executor"]["batch_size"] = 1
     job_spec["executor"]["dataset"] = "datablations/c4-filter-small"
     job_spec["executor"]["checkpointing"] = 2
         
-    while True:
-        # train_config = client.wait_for_task()
-        # print(f"Training with configuration: {train_config}", flush=True)
+    # Subscribe to receive updates in the background.
+    subscribe_req = {"receive": job_spec["executor"]["updates"], "out_dir": "incoming"}
+    recv_thread = threading.Thread(target=sse_subscribe, args=(socket_path, Path(work_dir), subscribe_req), daemon=True)
+    recv_thread.start()
 
-        # client.set_task_status(train_config["task_id"], "Running")
-        import os
-        print(os.listdir(work_dir))
-        print("workdir:", work_dir)
-        accelerator = Accelerator(project_dir=work_dir)
-        device = accelerator.device
-        
-        print("Device", device)
+    print(os.listdir(work_dir))
+    print("workdir:", work_dir)
+    accelerator = Accelerator(project_dir=work_dir)
+    device = accelerator.device
+    
+    print("Device", device)
 
-        model, tokenizer = get_model(job_spec["executor"]["model"]["value"])
-        optimizer = get_optimizer(
-            job_spec["executor"]["optimizer"],
-            job_spec["executor"]["learning_rate"],
-            model.parameters(),
-        )
+    model, tokenizer = get_model(job_spec["executor"]["model"]["value"])
+    optimizer = get_optimizer(
+        job_spec["executor"]["optimizer"],
+        job_spec["executor"]["learning_rate"],
+        model.parameters(),
+    )
 
-        # TODO: remove this
-        milestone = int(job_spec["executor"]["epochs"] / 3)
-        scheduler_warmup = torch.optim.lr_scheduler.LinearLR(
-            optimizer, job_spec["executor"]["learning_rate"], 1e-3, milestone
-        )
-        scheduler_cool_down = torch.optim.lr_scheduler.LinearLR(
-            optimizer,
-            1e-3,
-            job_spec["executor"]["learning_rate"],
-            job_spec["executor"]["epochs"] - milestone,
-        )
-        scheduler = torch.optim.lr_scheduler.SequentialLR(
-            optimizer,
-            schedulers=[scheduler_warmup, scheduler_cool_down],
-            milestones=[milestone],
-        )
-        data_loader = get_data_loader(job_spec["executor"]["data"]["value"], job_spec["executor"]["batch_size"], tokenizer)
+    # TODO: remove this
+    milestone = int(job_spec["executor"]["epochs"] / 3)
+    scheduler_warmup = torch.optim.lr_scheduler.LinearLR(
+        optimizer, job_spec["executor"]["learning_rate"], 1e-3, milestone
+    )
+    scheduler_cool_down = torch.optim.lr_scheduler.LinearLR(
+        optimizer,
+        1e-3,
+        job_spec["executor"]["learning_rate"],
+        job_spec["executor"]["epochs"] - milestone,
+    )
+    scheduler = torch.optim.lr_scheduler.SequentialLR(
+        optimizer,
+        schedulers=[scheduler_warmup, scheduler_cool_down],
+        milestones=[milestone],
+    )
+    data_loader = get_data_loader(job_spec["executor"]["data"]["value"], job_spec["executor"]["batch_size"], tokenizer)
 
-        model, optimizer, training_dataloader, scheduler = accelerator.prepare(
-            model, optimizer, data_loader, scheduler
-        )
+    model, optimizer, training_dataloader, scheduler = accelerator.prepare(
+        model, optimizer, data_loader, scheduler
+    )
 
-        update_in_epoch = False
-        for epoch in range(job_spec["executor"]["epochs"]):
-            progress_bar = tqdm(
-                range(len(data_loader)),
-                disable=not accelerator.is_main_process,
+    for epoch in range(job_spec["executor"]["epochs"]):
+        progress_bar = tqdm(
+            range(len(data_loader)),
+            disable=not accelerator.is_main_process,
+        )
+        for batch in training_dataloader:
+            optimizer.zero_grad()
+            if not update_queue.empty():
+                upate_file = update_queue.get()
+                model = merge_models(model, upate_file, 0.9)
+                model.to(device)
+                os.remove(upate_file)
+                print("Weights updated", flush=True)
+
+            # This is specific for training transformer models
+            # TODO: allow for other models
+            inputs = batch
+            outputs = model(input_ids=inputs, labels=inputs)
+            loss = outputs["loss"]
+            # loss = loss_function(outputs, targets)
+            accelerator.backward(loss)
+            optimizer.step()
+            scheduler.step()
+            if accelerator.is_main_process:
+                progress_bar.update(1)
+        if accelerator.is_main_process and epoch % job_spec["executor"]["checkpointing"] == 0:
+            # For testing purposes set to global!
+            file_name = f"{epoch}_global_weights.pt"
+            result_path = os.path.join(
+                work_dir,
+                file_name,
             )
-            for batch in training_dataloader:
-                optimizer.zero_grad()
-                # check for model updates
-                # if not update_in_epoch:
+            save_model(model, result_path)
+            with httpx.Client(transport=transport, timeout=10) as client:
+                req = {"send": job_spec["executor"]["results"], "path": file_name}
                 try:
-                    with httpx.Client(transport=transport, timeout=10) as client:
-                        with client.stream(
-                            "POST",
-                            "http://hypha/resources/receive",
-                            json={"receive": job_spec["executor"]["updates"], "out_dir": work_dir},
-                            timeout=1,
-                        ) as r:
-                            print("subscribe:", r.status_code)
-                            r.raise_for_status()
-                            model = merge_models(model, work_dir, 0.9)
-                            model.to(device)
-                            print("Weights updated", flush=True)
+                    resp = client.post("http://hypha/resources/send", json=req, timeout=30.0)
+                    print("send:", resp.status_code, resp.text)
                 except Exception as e:
-                    print(f"receive error {e}")
-
-                # This is specific for training transformer models
-                # TODO: allow for other models
-                inputs = batch
-                print("Batch", batch)
-                print("Model", model)
-                print("Model device", next(model.parameters()).device)
-                outputs = model(input_ids=inputs, labels=inputs)
-                loss = outputs["loss"]
-                # loss = loss_function(outputs, targets)
-                accelerator.backward(loss)
-                optimizer.step()
-                scheduler.step()
-                if accelerator.is_main_process:
-                    progress_bar.update(1)
-            if accelerator.is_main_process and epoch % job_spec["executor"]["checkpointing"] == 0:
-                # For testing purposes set to global!
-                file_name = f"{epoch}_global_weights.pt"
-                result_path = os.path.join(
-                    work_dir,
-                    file_name,
-                )
-                save_model(model, result_path)
-                with httpx.Client(transport=transport, timeout=10) as client:
-                    req = {"send": job_spec["executor"]["results"], "path": file_name}
-                    try:
-                        resp = client.post("http://hypha/resources/send", json=req, timeout=30.0)
-                        print("send:", resp.status_code, resp.text)
-                    except Exception as e:
-                        print(f"send error on {result_path}: {e}")
-                        
+                    print(f"send error on {result_path}: {e}")
+            time.sleep(2)                      
 
 
 if __name__ == "__main__":
