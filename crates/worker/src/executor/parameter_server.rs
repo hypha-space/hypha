@@ -257,6 +257,9 @@ impl JobExecutor for ParameterServerExecutor {
                 _ = cancel.cancelled() => {}
                 _ = fut => {},
             }
+
+            // Clean up.
+            let _ = fs::remove_dir_all(&work_dir).await;
         });
 
         task_tracker.close();
