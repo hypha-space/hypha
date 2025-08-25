@@ -117,8 +117,9 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
         )),
         WeightedResourceRequestEvaluator::default(),
         network.clone(),
-    )
-    .with_job_manager(JobManager::new(Connector::new(network.clone())));
+        JobManager::new(Connector::new(network.clone())),
+        token.clone(),
+    );
 
     let arbiter_handle = tokio::spawn(async move {
         if let Err(e) = arbiter.run().await {
@@ -142,12 +143,12 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
         _ = network_handle => {
             tracing::warn!("Network driver error, shutting down");
         }
-        _ = arbiter_handle => {
-            tracing::warn!("Arbiter error, shutting down");
-        }
     }
 
     token.cancel();
+
+    // Wait for the arbiter to shut down gracefully.
+    let _ = arbiter_handle.await;
 
     Ok(())
 }

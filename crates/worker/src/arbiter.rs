@@ -11,6 +11,7 @@ use libp2p::PeerId;
 use ordered_float::OrderedFloat;
 use thiserror::Error;
 use tokio::task::JoinSet;
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     job_manager::{JobManager, JobManagerError},
@@ -51,8 +52,9 @@ where
     network: Network,
     lease_manager: L,
     request_evaluator: R,
-    job_manager: Option<JobManager>,
+    job_manager: JobManager,
     tasks: JoinSet<()>,
+    token: CancellationToken,
 }
 
 impl<L, R> Arbiter<L, R>
@@ -61,28 +63,23 @@ where
     R: RequestEvaluator,
 {
     /// Create a new Arbiter with default strategy and system clock
-    pub fn new(lease_manager: L, request_evaluator: R, network: Network) -> Self {
+    pub fn new(
+        lease_manager: L,
+        request_evaluator: R,
+        network: Network,
+        job_manager: JobManager,
+        token: CancellationToken,
+    ) -> Self {
         Self {
             network,
             lease_manager,
             request_evaluator,
-            job_manager: None,
+            job_manager,
             tasks: JoinSet::new(),
+            token,
         }
     }
 
-    /// Set the job manager for handling job dispatch
-    pub fn with_job_manager(mut self, job_manager: JobManager) -> Self {
-        self.job_manager = Some(job_manager);
-        self
-    }
-}
-
-impl<L, R> Arbiter<L, R>
-where
-    L: LeaseManager<Leasable = crate::lease_manager::ResourceLease> + 'static,
-    R: RequestEvaluator,
-{
     pub async fn run(mut self) -> Result<(), ArbiterError> {
         let requests = self.network.subscribe(WORKER_TOPIC).await?;
 
@@ -166,84 +163,82 @@ where
         });
 
         // NOTE: Handle DispatchJob requests from schedulers
-        if let Some(job_manager) = self.job_manager.take() {
-            let dispatch_requests = self
-                .network
-                .on(|req: &Request| matches!(req, Request::DispatchJob(_)))
-                .into_stream()
-                .await?;
+        let dispatch_requests = self
+            .network
+            .on(|req: &Request| matches!(req, Request::DispatchJob(_)))
+            .into_stream()
+            .await?;
 
-            let lease_manager = self.lease_manager.clone();
-            self.tasks.spawn(async move {
-                dispatch_requests
-                    .respond_with_concurrent(None, move |(peer_id, request)| {
-                        let mut job_manager = job_manager.clone();
-                        let lease_manager = lease_manager.clone();
-                        async move {
-                            if let Request::DispatchJob(dispatch_job::Request { id, spec }) =
-                                request
-                            {
-                                // NOTE: Validate that the scheduler has a valid lease
-                                match lease_manager.get_by_peer(&peer_id).await {
-                                    Ok(lease) => {
-                                        tracing::info!(
-                                            job_id = %id,
-                                            scheduler_id = %peer_id,
-                                            lease_id = %lease.id,
-                                            "Scheduler has valid lease, dispatching job"
-                                        );
+        let lease_manager = self.lease_manager.clone();
+        let job_manager = self.job_manager.clone();
+        self.tasks.spawn(async move {
+            dispatch_requests
+                .respond_with_concurrent(None, move |(peer_id, request)| {
+                    let lease_manager = lease_manager.clone();
+                    let mut job_manager = job_manager.clone();
+                    async move {
+                        if let Request::DispatchJob(dispatch_job::Request { id, spec }) = request {
+                            // NOTE: Validate that the scheduler has a valid lease
+                            match lease_manager.get_by_peer(&peer_id).await {
+                                Ok(lease) => {
+                                    tracing::info!(
+                                        job_id = %id,
+                                        scheduler_id = %peer_id,
+                                        lease_id = %lease.id,
+                                        "Scheduler has valid lease, dispatching job"
+                                    );
 
-                                        match job_manager.execute(id, spec, lease.id, peer_id).await
-                                        {
-                                            Ok(()) => {
-                                                tracing::info!(
-                                                    job_id = %id,
-                                                    scheduler_id = %peer_id,
-                                                    "Task successfully dispatched"
-                                                );
-                                                Response::DispatchJob(
-                                                    dispatch_job::Response::Dispatched {
-                                                        id,
-                                                        // NOTE: We currently acknowledge with the existing lease timeout.
-                                                        // TODO: Consider returning the renewed/expected timeout from JobManager::execute.
-                                                        timeout: lease.timeout_as_system_time(),
-                                                    },
-                                                )
-                                            }
-                                            Err(e) => {
-                                                tracing::error!(
-                                                    job_id = %id,
-                                                    scheduler_id = %peer_id,
-                                                    error = ?e,
-                                                    "Failed to dispatch job"
-                                                );
-                                                Response::DispatchJob(
-                                                    dispatch_job::Response::Failed,
-                                                )
-                                            }
+                                    match job_manager.execute(id, spec, lease.id, peer_id).await {
+                                        Ok(()) => {
+                                            tracing::info!(
+                                                job_id = %id,
+                                                scheduler_id = %peer_id,
+                                                "Task successfully dispatched"
+                                            );
+                                            Response::DispatchJob(
+                                                dispatch_job::Response::Dispatched {
+                                                    id,
+                                                    // NOTE: We currently acknowledge with the existing lease timeout.
+                                                    // TODO: Consider returning the renewed/expected timeout from JobManager::execute.
+                                                    timeout: lease.timeout_as_system_time(),
+                                                },
+                                            )
+                                        }
+                                        Err(e) => {
+                                            tracing::error!(
+                                                job_id = %id,
+                                                scheduler_id = %peer_id,
+                                                error = ?e,
+                                                "Failed to dispatch job"
+                                            );
+                                            Response::DispatchJob(dispatch_job::Response::Failed)
                                         }
                                     }
-                                    Err(e) => {
-                                        tracing::warn!(
-                                            job_id = %id,
-                                            scheduler_id = %peer_id,
-                                            error = ?e,
-                                            "Rejecting job from scheduler without valid lease"
-                                        );
-                                        Response::DispatchJob(dispatch_job::Response::Failed)
-                                    }
                                 }
-                            } else {
-                                Response::DispatchJob(dispatch_job::Response::Failed)
+                                Err(e) => {
+                                    tracing::warn!(
+                                        job_id = %id,
+                                        scheduler_id = %peer_id,
+                                        error = ?e,
+                                        "Rejecting job from scheduler without valid lease"
+                                    );
+                                    Response::DispatchJob(dispatch_job::Response::Failed)
+                                }
                             }
+                        } else {
+                            Response::DispatchJob(dispatch_job::Response::Failed)
                         }
-                    })
-                    .await
-            });
-        }
+                    }
+                })
+                .await
+        });
 
         loop {
             tokio::select! {
+                _ = self.token.cancelled() => {
+                    tracing::info!("Arbiter cancelled");
+                    break;
+                },
                 Some(request_batch) = requests_batched.next() => {
                     tracing::info!("Got a batch of requests");
                     let parsed_requests: Vec<(PeerId, hypha_messages::request_worker::Request)> = request_batch
@@ -274,6 +269,8 @@ where
         }
 
         // Shutdown gracefully
+        self.job_manager.shutdown().await;
+
         self.tasks.abort_all();
 
         while let Some(result) = self.tasks.join_next().await {

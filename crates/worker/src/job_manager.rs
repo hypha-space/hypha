@@ -4,7 +4,7 @@ use hypha_messages::{Executor, JobSpec, JobStatus};
 use hypha_network::request_response::RequestResponseError;
 use libp2p::PeerId;
 use thiserror::Error;
-use tokio::{sync::Mutex, task::JoinSet};
+use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -37,11 +37,12 @@ pub struct Job {
     pub spec: JobSpec,
     pub cancel_token: CancellationToken,
     // NOTE: Type-erased execution handle to support heterogeneous executors.
-    pub execution: Box<dyn Execution + Send>,
+    pub execution: Box<dyn Execution + Sync + Send>,
 }
 
 impl Job {
     pub async fn cancel(&self) -> Result<(), JobManagerError> {
+        tracing::debug!(job_id = %self.id, "Cancelling job");
         self.cancel_token.cancel();
         self.execution.wait().await;
         Ok(())
@@ -53,14 +54,12 @@ impl Job {
 pub struct JobManager {
     active_jobs: Arc<Mutex<HashMap<Uuid, Job>>>,
     connector: Connector<Network>,
-    jobs: Arc<Mutex<JoinSet<()>>>,
 }
 
 impl JobManager {
     pub fn new(conduit: Connector<Network>) -> Self {
         Self {
             active_jobs: Arc::new(Mutex::new(HashMap::new())),
-            jobs: Arc::new(Mutex::new(JoinSet::new())),
             connector: conduit,
         }
     }
@@ -143,24 +142,8 @@ impl JobManager {
     /// Shutdown the job manager and all executors
     pub async fn shutdown(&mut self) {
         // Cancel all active jobs
-        for (_, handle) in self.active_jobs.lock().await.iter() {
-            handle.cancel_token.cancel();
-        }
-
-        // Wait for all jobs to complete
-        if let Ok(mut jobs) = self.jobs.try_lock() {
-            while jobs.join_next().await.is_some() {}
-        }
-
-        tracing::info!("Task manager shutdown complete");
-    }
-}
-
-impl Drop for JobManager {
-    fn drop(&mut self) {
-        // Cancel all active jobs
-        if let Ok(mut jobs) = self.jobs.try_lock() {
-            jobs.abort_all();
+        for (_, job) in self.active_jobs.lock().await.iter() {
+            let _ = job.cancel().await;
         }
     }
 }

@@ -106,8 +106,9 @@ impl JobExecutor for ParameterServerExecutor {
                                 let current_tensor = tensor.load(&device).unwrap();
                                 let other_tensor = new_tensor.load(&name, &device).unwrap();
 
-                                let avg_tensor =
-                                    ((current_tensor + other_tensor).unwrap() / 2.).unwrap();
+                                let avg_tensor = ((current_tensor / num_workers as f64).unwrap()
+                                    + (other_tensor / num_workers as f64).unwrap())
+                                .unwrap();
 
                                 let avg_tensor_file_name = work_dir.join("avg").join(&name);
                                 candle_core::safetensors::save(
@@ -188,6 +189,9 @@ impl JobExecutor for ParameterServerExecutor {
                 _ = cancel.cancelled() => {}
                 _ = fut => {},
             }
+
+            // Clean up.
+            let _ = fs::remove_dir_all(&work_dir).await;
         });
 
         task_tracker.close();

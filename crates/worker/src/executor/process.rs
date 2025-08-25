@@ -7,7 +7,7 @@ use nix::{
     unistd::Pid,
 };
 use tokio::{
-    fs::create_dir_all,
+    fs,
     io::{AsyncBufReadExt, BufReader},
     process::Command,
     time::sleep,
@@ -26,7 +26,6 @@ pub struct ProcessExecutor {
 }
 
 pub struct ProcessExecution {
-    bridge: Bridge,
     task_tracker: TaskTracker,
 }
 
@@ -34,9 +33,6 @@ impl Execution for ProcessExecution {
     fn wait<'a>(&'a self) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         Box::pin(async move {
             self.task_tracker.wait().await;
-            // NOTE: Bridge::wait returns Result; we currently ignore errors here
-            // since the Execution trait does not propagate them.
-            let _ = self.bridge.wait().await;
         })
     }
 }
@@ -57,7 +53,7 @@ impl JobExecutor for ProcessExecutor {
         let id = Uuid::new_v4();
         let sock_path = PathBuf::from(format!("/tmp/hypha-{}.sock", id));
         let work_dir = PathBuf::from(format!("/tmp/hypha-{}", id));
-        create_dir_all(&work_dir).await?;
+        fs::create_dir_all(&work_dir).await?;
 
         // NOTE: Create a bridge to allow for process <> network communication via conduit
         let bridge = Bridge::try_new(
@@ -143,15 +139,20 @@ impl JobExecutor for ProcessExecutor {
                     }
                 }
             }
+
+            // NOTE: Bridge::wait returns Result; we currently ignore errors here
+            // since we cannot propagate them.
+            let _ = bridge.wait().await;
+
+            // Clean up.
+            let _ = fs::remove_dir_all(&work_dir).await;
+            let _ = fs::remove_file(&sock_path).await;
         });
 
         task_tracker.close();
 
         // TODO: spawn and manage the actual process once the bridge is ready
-        Ok(ProcessExecution {
-            bridge,
-            task_tracker,
-        })
+        Ok(ProcessExecution { task_tracker })
     }
 }
 
