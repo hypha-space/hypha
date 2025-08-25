@@ -150,7 +150,7 @@ enum Commands {
     ///
     /// Node certificates are used by individual services and nodes in the network.
     /// They should typically be signed by an Organization CA, not the root CA directly.
-    /// The certificate will include a chain file for easy deployment.
+    /// The certificate will include a trust file (bundle) for easy deployment.
     #[command(
         after_help = "Example: hypha-certutil node --ca-cert acme-ca-cert.pem --ca-key acme-ca-key.pem -n node1.acme.local -s node1.acme.local,*.acme.local"
     )]
@@ -445,7 +445,7 @@ fn main() -> Result<(), CertError> {
 
             let cert_out = dir.join(format!("{file_name}-cert.pem"));
             let key_out = dir.join(format!("{file_name}-key.pem"));
-            let chain_out = dir.join(format!("{file_name}-chain.pem"));
+            let trust_out = dir.join(format!("{file_name}-trust.pem"));
 
             // Load CA certificate PEM for chain creation
             let ca_cert_pem = fs::read_to_string(&ca_cert)?;
@@ -454,13 +454,13 @@ fn main() -> Result<(), CertError> {
             fs::write(&cert_out, node_cert.pem())?;
             fs::write(&key_out, node_key.serialize_pem())?;
 
-            // Create certificate chain (node cert + CA cert)
-            let chain_pem = format!("{}{}", node_cert.pem(), ca_cert_pem);
-            fs::write(&chain_out, chain_pem)?;
+            // Create trust bundle (node cert + CA cert)
+            let trust_pem = format!("{}{}", node_cert.pem(), ca_cert_pem);
+            fs::write(&trust_out, trust_pem)?;
 
             println!("Node certificate saved to: {}", cert_out.display());
             println!("Node private key saved to: {}", key_out.display());
-            println!("Certificate chain saved to: {}", chain_out.display());
+            println!("Trust PEM saved to: {}", trust_out.display());
         }
     }
 

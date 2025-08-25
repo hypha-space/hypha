@@ -42,10 +42,10 @@ By signing these certificates with the Root CA, you’re establishing a trust be
 After running these commands, you’ll have:
 - `server-example-local-cert.pem`
 - `server-example-local-key.pem`
-- `server-example-local-chain.pem`
+- `server-example-local-trust.pem`
 - `client-example-local-cert.pem`
 - `client-example-local-key.pem`
-- `client-example-local-chain.pem`
+- `client-example-local-trust.pem`
 
 Now that we’ve generated all the PEM files, you’re ready to roll!
 
@@ -60,7 +60,7 @@ Launch the server in your terminal:
 RUST_LOG=info cargo run --example request_response -- \
     --cert-file server-example-local-cert.pem \
     --key-file server-example-local-key.pem \
-    --trust-chain-file server-example-local-chain.pem \
+    --trust-file server-example-local-trust.pem \
     server \
     --listen-addr "/ip4/127.0.0.1/tcp/8080"
 ```
@@ -71,7 +71,7 @@ In another terminal, connect the client:
 RUST_LOG=info cargo run --example request_response -- \
     --cert-file client-example-local-cert.pem \
     --key-file client-example-local-key.pem \
-    --trust-chain-file client-example-local-chain.pem \
+    --trust-file client-example-local-trust.pem \
     client \
     --server-addr "/ip4/127.0.0.1/tcp/8080"
 ```

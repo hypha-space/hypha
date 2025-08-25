@@ -1,13 +1,12 @@
 //! Scheduler binary.
 
-use std::{error::Error, fs, net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{fs, sync::Arc};
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
+use figment::providers::{Env, Format, Serialized, Toml};
+use hypha_config::{ConfigWithMetadata, ConfigWithMetadataTLSExt, builder, to_toml};
 use hypha_network::{
-    cert::{
-        identity_from_private_key, load_certs_from_pem, load_crls_from_pem,
-        load_private_key_from_pem,
-    },
+    cert::identity_from_private_key,
     dial::DialInterface,
     gossipsub::GossipsubInterface,
     kad::KademliaInterface,
@@ -17,14 +16,17 @@ use hypha_network::{
     utils::{multiaddr_from_socketaddr, multiaddr_from_socketaddr_quic},
 };
 use hypha_scheduler::{
+    config::Config,
     network::Network,
     tasks::{TaskId, Tasks},
 };
 use libp2p::PeerId;
+use miette::{IntoDiagnostic, Result};
+use serde::Serialize;
 use tokio::{sync::Mutex, task::JoinSet};
 use tracing_subscriber::EnvFilter;
 
-#[derive(Debug, Parser)]
+#[derive(Debug, Parser, Serialize)]
 #[command(
     name = "hypha-scheduler",
     version,
@@ -32,75 +34,78 @@ use tracing_subscriber::EnvFilter;
     long_about = "Runs the Hypha Scheduler coordinating workers.",
     after_help = "For more information, see the project documentation."
 )]
-struct Opt {
-    #[clap(long)]
-    cert_file: PathBuf,
-    #[clap(long)]
-    key_file: PathBuf,
-    #[clap(long)]
-    ca_cert_file: PathBuf,
-    #[clap(long)]
-    crl_file: Option<PathBuf>,
-    #[clap(long)]
-    gateway_address: SocketAddr,
-    #[clap(long, default_value = "[::1]:0")]
-    listen_address: SocketAddr,
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
-        .init();
+#[derive(Debug, Subcommand, Serialize)]
+enum Commands {
+    Init {
+        /// Path where the configuration file will be written
+        #[clap(short, long, default_value = "config.toml")]
+        output: std::path::PathBuf,
+    },
+    #[serde(untagged)]
+    Run {
+        /// Path to the configuration file.
+        #[clap(short, long("config"), default_value = "config.toml")]
+        #[serde(skip)]
+        config_file: std::path::PathBuf,
 
-    let opt = Opt::parse();
+        /// Address of the gateway.
+        #[clap(long("gateway"))]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        gateway_address: Option<std::net::SocketAddr>,
 
-    // Load certificates and private key
-    let cert_pem = fs::read(&opt.cert_file)?;
-    let key_pem = fs::read(&opt.key_file)?;
-    let ca_cert_pem = fs::read(&opt.ca_cert_file)?;
+        /// Address to listen on.
+        #[clap(long("listen"))]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        listen_address: Option<std::net::SocketAddr>,
+    },
+}
 
-    let cert_chain = load_certs_from_pem(&cert_pem)?;
-    let private_key = load_private_key_from_pem(&key_pem)?;
-    let ca_certs = load_certs_from_pem(&ca_cert_pem)?;
+async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
+    let cert_chain = config.load_cert_chain()?;
+    let private_key = config.load_key()?;
+    let ca_certs = config.load_trust_chain()?;
+    let crls = config.load_crls()?;
 
-    // Optionally load CRLs
-    let crls = if let Some(crl_file) = opt.crl_file {
-        let crl_pem = fs::read(&crl_file)?;
-        load_crls_from_pem(&crl_pem)?
-    } else {
-        vec![]
-    };
-
-    let local_peer_id = identity_from_private_key(&private_key)?
+    let local_peer_id = identity_from_private_key(&private_key)
+        .into_diagnostic()?
         .public()
         .to_peer_id();
-    let gateway_address = multiaddr_from_socketaddr_quic(opt.gateway_address)?;
+    let gateway_address =
+        multiaddr_from_socketaddr_quic(config.gateway_address()).into_diagnostic()?;
 
-    let (network, network_driver) = Network::create(cert_chain, private_key, ca_certs, crls)?;
+    let (network, network_driver) =
+        Network::create(cert_chain, private_key, ca_certs, crls).into_diagnostic()?;
     tokio::spawn(network_driver.run());
 
     network
-        .listen(multiaddr_from_socketaddr(opt.listen_address)?)
-        .await?;
+        .listen(multiaddr_from_socketaddr(config.listen_address()).into_diagnostic()?)
+        .await
+        .into_diagnostic()?;
     network
-        .listen(multiaddr_from_socketaddr_quic(opt.listen_address)?)
-        .await?;
+        .listen(multiaddr_from_socketaddr_quic(config.listen_address()).into_diagnostic()?)
+        .await
+        .into_diagnostic()?;
     tracing::info!("Successfully listening");
 
     // Dial the gateway address
     // TODO: fall back to TCP if QUIC doesn't work
-    let _gateway_peer_id = network.dial(gateway_address).await?;
+    let _gateway_peer_id = network.dial(gateway_address).await.into_diagnostic()?;
 
     // Wait until DHT bootstrapping is done.
-    network.wait_for_bootstrap().await?;
+    network.wait_for_bootstrap().await.into_diagnostic()?;
 
     let scheduler = Arc::new(Mutex::new(Tasks::new()));
 
     let handler = network
         .on(|req: &hypha_messages::Request| matches!(req, hypha_messages::Request::Worker(_)))
         .into_stream()
-        .await?;
+        .await
+        .into_diagnostic()?;
 
     let handler_future = {
         let network = network.clone();
@@ -230,4 +235,30 @@ async fn start_task(
     }
 
     let _result = set.join_all().await;
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env())
+        .init();
+
+    let cli = Cli::parse();
+    match &cli.command {
+        Commands::Init { output } => {
+            fs::write(output, &to_toml(&Config::default())?).into_diagnostic()?;
+
+            println!("Configuration written to: {output:?}");
+            Ok(())
+        }
+        args @ Commands::Run { config_file, .. } => {
+            let config: ConfigWithMetadata<Config> = builder()
+                .with_provider(Toml::file(config_file))
+                .with_provider(Env::prefixed("HYPHA_SCHEDULER_"))
+                .with_provider(Serialized::defaults(args))
+                .build()?;
+
+            return run(config).await;
+        }
+    }
 }
