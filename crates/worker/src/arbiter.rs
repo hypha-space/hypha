@@ -54,6 +54,7 @@ where
     request_evaluator: R,
     job_manager: JobManager,
     tasks: JoinSet<()>,
+    token: CancellationToken,
 }
 
 impl<L, R> Arbiter<L, R>
@@ -67,6 +68,7 @@ where
         request_evaluator: R,
         network: Network,
         job_manager: JobManager,
+        token: CancellationToken,
     ) -> Self {
         Self {
             network,
@@ -74,6 +76,7 @@ where
             request_evaluator,
             job_manager,
             tasks: JoinSet::new(),
+            token,
         }
     }
 
