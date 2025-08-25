@@ -11,6 +11,7 @@ use libp2p::PeerId;
 use ordered_float::OrderedFloat;
 use thiserror::Error;
 use tokio::task::JoinSet;
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     job_manager::{JobManager, JobManagerError},
@@ -53,6 +54,7 @@ where
     request_evaluator: R,
     job_manager: JobManager,
     tasks: JoinSet<()>,
+    token: CancellationToken,
 }
 
 impl<L, R> Arbiter<L, R>
@@ -66,6 +68,7 @@ where
         request_evaluator: R,
         network: Network,
         job_manager: JobManager,
+        token: CancellationToken,
     ) -> Self {
         Self {
             network,
@@ -73,15 +76,10 @@ where
             request_evaluator,
             job_manager,
             tasks: JoinSet::new(),
+            token,
         }
     }
-}
 
-impl<L, R> Arbiter<L, R>
-where
-    L: LeaseManager<Leasable = crate::lease_manager::ResourceLease> + 'static,
-    R: RequestEvaluator,
-{
     pub async fn run(mut self) -> Result<(), ArbiterError> {
         let requests = self.network.subscribe(WORKER_TOPIC).await?;
 
@@ -237,6 +235,10 @@ where
 
         loop {
             tokio::select! {
+                _ = self.token.cancelled() => {
+                    tracing::info!("Arbiter cancelled");
+                    break;
+                },
                 Some(request_batch) = requests_batched.next() => {
                     tracing::info!("Got a batch of requests");
                     let parsed_requests: Vec<(PeerId, hypha_messages::request_worker::Request)> = request_batch
@@ -267,6 +269,8 @@ where
         }
 
         // Shutdown gracefully
+        self.job_manager.shutdown().await;
+
         self.tasks.abort_all();
 
         while let Some(result) = self.tasks.join_next().await {
