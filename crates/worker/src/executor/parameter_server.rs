@@ -144,16 +144,38 @@ impl JobExecutor for ParameterServerExecutor {
                     if current_worker == num_workers {
                         tracing::info!("Sending parameter server update");
 
-                        let mut writers = connector.send(results.clone()).await.unwrap();
-                        while let Some(item) = writers.next().await.transpose().unwrap() {
-                            if let Some((ref result_file_name, _)) = result_tensor {
-                                let file =
-                                    fs::File::open(result_file_name.as_path()).await.unwrap();
-                                let mut reader = file;
-                                let _ =
-                                    tokio::io::copy(&mut reader, &mut item.writer.compat_write())
-                                        .await
-                                        .unwrap();
+                        match connector.send(results.clone()).await {
+                            Ok(mut writers) => {
+                                while let Some(item_res) = writers.next().await {
+                                    match item_res {
+                                        Ok(item) => {
+                                            if let Some((ref result_file_name, _)) = result_tensor {
+                                                match fs::File::open(result_file_name.as_path()).await {
+                                                    Ok(mut file) => {
+                                                        if let Err(e) = tokio::io::copy(
+                                                            &mut file,
+                                                            &mut item.writer.compat_write(),
+                                                        )
+                                                        .await
+                                                        {
+                                                            tracing::warn!(error = ?e, "Failed to write update to peer");
+                                                        }
+                                                    }
+                                                    Err(e) => {
+                                                        tracing::warn!(error = ?e, "Failed to open result tensor file");
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!(error = ?e, "Failed to open writer to peer");
+                                        }
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                // Do not panic if peers are not reachable (e.g., no addresses). We'll retry on next batch.
+                                tracing::warn!(error = ?e, "Failed to send to peers; will retry on next aggregation");
                             }
                         }
 

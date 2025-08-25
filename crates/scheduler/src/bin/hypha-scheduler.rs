@@ -105,7 +105,7 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
     // First, request worker nodes for job execution
     let worker_spec = WorkerSpec {
         requirements: vec![
-            Requirement::Resource(Resources::Gpu { min: 1.0 }),
+            Requirement::Resource(Resources::Gpu { min: 10.0 }),
             Requirement::Resource(Resources::Cpu { min: 1.0 }),
             Requirement::Resource(Resources::Memory { min: 1.0 }),
             Requirement::Driver {
@@ -116,7 +116,7 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
 
     // Request multiple workers to increase chances of two distinct peers
     let mut allocated_workers = Vec::new();
-    for i in 0..1 {
+    for i in 0..2 {
         tracing::info!(worker_index = i, "Requesting worker allocation");
         match allocator.request(worker_spec.clone(), 100.0, None).await {
             Ok(worker) => {
