@@ -17,7 +17,7 @@ use hypha_scheduler::{
     config::Config,
     network::Network,
 };
-use libp2p::Multiaddr;
+use libp2p::{multiaddr::Protocol, Multiaddr};
 use miette::{IntoDiagnostic, Result};
 use serde::Serialize;
 use tokio::time::sleep;
@@ -85,17 +85,46 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
     .into_diagnostic()?;
     tracing::info!("Successfully listening on all addresses");
 
-    let gateway_peer_ids: Vec<_> = join_all(
+    // Dial each gateway and, on success, set up a relay circuit listen via it.
+    let gateway_results = join_all(
         config
             .gateway_addresses()
             .iter()
-            .map(|address| network.dial(address.clone()))
+            .map(|address| {
+                let address = address.clone();
+                let network = network.clone();
+                async move {
+                    match network.dial(address.clone()).await {
+                        Ok(peer_id) => {
+                            // Attempt to listen on the relay circuit via the connected gateway.
+                            match address
+                                .with_p2p(peer_id)
+                                .map(|a| a.with(Protocol::P2pCircuit))
+                            {
+                                Ok(relay_addr) => {
+                                    if let Err(e) = network.listen(relay_addr).await {
+                                        tracing::warn!(error=%e, "Failed to set up P2pCircuit listen via gateway");
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::warn!(error=%e, "Failed to construct relay listen address");
+                                }
+                            }
+
+                            Ok(peer_id)
+                        }
+                        Err(e) => Err(e),
+                    }
+                }
+            })
             .collect::<Vec<_>>(),
     )
-    .await
-    .into_iter()
-    .filter_map(|result| result.ok())
-    .collect();
+    .await;
+
+    let gateway_peer_ids: Vec<_> = gateway_results
+        .into_iter()
+        .filter_map(|result| result.ok())
+        .collect();
 
     if gateway_peer_ids.is_empty() {
         return Err(miette::miette!("Failed to connect to any gateway"));
@@ -177,7 +206,7 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
         sleep(Duration::from_millis(100)).await;
     }
 
-    if allocated_workers.len() >= 1 && allocated_parameter_servers.len() == 1 {
+    if allocated_workers.len() > 1 && allocated_parameter_servers.len() == 1 {
         let all_peers = allocated_parameter_servers
             .iter()
             .map(|ps| ps.peer_id())
