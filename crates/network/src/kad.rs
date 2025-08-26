@@ -13,7 +13,7 @@ use std::{
 };
 
 use libp2p::{
-    PeerId, identify,
+    Multiaddr, PeerId, identify,
     kad::{
         self, PeerInfo, QueryId,
         store::{self, MemoryStore},
@@ -389,13 +389,15 @@ where
         match event {
             identify::Event::Received { peer_id, info, .. } => {
                 // NOTE: Add known addresses of peers to the Kademlia routing table
-                tracing::debug!(peer_id=%peer_id, info=?info, "Adding address to Kademlia routing table");
+                tracing::info!(peer_id=%peer_id, info=?info, "Adding address to Kademlia routing table");
+
                 for addr in info.listen_addrs {
                     self.swarm()
                         .behaviour_mut()
                         .kademlia()
                         .add_address(&peer_id, addr);
                 }
+                // NOTE: Do not add observed_addr here; NewExternalAddrCandidate covers self-addrs.
             }
             identify::Event::Sent { peer_id, .. } => {
                 tracing::trace!(peer_id=%peer_id, "Sent identify info to peer");
@@ -407,6 +409,13 @@ where
                 tracing::warn!(peer_id=%peer_id, error=?error, "Identify protocol error");
             }
         }
+    }
+
+    /// Handle SwarmEvent::NewExternalAddrCandidate by adding the address
+    /// as-is to the external address set (no filtering).
+    fn process_confirmed_external_addr(&mut self, address: Multiaddr) {
+        tracing::debug!(address=%address, "Adding external address candidate");
+        self.swarm().add_external_address(address);
     }
 }
 

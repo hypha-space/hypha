@@ -169,12 +169,11 @@ impl SwarmDriver<Behaviour> for NetworkDriver {
                         SwarmEvent::OutgoingConnectionError { connection_id, error, .. } => {
                             self.process_connection_error(&connection_id, error).await;
                         }
-                        SwarmEvent::NewListenAddr { listener_id, address } => {
-                            tracing::info!(address=%address, "New listen address");
+                        SwarmEvent::NewListenAddr { listener_id, .. } => {
                             self.process_new_listen_addr(&listener_id).await;
                         }
                         SwarmEvent::ExternalAddrConfirmed { address, .. } => {
-                            tracing::info!("External address confirmed: {:?}", address);
+                            self.process_confirmed_external_addr(address);
                         }
                         SwarmEvent::Behaviour(BehaviourEvent::Identify(event)) => {
                             self.process_identify_event(event);
