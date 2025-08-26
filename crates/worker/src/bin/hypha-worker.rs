@@ -128,8 +128,8 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
         )),
         WeightedResourceRequestEvaluator::default(),
         network.clone(),
-    )
-    .with_job_manager(JobManager::new(Connector::new(network.clone())));
+        JobManager::new(Connector::new(network.clone())),
+    );
 
     let arbiter_handle = tokio::spawn({
         let token = token.clone();
