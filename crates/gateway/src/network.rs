@@ -9,6 +9,7 @@ use futures_util::stream::StreamExt;
 use hypha_network::{
     CertificateDer, CertificateRevocationListDer, PrivateKeyDer,
     dial::{DialAction, DialDriver, DialInterface, PendingDials},
+    external_address::{ExternalAddressAction, ExternalAddressDriver, ExternalAddressInterface},
     gossipsub::{
         GossipsubAction, GossipsubBehaviour, GossipsubDriver, GossipsubInterface, Subscriptions,
     },
@@ -56,6 +57,7 @@ enum Action {
     Listen(ListenAction),
     Kademlia(KademliaAction),
     Gossipsub(GossipsubAction),
+    ExternalAddress(ExternalAddressAction),
 }
 
 impl Network {
@@ -166,6 +168,9 @@ impl SwarmDriver<Behaviour> for NetworkDriver {
                         Action::Kademlia(action) => { self.process_kademlia_action(action).await; },
                         Action::Gossipsub(action) => {
                             self.process_gossipsub_action(action).await;
+                        },
+                        Action::ExternalAddress(action) => {
+                            self.process_external_address_action(action).await;
                         }
                     }
                 }
@@ -208,6 +213,17 @@ impl ListenInterface for Network {
 impl ListenDriver<Behaviour> for NetworkDriver {
     fn pending_listens(&mut self) -> &mut PendingListens {
         &mut self.pending_listen_map
+    }
+}
+
+impl ExternalAddressDriver<Behaviour> for NetworkDriver {}
+
+impl ExternalAddressInterface for Network {
+    async fn send(&self, action: ExternalAddressAction) {
+        self.action_sender
+            .send(Action::ExternalAddress(action))
+            .await
+            .expect("network driver should be running and able to receive actions");
     }
 }
 

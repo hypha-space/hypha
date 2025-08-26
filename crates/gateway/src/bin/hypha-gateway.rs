@@ -2,13 +2,13 @@ use std::{fs, path::PathBuf};
 
 use clap::{Parser, Subcommand};
 use figment::providers::{Env, Format, Serialized, Toml};
+use futures_util::future::join_all;
 use hypha_config::{ConfigWithMetadata, ConfigWithMetadataTLSExt, builder, to_toml};
 use hypha_gateway::{config::Config, network::Network};
 use hypha_network::{
-    listen::ListenInterface,
-    swarm::SwarmDriver,
-    utils::{multiaddr_from_socketaddr, multiaddr_from_socketaddr_quic},
+    external_address::ExternalAddressInterface, listen::ListenInterface, swarm::SwarmDriver,
 };
+use libp2p::Multiaddr;
 use miette::{IntoDiagnostic, Result};
 use serde::Serialize;
 use tokio::signal::unix::{SignalKind, signal};
@@ -40,11 +40,14 @@ enum Commands {
         #[clap(short, long("config"), default_value = "config.toml")]
         #[serde(skip)]
         config_file: PathBuf,
-
-        /// Address to listen on.
+        /// Addresses to listen on (can be specified multiple times).
         #[clap(long("listen"))]
         #[serde(skip_serializing_if = "Option::is_none")]
-        listen_address: Option<std::net::SocketAddr>,
+        listen_addresses: Option<Vec<Multiaddr>>,
+        /// External addresses to advertise (can be specified multiple times).
+        #[clap(long("external"))]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        external_addresses: Option<Vec<Multiaddr>>,
     },
 }
 
@@ -58,16 +61,28 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
         Network::create(cert_chain, private_key, ca_certs, crls).into_diagnostic()?;
     let driver_future = tokio::spawn(network_driver.run());
 
-    network
-        .listen(multiaddr_from_socketaddr(config.listen_address()).into_diagnostic()?)
-        .await
-        .into_diagnostic()?;
-    network
-        .listen(multiaddr_from_socketaddr_quic(config.listen_address()).into_diagnostic()?)
-        .await
-        .into_diagnostic()?;
+    // NOTE: This will not complete until we're listening on all addresses.
+    join_all(
+        config
+            .listen_addresses()
+            .iter()
+            .map(|address| network.listen(address.clone()))
+            .collect::<Vec<_>>(),
+    )
+    .await
+    .into_iter()
+    .collect::<Result<Vec<_>, _>>()
+    .into_diagnostic()?;
 
-    tracing::info!("Successfully listening");
+    // NOTE: This will not complete until all external addresses are added.
+    join_all(
+        config
+            .external_addresses()
+            .iter()
+            .map(|address| network.add_external_address(address.clone()))
+            .collect::<Vec<_>>(),
+    )
+    .await;
 
     let mut sigterm = signal(SignalKind::terminate()).into_diagnostic()?;
 

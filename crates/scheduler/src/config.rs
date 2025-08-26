@@ -1,7 +1,8 @@
-use std::{net::SocketAddr, path::PathBuf};
+use std::path::PathBuf;
 
 use documented::{Documented, DocumentedFieldsOpt};
 use hypha_config::TLSConfig;
+use libp2p::Multiaddr;
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize, Serialize, Documented, DocumentedFieldsOpt)]
@@ -15,10 +16,10 @@ pub struct Config {
     trust_pem: PathBuf,
     /// Path to the certificate revocation list pem.
     crls_pem: Option<PathBuf>,
-    /// Address of the gateway.
-    gateway_address: SocketAddr,
-    /// Address to listen on.
-    listen_address: SocketAddr,
+    /// Addresses of the gateways.
+    gateway_addresses: Vec<Multiaddr>,
+    /// Addresses to listen on.
+    listen_addresses: Vec<Multiaddr>,
 }
 
 impl Default for Config {
@@ -28,19 +29,33 @@ impl Default for Config {
             key_pem: PathBuf::from("scheduler-key.pem"),
             trust_pem: PathBuf::from("scheduler-trust.pem"),
             crls_pem: None,
-            gateway_address: SocketAddr::from(([127, 0, 0, 1], 8080)),
-            listen_address: SocketAddr::from(([127, 0, 0, 1], 0)),
+            gateway_addresses: vec![
+                "/ip4/127.0.0.1/tcp/8080"
+                    .parse()
+                    .expect("default address parses into a Multiaddr"),
+                "/ip4/127.0.0.1/udp/8080/quic-v1"
+                    .parse()
+                    .expect("default address parses into a Multiaddr"),
+            ],
+            listen_addresses: vec![
+                "/ip4/127.0.0.1/tcp/0"
+                    .parse()
+                    .expect("default address parses into a Multiaddr"),
+                "/ip4/127.0.0.1/udp/0/quic-v1"
+                    .parse()
+                    .expect("default address parses into a Multiaddr"),
+            ],
         }
     }
 }
 
 impl Config {
-    pub fn gateway_address(&self) -> &SocketAddr {
-        &self.gateway_address
+    pub fn gateway_addresses(&self) -> &Vec<Multiaddr> {
+        &self.gateway_addresses
     }
 
-    pub fn listen_address(&self) -> &SocketAddr {
-        &self.listen_address
+    pub fn listen_addresses(&self) -> &Vec<Multiaddr> {
+        &self.listen_addresses
     }
 }
 

@@ -1,7 +1,8 @@
-use std::{net::SocketAddr, path::PathBuf};
+use std::path::PathBuf;
 
 use documented::{Documented, DocumentedFieldsOpt};
 use hypha_config::TLSConfig;
+use libp2p::Multiaddr;
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize, Serialize, Documented, DocumentedFieldsOpt)]
@@ -15,8 +16,10 @@ pub struct Config {
     trust_pem: PathBuf,
     /// Path to the certificate revocation list pem.
     crls_pem: Option<PathBuf>,
-    /// Address to listen on.
-    listen_address: SocketAddr,
+    /// Addresses to listen on.
+    listen_addresses: Vec<Multiaddr>,
+    /// External addresses to advertise. Only list addresses that are guaranteed to be reachable from the internet.
+    external_addresses: Vec<Multiaddr>,
 }
 
 impl Default for Config {
@@ -26,14 +29,33 @@ impl Default for Config {
             key_pem: PathBuf::from("gateway-key.pem"),
             trust_pem: PathBuf::from("gateway-trust.pem"),
             crls_pem: None,
-            listen_address: SocketAddr::from(([127, 0, 0, 1], 8080)),
+            listen_addresses: vec![
+                "/ip4/127.0.0.1/tcp/8080"
+                    .parse()
+                    .expect("default address parses into a Multiaddr"),
+                "/ip4/127.0.0.1/udp/8080/quic-v1"
+                    .parse()
+                    .expect("default address parses into a Multiaddr"),
+            ],
+            external_addresses: vec![
+                "/ip4/127.0.0.1/tcp/8080"
+                    .parse()
+                    .expect("default address parses into a Multiaddr"),
+                "/ip4/127.0.0.1/udp/8080/quic-v1"
+                    .parse()
+                    .expect("default address parses into a Multiaddr"),
+            ],
         }
     }
 }
 
 impl Config {
-    pub fn listen_address(&self) -> &SocketAddr {
-        &self.listen_address
+    pub fn listen_addresses(&self) -> &Vec<Multiaddr> {
+        &self.listen_addresses
+    }
+
+    pub fn external_addresses(&self) -> &Vec<Multiaddr> {
+        &self.external_addresses
     }
 }
 

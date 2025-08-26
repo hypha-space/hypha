@@ -4,6 +4,7 @@ use std::{fs, sync::Arc};
 
 use clap::{Parser, Subcommand};
 use figment::providers::{Env, Format, Serialized, Toml};
+use futures_util::future::join_all;
 use hypha_config::{ConfigWithMetadata, ConfigWithMetadataTLSExt, builder, to_toml};
 use hypha_network::{
     cert::identity_from_private_key,
@@ -13,14 +14,13 @@ use hypha_network::{
     listen::ListenInterface,
     request_response::{RequestResponseInterface, RequestResponseInterfaceExt},
     swarm::SwarmDriver,
-    utils::{multiaddr_from_socketaddr, multiaddr_from_socketaddr_quic},
 };
 use hypha_scheduler::{
     config::Config,
     network::Network,
     tasks::{TaskId, Tasks},
 };
-use libp2p::PeerId;
+use libp2p::{Multiaddr, PeerId};
 use miette::{IntoDiagnostic, Result};
 use serde::Serialize;
 use tokio::{sync::Mutex, task::JoinSet};
@@ -53,15 +53,15 @@ enum Commands {
         #[serde(skip)]
         config_file: std::path::PathBuf,
 
-        /// Address of the gateway.
+        /// Addresses of the gateways (can be specified multiple times).
         #[clap(long("gateway"))]
         #[serde(skip_serializing_if = "Option::is_none")]
-        gateway_address: Option<std::net::SocketAddr>,
+        gateway_addresses: Option<Vec<Multiaddr>>,
 
-        /// Address to listen on.
+        /// Addresses to listen on (can be specified multiple times).
         #[clap(long("listen"))]
         #[serde(skip_serializing_if = "Option::is_none")]
-        listen_address: Option<std::net::SocketAddr>,
+        listen_addresses: Option<Vec<Multiaddr>>,
     },
 }
 
@@ -75,26 +75,41 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
         .into_diagnostic()?
         .public()
         .to_peer_id();
-    let gateway_address =
-        multiaddr_from_socketaddr_quic(config.gateway_address()).into_diagnostic()?;
 
     let (network, network_driver) =
         Network::create(cert_chain, private_key, ca_certs, crls).into_diagnostic()?;
     tokio::spawn(network_driver.run());
 
-    network
-        .listen(multiaddr_from_socketaddr(config.listen_address()).into_diagnostic()?)
-        .await
-        .into_diagnostic()?;
-    network
-        .listen(multiaddr_from_socketaddr_quic(config.listen_address()).into_diagnostic()?)
-        .await
-        .into_diagnostic()?;
-    tracing::info!("Successfully listening");
+    join_all(
+        config
+            .listen_addresses()
+            .iter()
+            .map(|address| network.listen(address.clone()))
+            .collect::<Vec<_>>(),
+    )
+    .await
+    .into_iter()
+    .collect::<Result<Vec<_>, _>>()
+    .into_diagnostic()?;
+    tracing::info!("Successfully listening on all addresses");
 
-    // Dial the gateway address
-    // TODO: fall back to TCP if QUIC doesn't work
-    let _gateway_peer_id = network.dial(gateway_address).await.into_diagnostic()?;
+    let gateway_peer_ids: Vec<_> = join_all(
+        config
+            .gateway_addresses()
+            .iter()
+            .map(|address| network.dial(address.clone()))
+            .collect::<Vec<_>>(),
+    )
+    .await
+    .into_iter()
+    .filter_map(|result| result.ok())
+    .collect();
+
+    if gateway_peer_ids.is_empty() {
+        return Err(miette::miette!("Failed to connect to any gateway"));
+    }
+
+    tracing::info!(gateway_ids = ?gateway_peer_ids, "Connected to gateway(s)");
 
     // Wait until DHT bootstrapping is done.
     network.wait_for_bootstrap().await.into_diagnostic()?;
