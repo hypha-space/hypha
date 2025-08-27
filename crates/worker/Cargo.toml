@@ -14,7 +14,7 @@ documented.workspace = true
 figment.workspace = true
 futures.workspace = true
 futures-util.workspace = true
-hf-hub = { version = "0.4", features = ["tokio"] }
+hf-hub = { version = "0.4", default-features = false, features = ["tokio", "rustls-tls"] }
 hypha-config.workspace = true
 hypha-leases.workspace = true
 hypha-messages.workspace = true
@@ -24,7 +24,7 @@ libp2p-stream.workspace = true
 miette.workspace = true
 nix.workspace = true
 ordered-float = "5"
-reqwest = { version = "0.12", features = ["stream", "json"] }
+reqwest = { version = "0.12", default-features = false, features = ["stream", "json", "rustls-tls"] }
 safetensors.workspace = true
 serde.workspace = true
 serde_json.workspace = true
