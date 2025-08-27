@@ -36,8 +36,6 @@ pub struct Config {
     gateway_addresses: Vec<Multiaddr>,
     /// Addresses to listen on.
     listen_addresses: Vec<Multiaddr>,
-    /// Path to the socket file.
-    socket_path: PathBuf,
     /// Available resources.
     resources: ResourceConfig,
     /// Available driver.
@@ -67,7 +65,6 @@ impl Default for Config {
                     .parse()
                     .expect("default address parses into a Multiaddr"),
             ],
-            socket_path: PathBuf::from("/var/run/hypha.sock"),
             resources: ResourceConfig::default(),
             driver: vec!["diloco-transformer".into()],
         }
@@ -92,10 +89,6 @@ impl Config {
 
     pub fn listen_addresses(&self) -> &Vec<Multiaddr> {
         &self.listen_addresses
-    }
-
-    pub fn socket_path(&self) -> &PathBuf {
-        &self.socket_path
     }
 
     pub fn resources(&self) -> ComputeResources {
