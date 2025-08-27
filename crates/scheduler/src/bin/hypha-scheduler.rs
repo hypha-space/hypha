@@ -17,7 +17,7 @@ use hypha_scheduler::{
     config::Config,
     network::Network,
 };
-use libp2p::{multiaddr::Protocol, Multiaddr};
+use libp2p::{Multiaddr, multiaddr::Protocol};
 use miette::{IntoDiagnostic, Result};
 use serde::Serialize;
 use tokio::time::sleep;
@@ -207,9 +207,9 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
     }
 
     if allocated_workers.len() > 1 && allocated_parameter_servers.len() == 1 {
-        let all_peers = allocated_parameter_servers
+        let worker_ids = allocated_workers
             .iter()
-            .map(|ps| ps.peer_id())
+            .map(|w| w.peer_id())
             .collect::<Vec<_>>();
         let parameter_server = &mut allocated_parameter_servers[0];
 
@@ -232,13 +232,8 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
         let _p_rx = parameter_server
             .dispatch(JobSpec {
                 executor: Executor::ParameterServer {
-                    updates: Receive::peers(
-                        allocated_workers
-                            .iter()
-                            .map(|worker| worker.peer_id())
-                            .collect(),
-                    ),
-                    results: Send::peers(all_peers, SelectionStrategy::All),
+                    updates: Receive::peers(worker_ids.clone()),
+                    results: Send::peers(worker_ids.clone(), SelectionStrategy::All),
                 },
             })
             .await
