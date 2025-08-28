@@ -75,6 +75,7 @@ impl JobExecutor for ParameterServerExecutor {
         let connector = self.connector.clone();
 
         let task_tracker = TaskTracker::new();
+        let task_tracker_clone = task_tracker.clone();
         task_tracker.spawn(async move {
             let fut = async {
                 let num_workers = updates.get_peers().len();
