@@ -18,6 +18,7 @@ use tokio_util::{
     sync::CancellationToken,
     task::TaskTracker,
 };
+use tracing::instrument::WithSubscriber;
 use uuid::Uuid;
 
 use crate::{

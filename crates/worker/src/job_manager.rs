@@ -54,10 +54,7 @@ impl Job {
 pub struct JobManager {
     active_jobs: Arc<Mutex<HashMap<Uuid, Job>>>,
     connector: Connector<Network>,
-<<<<<<< HEAD
     work_dir_base: PathBuf,
-=======
->>>>>>> 22d43ae (fix: clean up resources on shut down)
 }
 
 impl JobManager {
