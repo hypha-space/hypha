@@ -41,6 +41,8 @@ pub struct Config {
     /// Enable listening via relay P2pCircuit through the gateway.
     /// Default is true to ensure inbound connectivity via relays.
     relay_circuit: bool,
+    /// Base directory for per-job working directories.
+    work_dir: PathBuf,
     /// Available resources.
     resources: ResourceConfig,
     /// Available driver.
@@ -74,6 +76,8 @@ impl Default for Config {
             // NOTE: Enabled by default to support inbound connectivity via relays
             // when behind NAT or firewall.
             relay_circuit: true,
+            // NOTE: Default work directory base. Jobs create subdirs `hypha-{uuid}` under this path.
+            work_dir: PathBuf::from("/tmp"),
             resources: ResourceConfig::default(),
             driver: vec!["diloco-transformer".into()],
         }
@@ -120,6 +124,11 @@ impl Config {
 
     pub fn driver(&self) -> Vec<String> {
         self.driver.clone()
+    }
+
+    /// Base directory for per-job working directories.
+    pub fn work_dir(&self) -> &PathBuf {
+        &self.work_dir
     }
 }
 

@@ -23,6 +23,7 @@ use crate::{
 
 pub struct ProcessExecutor {
     connector: Connector<Network>,
+    work_dir_base: PathBuf,
 }
 
 pub struct ProcessExecution {
@@ -38,8 +39,8 @@ impl Execution for ProcessExecution {
 }
 
 impl ProcessExecutor {
-    pub(crate) fn new(connector: Connector<Network>) -> Self {
-        ProcessExecutor { connector }
+    pub(crate) fn new(connector: Connector<Network>, work_dir_base: PathBuf) -> Self {
+        ProcessExecutor { connector, work_dir_base }
     }
 }
 
@@ -51,8 +52,9 @@ impl JobExecutor for ProcessExecutor {
         cancel: CancellationToken,
     ) -> Result<ProcessExecution, Error> {
         let id = Uuid::new_v4();
-        let sock_path = PathBuf::from(format!("/tmp/hypha-{}.sock", id));
-        let work_dir = PathBuf::from(format!("/tmp/hypha-{}", id));
+        // NOTE: Place per-job workdir under configured base and keep socket within it
+        let work_dir = self.work_dir_base.join(format!("hypha-{}", id));
+        let sock_path = work_dir.join("bridge.sock");
         fs::create_dir_all(&work_dir).await?;
 
         // NOTE: Create a bridge to allow for process <> network communication
@@ -145,8 +147,8 @@ impl JobExecutor for ProcessExecutor {
             let _ = bridge.wait().await;
 
             // Clean up.
-            let _ = fs::remove_dir_all(&work_dir).await;
             let _ = fs::remove_file(&sock_path).await;
+            let _ = fs::remove_dir_all(&work_dir).await;
         });
 
         task_tracker.close();

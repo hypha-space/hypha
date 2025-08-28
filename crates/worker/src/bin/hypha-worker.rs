@@ -79,6 +79,12 @@ enum Commands {
         #[clap(long("socket"))]
         #[serde(skip_serializing_if = "Option::is_none")]
         socket_address: Option<PathBuf>,
+
+        /// Base directory for per-job working directories (default: /tmp).
+        /// Example: --work-dir /mnt/tmp
+        #[clap(long("work-dir"))]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        work_dir: Option<PathBuf>,
     },
 }
 
@@ -184,7 +190,7 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
         )),
         WeightedResourceRequestEvaluator::default(),
         network.clone(),
-        JobManager::new(Connector::new(network.clone())),
+        JobManager::new(Connector::new(network.clone()), config.work_dir().clone()),
     );
 
     let arbiter_handle = tokio::spawn({
