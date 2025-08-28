@@ -87,6 +87,7 @@ impl JobExecutor for ParameterServerExecutor {
 
                 // Spawn a task to accept incoming streams and spawn per-stream copy tasks.
                 let work_dir_accept = work_dir.clone();
+                let task_tracker_clone_clone = task_tracker_clone.clone();
                 task_tracker_clone.spawn(async move {
                     while let Some(item) = incoming.next().await.transpose().ok().flatten() {
                         let name = item.meta.name.clone();
@@ -96,7 +97,7 @@ impl JobExecutor for ParameterServerExecutor {
                         let tx = tx.clone();
 
                         // Spawn the copy task; stream data directly to disk without buffering fully in memory.
-                        tokio::spawn(async move {
+                        task_tracker_clone_clone.spawn(async move {
                             match fs::File::create(&file_name).await {
                                 Ok(mut file) => {
                                     if let Err(e) = tokio::io::copy(&mut reader, &mut file).await {
@@ -116,8 +117,6 @@ impl JobExecutor for ParameterServerExecutor {
                             }
                         });
                     }
-                    // Drop the sender to close the channel when all accepts are done.
-                    drop(tx);
                 });
 
                 // Sequentially process completed files as they arrive.
