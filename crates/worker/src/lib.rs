@@ -1,7 +1,6 @@
 pub mod config;
 pub mod connector;
 pub mod executor;
-pub mod file_transfer;
 
 pub mod network;
 

@@ -16,12 +16,15 @@ use axum::{
     },
     routing::{get, post},
 };
-use futures::{StreamExt, stream};
+use futures_util::{StreamExt, io, stream};
 use hypha_messages::{Fetch, Receive, Reference, Send};
 use hypha_network::request_response::RequestResponseError;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use tokio::{fs, fs::set_permissions, net::UnixListener};
+use tokio::{
+    fs::{self, set_permissions},
+    net::UnixListener,
+};
 use tokio_util::{
     compat::{FuturesAsyncReadCompatExt, TokioAsyncReadCompatExt},
     sync::CancellationToken,
@@ -214,35 +217,29 @@ struct SendRequest {
     path: String,
 }
 
-#[derive(Debug, Serialize)]
-struct SendPerPeerResponse {
-    peer_id: String,
-    sent_bytes: u64,
-}
-
 async fn send_resource(
     State(state): State<Arc<SockState>>,
     Json(req): Json<SendRequest>,
-) -> Result<Json<Vec<SendPerPeerResponse>>, Error> {
+) -> Result<(), Error> {
     let abs = safe_join(&state.work_dir, &req.path)?;
-    let mut out: Vec<SendPerPeerResponse> = Vec::new();
     let mut writers = state.connector.send(req.send).await?;
-    while let Some(item) = writers.next().await.transpose().map_err(Error::Connector)? {
-        let peer_id = item.meta.name.clone();
-        let file = fs::File::open(&abs).await?;
-        let mut reader = file.compat();
-        let mut writer = item.writer;
-        let sent_bytes = futures::io::copy(&mut reader, &mut writer).await?;
-        tracing::info!(size = sent_bytes, file = %abs.display(), "Sent resource");
-        futures::io::AsyncWriteExt::flush(&mut writer).await?;
-        futures::io::AsyncWriteExt::close(&mut writer).await?;
-        out.push(SendPerPeerResponse {
-            peer_id,
-            sent_bytes,
-        });
-    }
 
-    Ok(Json(out))
+    // Copy the resource in the background to avoid blocking.
+    tokio::spawn(async move {
+        while let Some(item) = writers.next().await.transpose().unwrap() {
+            let peer_id = item.meta.name.clone();
+            let file = fs::File::open(&abs).await.expect("file exists");
+            tracing::info!(peer_id = %peer_id, file = %abs.display(), "Sending resource");
+            let mut reader = file.compat();
+            let mut writer = item.writer;
+            let sent_bytes = io::copy(&mut reader, &mut writer).await.expect("copy");
+            tracing::info!(size = sent_bytes, file = %abs.display(), "Sent resource");
+            io::AsyncWriteExt::flush(&mut writer).await.expect("flush");
+            io::AsyncWriteExt::close(&mut writer).await.expect("close");
+        }
+    });
+
+    Ok(())
 }
 
 /// Validate and join relative path it under work_dir.

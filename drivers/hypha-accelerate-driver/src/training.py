@@ -234,10 +234,9 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:
                     save_model(accelerator.unwrap_model(model), result_path)
                     try:
                         transport = httpx.HTTPTransport(uds=socket_path)
-                        with httpx.Client(transport=transport, timeout=10) as client:
+                        with httpx.Client(transport=transport) as client:
                             req = {"send": job_spec["executor"]["results"], "path": file_name}
-                            resp = client.post("http://hypha/resources/send", json=req, timeout=30.0)
-                            print("send:", resp.status_code, resp.text)
+                            client.post("http://hypha/resources/send", json=req).raise_for_status()
                     except Exception as e:
                         print(f"send error on {result_path}: {e}")
 
