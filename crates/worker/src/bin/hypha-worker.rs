@@ -7,7 +7,8 @@ use figment::providers::{Env, Format, Serialized, Toml};
 use futures_util::future::join_all;
 use hypha_config::{ConfigWithMetadata, ConfigWithMetadataTLSExt, builder, to_toml};
 use hypha_network::{
-    dial::DialInterface, kad::KademliaInterface, listen::ListenInterface, swarm::SwarmDriver,
+    dial::DialInterface, external_address::ExternalAddressInterface, kad::KademliaInterface,
+    listen::ListenInterface, swarm::SwarmDriver,
 };
 use hypha_worker::{
     arbiter::Arbiter, config::Config, connector::Connector, job_manager::JobManager,
@@ -64,6 +65,16 @@ enum Commands {
         #[serde(skip_serializing_if = "Option::is_none")]
         listen_addresses: Option<Vec<Multiaddr>>,
 
+        /// External addresses to advertise (can be specified multiple times).
+        #[clap(long("external"))]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        external_addresses: Option<Vec<Multiaddr>>,
+
+        /// Enable listening via relay P2pCircuit (via gateway). Defaults to true.
+        #[clap(long("relay-circuit"))]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        relay_circuit: Option<bool>,
+
         /// Socket to use for driver communication.
         #[clap(long("socket"))]
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -97,7 +108,18 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
 
     tracing::info!("Successfully listening on all addresses");
 
-    // Dial each gateway and, on success, set up a relay circuit listen via it.
+    // NOTE: Add configured external addresses (e.g., public IPs or DNS names)
+    // so peers can discover and connect to us.
+    join_all(
+        config
+            .external_addresses()
+            .iter()
+            .map(|address| network.add_external_address(address.clone()))
+            .collect::<Vec<_>>(),
+    )
+    .await;
+
+    // Dial each gateway and, optionally, set up a relay circuit listen via it.
     let gateway_results = join_all(
         config
             .gateway_addresses()
@@ -105,21 +127,27 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
             .map(|address| {
                 let address = address.clone();
                 let network = network.clone();
+                let enable_circuit = config.relay_circuit();
                 async move {
                     match network.dial(address.clone()).await {
                         Ok(peer_id) => {
-                            match address
-                                .with_p2p(peer_id)
-                                .map(|a| a.with(Protocol::P2pCircuit))
-                            {
-                                Ok(relay_addr) => {
-                                    if let Err(e) = network.listen(relay_addr).await {
-                                        tracing::warn!(error=%e, "Failed to set up P2pCircuit listen via gateway");
+                            if enable_circuit {
+                                // NOTE: When enabled, listen via the gateway relay circuit for inbound reachability.
+                                match address
+                                    .with_p2p(peer_id)
+                                    .map(|a| a.with(Protocol::P2pCircuit))
+                                {
+                                    Ok(relay_addr) => {
+                                        if let Err(e) = network.listen(relay_addr).await {
+                                            tracing::warn!(error=%e, "Failed to set up P2pCircuit listen via gateway");
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(error=%e, "Failed to construct relay listen address");
                                     }
                                 }
-                                Err(e) => {
-                                    tracing::warn!(error=%e, "Failed to construct relay listen address");
-                                }
+                            } else {
+                                tracing::info!("Relay circuit listening disabled; skipping P2pCircuit listen setup");
                             }
 
                             Ok(peer_id)

@@ -10,6 +10,7 @@ use futures_util::stream::StreamExt;
 use hypha_network::{
     CertificateDer, CertificateRevocationListDer, PrivateKeyDer,
     dial::{DialAction, DialDriver, DialInterface, PendingDials},
+    external_address::{ExternalAddressAction, ExternalAddressDriver, ExternalAddressInterface},
     gossipsub::{
         GossipsubAction, GossipsubBehaviour, GossipsubDriver, GossipsubInterface, Subscriptions,
     },
@@ -72,6 +73,7 @@ enum Action {
     Kademlia(KademliaAction),
     Gossipsub(GossipsubAction),
     RequestResponse(RequestResponseAction<HyphaCodec>),
+    ExternalAddress(ExternalAddressAction),
 }
 
 impl Network {
@@ -203,6 +205,8 @@ impl SwarmDriver<Behaviour> for NetworkDriver {
                             self.process_gossipsub_action(action).await,
                         Action::RequestResponse(action) =>
                             self.process_request_response_action(action).await,
+                        Action::ExternalAddress(action) =>
+                            self.process_external_address_action(action).await,
                     }
                 }
                 else => break
@@ -244,6 +248,8 @@ impl ListenDriver<Behaviour> for NetworkDriver {
         &mut self.pending_listen_map
     }
 }
+
+impl ExternalAddressDriver<Behaviour> for NetworkDriver {}
 
 impl StreamInterface for Network {
     fn stream_control(&self) -> stream::Control {
@@ -334,5 +340,17 @@ impl RequestResponseInterface<HyphaCodec> for Network {
         self.action_sender
             .try_send(Action::RequestResponse(action))
             .map_err(|_| RequestResponseError::Other("Failed to send action".to_string()))
+    }
+}
+
+impl ExternalAddressInterface for Network {
+    async fn send(&self, action: ExternalAddressAction) {
+        if let Err(e) = self
+            .action_sender
+            .send(Action::ExternalAddress(action))
+            .await
+        {
+            tracing::error!(?e, "failed to send external address action");
+        }
     }
 }
