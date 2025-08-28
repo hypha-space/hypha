@@ -10,7 +10,8 @@ use hypha_messages::{
     Executor, Fetch, JobSpec, Receive, Requirement, Resources, SelectionStrategy, Send, WorkerSpec,
 };
 use hypha_network::{
-    dial::DialInterface, kad::KademliaInterface, listen::ListenInterface, swarm::SwarmDriver,
+    dial::DialInterface, external_address::ExternalAddressInterface, kad::KademliaInterface,
+    listen::ListenInterface, swarm::SwarmDriver,
 };
 use hypha_scheduler::{
     allocator::{Allocator, GreedyWorkerAllocator},
@@ -59,6 +60,16 @@ enum Commands {
         #[clap(long("listen"))]
         #[serde(skip_serializing_if = "Option::is_none")]
         listen_addresses: Option<Vec<Multiaddr>>,
+
+        /// External addresses to advertise (can be specified multiple times).
+        #[clap(long("external"))]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        external_addresses: Option<Vec<Multiaddr>>,
+
+        /// Enable listening via relay P2pCircuit (via gateway). Defaults to true.
+        #[clap(long("relay-circuit"))]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        relay_circuit: Option<bool>,
     },
 }
 
@@ -85,6 +96,16 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
     .into_diagnostic()?;
     tracing::info!("Successfully listening on all addresses");
 
+    // NOTE: Add configured external addresses so peers can discover and connect.
+    join_all(
+        config
+            .external_addresses()
+            .iter()
+            .map(|address| network.add_external_address(address.clone()))
+            .collect::<Vec<_>>(),
+    )
+    .await;
+
     // Dial each gateway and, on success, set up a relay circuit listen via it.
     let gateway_results = join_all(
         config
@@ -93,22 +114,27 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
             .map(|address| {
                 let address = address.clone();
                 let network = network.clone();
+                let enable_circuit = config.relay_circuit();
                 async move {
                     match network.dial(address.clone()).await {
                         Ok(peer_id) => {
-                            // Attempt to listen on the relay circuit via the connected gateway.
-                            match address
-                                .with_p2p(peer_id)
-                                .map(|a| a.with(Protocol::P2pCircuit))
-                            {
-                                Ok(relay_addr) => {
-                                    if let Err(e) = network.listen(relay_addr).await {
-                                        tracing::warn!(error=%e, "Failed to set up P2pCircuit listen via gateway");
+                            if enable_circuit {
+                                // Attempt to listen on the relay circuit via the connected gateway.
+                                match address
+                                    .with_p2p(peer_id)
+                                    .map(|a| a.with(Protocol::P2pCircuit))
+                                {
+                                    Ok(relay_addr) => {
+                                        if let Err(e) = network.listen(relay_addr).await {
+                                            tracing::warn!(error=%e, "Failed to set up P2pCircuit listen via gateway");
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(error=%e, "Failed to construct relay listen address");
                                     }
                                 }
-                                Err(e) => {
-                                    tracing::warn!(error=%e, "Failed to construct relay listen address");
-                                }
+                            } else {
+                                tracing::info!("Relay circuit listening disabled; skipping P2pCircuit listen setup");
                             }
 
                             Ok(peer_id)
