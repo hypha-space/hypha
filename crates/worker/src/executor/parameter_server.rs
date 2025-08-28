@@ -8,7 +8,7 @@ use candle_core::{
 };
 use futures::StreamExt;
 use safetensors::serialize_to_file;
-use tokio::fs;
+use tokio::{fs, sync::mpsc};
 use tokio_util::{
     compat::{FuturesAsyncReadCompatExt, FuturesAsyncWriteCompatExt},
     sync::CancellationToken,
@@ -67,6 +67,7 @@ impl JobExecutor for ParameterServerExecutor {
         let connector = self.connector.clone();
 
         let task_tracker = TaskTracker::new();
+        let task_tracker_clone = task_tracker.clone();
         task_tracker.spawn(async move {
             let fut = async {
                 let mut result_tensor: Option<(PathBuf, MmapedSafetensors)> = None;
@@ -74,40 +75,57 @@ impl JobExecutor for ParameterServerExecutor {
                 let num_workers = updates.get_peers().len();
                 let mut current_worker = 0;
 
+                // NOTE: Receive streams in parallel, but keep processing (averaging + broadcasting)
+                // sequential to stay within memory constraints and preserve existing logic.
                 let mut incoming = match connector.receive(updates).await {
                     Ok(s) => s,
                     Err(_) => return,
                 };
 
-                while let Some(item) = incoming.next().await.transpose().ok().flatten() {
-                    tracing::info!(file_name = ?item.meta.name, "Received parameter server update");
+                // Channel to report finished file paths from parallel receivers to the sequenced processor.
+                let (tx, mut rx) = mpsc::channel::<(String, PathBuf)>(num_workers.max(1) * 2);
 
-                    let file_name = work_dir.join(item.meta.name);
+                // Spawn a task to accept incoming streams and spawn per-stream copy tasks.
+                let work_dir_accept = work_dir.clone();
+                task_tracker_clone.spawn(async move {
+                    while let Some(item) = incoming.next().await.transpose().ok().flatten() {
+                        let name = item.meta.name.clone();
+                        tracing::info!(file_name = ?name, "Received parameter server update (start)");
+                        let mut reader = item.reader.compat();
+                        let file_name = work_dir_accept.join(name.clone());
+                        let tx = tx.clone();
 
-                    // NOTE: Be resilient to I/O errors; log and skip faulty updates.
-                    let mut file = match fs::File::create(&file_name).await {
-                        Ok(f) => f,
-                        Err(e) => {
-                            tracing::warn!(error = ?e, path = ?file_name, "Failed to create update file");
-                            continue;
-                        }
-                    };
-                    if let Err(e) = tokio::io::copy(&mut item.reader.compat(), &mut file).await {
-                        tracing::warn!(error = ?e, path = ?file_name, "Failed to write update to file");
-                        // Skip this update; the partially written file may be invalid.
-                        let _ = fs::remove_file(&file_name).await;
-                        continue;
+                        // Spawn the copy task; stream data directly to disk without buffering fully in memory.
+                        tokio::spawn(async move {
+                            match fs::File::create(&file_name).await {
+                                Ok(mut file) => {
+                                    if let Err(e) = tokio::io::copy(&mut reader, &mut file).await {
+                                        tracing::warn!(error = ?e, path = ?file_name, "Failed to write update to file");
+                                        let _ = fs::remove_file(&file_name).await;
+                                        return;
+                                    }
+                                    if let Err(e) = fs::set_permissions(&file_name, Permissions::from_mode(0o600)).await {
+                                        tracing::warn!(error = ?e, path = ?file_name, "Failed to set file permissions");
+                                    }
+                                    // Notify processor that this update file is ready.
+                                    let _ = tx.send((name, file_name)).await;
+                                }
+                                Err(e) => {
+                                    tracing::warn!(error = ?e, path = ?file_name, "Failed to create update file");
+                                }
+                            }
+                        });
                     }
-                    if let Err(e) = fs::set_permissions(&file_name, Permissions::from_mode(0o600)).await {
-                        tracing::warn!(error = ?e, path = ?file_name, "Failed to set file permissions");
-                    }
+                    // Drop the sender to close the channel when all accepts are done.
+                    drop(tx);
+                });
 
+                // Sequentially process completed files as they arrive.
+                while let Some((_name, file_name)) = rx.recv().await {
                     // NOTE: Prefer continuing with the last good aggregation if averaging fails.
                     // Borrow current aggregation state to avoid moving out of `result_tensor`.
                     let result_tensor_file_name = match result_tensor.as_ref() {
-                        None => {
-                            file_name
-                        }
+                        None => file_name,
                         Some((result_tensor_file_name, result_tensor)) => {
                             // Average the new tensor with an existing one
                             match unsafe { MmapedSafetensors::new(file_name) } {
