@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 use hypha_messages::{Executor, JobSpec, JobStatus};
 use hypha_network::request_response::RequestResponseError;
@@ -54,13 +54,15 @@ impl Job {
 pub struct JobManager {
     active_jobs: Arc<Mutex<HashMap<Uuid, Job>>>,
     connector: Connector<Network>,
+    work_dir_base: PathBuf,
 }
 
 impl JobManager {
-    pub fn new(connector: Connector<Network>) -> Self {
+    pub fn new(connector: Connector<Network>, work_dir_base: PathBuf) -> Self {
         Self {
             active_jobs: Arc::new(Mutex::new(HashMap::new())),
             connector,
+            work_dir_base,
         }
     }
 
@@ -81,7 +83,8 @@ impl JobManager {
         // NOTE: Spawn job execution based on executor type
         match &spec.executor {
             Executor::DiLoCoTransformer { .. } => {
-                let executor = ProcessExecutor::new(self.connector.clone());
+                let executor =
+                    ProcessExecutor::new(self.connector.clone(), self.work_dir_base.clone());
                 let execution = executor.execute(spec.clone(), cancel_token.clone()).await?;
                 let job = Job {
                     id,
@@ -97,7 +100,10 @@ impl JobManager {
                 Ok(())
             }
             Executor::ParameterServer { .. } => {
-                let executor = ParameterServerExecutor::new(self.connector.clone());
+                let executor = ParameterServerExecutor::new(
+                    self.connector.clone(),
+                    self.work_dir_base.clone(),
+                );
                 let execution = executor.execute(spec.clone(), cancel_token.clone()).await?;
                 let job = Job {
                     id,

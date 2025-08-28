@@ -14,6 +14,7 @@ use tokio_util::{
     sync::CancellationToken,
     task::TaskTracker,
 };
+use tracing::instrument::WithSubscriber;
 use uuid::Uuid;
 
 use crate::{
@@ -24,6 +25,7 @@ use crate::{
 
 pub struct ParameterServerExecutor {
     connector: Connector<Network>,
+    work_dir_base: PathBuf,
 }
 
 pub struct ParameterServerExecution {
@@ -39,8 +41,11 @@ impl Execution for ParameterServerExecution {
 }
 
 impl ParameterServerExecutor {
-    pub fn new(connector: Connector<Network>) -> Self {
-        ParameterServerExecutor { connector }
+    pub fn new(connector: Connector<Network>, work_dir_base: PathBuf) -> Self {
+        ParameterServerExecutor {
+            connector,
+            work_dir_base,
+        }
     }
 }
 
@@ -54,7 +59,7 @@ impl JobExecutor for ParameterServerExecutor {
         tracing::info!(job_spec = ?job, "Executing parameter server job");
 
         let id = Uuid::new_v4();
-        let work_dir = PathBuf::from(format!("/tmp/hypha-{}", id));
+        let work_dir = self.work_dir_base.join(format!("hypha-{}", id));
         fs::create_dir_all(&work_dir).await?;
 
         let device = Device::Cpu;
