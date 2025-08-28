@@ -389,7 +389,7 @@ where
         match event {
             identify::Event::Received { peer_id, info, .. } => {
                 // NOTE: Add known addresses of peers to the Kademlia routing table
-                tracing::info!(peer_id=%peer_id, info=?info, "Adding address to Kademlia routing table");
+                tracing::debug!(peer_id=%peer_id, info=?info, "Adding address to Kademlia routing table");
 
                 for addr in info.listen_addrs {
                     self.swarm()

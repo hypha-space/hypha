@@ -166,6 +166,9 @@ impl SwarmDriver<Behaviour> for NetworkDriver {
                             tracing::info!(peer_id = %peer_id, ?endpoint, "Established new connection");
                             self.process_connection_established(peer_id, &connection_id).await;
                         }
+                        SwarmEvent::ConnectionClosed { peer_id, endpoint, .. } => {
+                            tracing::info!(peer_id = %peer_id, ?endpoint, "Closed connection");
+                        }
                         SwarmEvent::OutgoingConnectionError { connection_id, error, .. } => {
                             self.process_connection_error(&connection_id, error).await;
                         }
@@ -345,7 +348,11 @@ impl RequestResponseInterface<HyphaCodec> for Network {
 
 impl ExternalAddressInterface for Network {
     async fn send(&self, action: ExternalAddressAction) {
-        if let Err(e) = self.action_sender.send(Action::ExternalAddress(action)).await {
+        if let Err(e) = self
+            .action_sender
+            .send(Action::ExternalAddress(action))
+            .await
+        {
             tracing::error!(?e, "failed to send external address action");
         }
     }

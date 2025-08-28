@@ -198,6 +198,7 @@ async fn fetch_resource(
 
         let mut file = fs::File::create(&abs).await?;
         let size = tokio::io::copy(&mut reader.compat(), &mut file).await?;
+        tracing::info!(size, file = %abs.display(), "Copied resource");
         set_permissions(&abs, Permissions::from_mode(0o600)).await?;
 
         out.push(FileResponse { path: rel, size });
@@ -232,6 +233,7 @@ async fn send_resource(
         let mut reader = file.compat();
         let mut writer = item.writer;
         let sent_bytes = futures::io::copy(&mut reader, &mut writer).await?;
+        tracing::info!(size = sent_bytes, file = %abs.display(), "Sent resource");
         futures::io::AsyncWriteExt::flush(&mut writer).await?;
         futures::io::AsyncWriteExt::close(&mut writer).await?;
         out.push(SendPerPeerResponse {
@@ -347,6 +349,8 @@ async fn receive_subscribe(
                 Err(_) => break,
             };
             let _ = set_permissions(&file_abs, Permissions::from_mode(0o600)).await;
+
+            tracing::info!(size, file = %file_abs.display(), "Received resource");
 
             let from_peer = file_name.split('.').next().unwrap_or("").to_string();
             let pointer = UpdatePointer {
