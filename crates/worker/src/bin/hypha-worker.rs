@@ -15,7 +15,7 @@ use hypha_worker::{
     lease_manager::ResourceLeaseManager, network::Network,
     request_evaluator::WeightedResourceRequestEvaluator, resources::StaticResourceManager,
 };
-use libp2p::{multiaddr::Protocol, Multiaddr};
+use libp2p::{Multiaddr, multiaddr::Protocol};
 use miette::{IntoDiagnostic, Result};
 use serde::{Deserialize, Serialize};
 use tokio::signal::unix::{SignalKind, signal};
@@ -185,7 +185,6 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
         WeightedResourceRequestEvaluator::default(),
         network.clone(),
         JobManager::new(Connector::new(network.clone())),
-        token.clone(),
     );
 
     let arbiter_handle = tokio::spawn({

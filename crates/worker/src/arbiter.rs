@@ -77,7 +77,7 @@ where
         }
     }
 
-    pub async fn run(mut self) -> Result<(), ArbiterError> {
+    pub async fn run(mut self, cancel: CancellationToken) -> Result<(), ArbiterError> {
         let requests = self.network.subscribe(WORKER_TOPIC).await?;
 
         // NOTE: Use windowed stream to batch incoming gossipsub messages
