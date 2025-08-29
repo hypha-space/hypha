@@ -7,7 +7,8 @@ use figment::providers::{Env, Format, Serialized, Toml};
 use futures_util::future::join_all;
 use hypha_config::{ConfigWithMetadata, ConfigWithMetadataTLSExt, builder, to_toml};
 use hypha_messages::{
-    Executor, Fetch, JobSpec, Receive, Requirement, Resources, SelectionStrategy, Send, WorkerSpec,
+    DiLoCoConfig, Executor, Fetch, JobSpec, Optimizer, Receive, Requirement, Resources, Scheduler,
+    SelectionStrategy, Send, WorkerSpec,
 };
 use hypha_network::{
     dial::DialInterface, kad::KademliaInterface, listen::ListenInterface, swarm::SwarmDriver,
@@ -155,7 +156,7 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
 
     // Request multiple workers to increase chances of two distinct peers
     let mut allocated_workers = Vec::new();
-    for i in 0..2 {
+    for i in 0..4 {
         tracing::info!(worker_index = i, "Requesting worker allocation");
         match allocator.request(worker_spec.clone(), 100.0, None).await {
             Ok(worker) => {
@@ -185,7 +186,7 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
 
     // Request multiple workers to increase chances of two distinct peers
     let mut allocated_parameter_servers = Vec::new();
-    for i in 0..1 {
+    for i in 0..2 {
         tracing::info!(worker_index = i, "Requesting worker allocation");
         match allocator
             .request(parameter_server_spec.clone(), 100.0, None)
@@ -213,17 +214,54 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
             .collect::<Vec<_>>();
         let parameter_server = &mut allocated_parameter_servers[0];
 
+        let model_files = vec![
+            "config.json".to_string(),
+            "generation_config.json".to_string(),
+            "model.safetensors".to_string(),
+            "pytorch_model.bin".to_string(),
+            "special_tokens_map.json".to_string(),
+            "tokenizer.json".to_string(),
+            "tokenizer_config.json".to_string(),
+            "vocab.json".to_string(),
+        ];
+
         for worker in &mut allocated_workers {
             worker
                 .dispatch(JobSpec {
                     executor: Executor::DiLoCoTransformer {
-                        model: Fetch::uri("EleutherAI/gpt-neo-125m"), // Fetch::uri("https://example.com/"),
-                        data: Fetch::uri("datablations/c4-filter-small"),
+                        model: Fetch::huggingface(
+                            "EleutherAI/gpt-neo-125m",
+                            None,
+                            model_files.clone(),
+                            None,
+                            hypha_messages::HFRepoType::Model,
+                        ), // Fetch::uri("https://example.com/"),
+                        data: Fetch::huggingface(
+                            "l45k/c4-filter-small_tokenized",
+                            None,
+                            vec!["data_6.tokenized".to_string()],
+                            Some("...".to_string()),
+                            hypha_messages::HFRepoType::Dataset,
+                        ),
                         updates: Receive::peers(vec![parameter_server.peer_id()]),
                         results: Send::peers(
                             vec![parameter_server.peer_id()],
                             SelectionStrategy::One,
                         ),
+                        config: DiLoCoConfig::CausalLm {
+                            optimizer: Optimizer::Adam {
+                                learning_rate: 1e-5,
+                                betas: None,
+                                epsilon: None,
+                            },
+                            epochs: 3,
+                            batch_size: 2,
+                            checkpointing: 1,
+                            scheduler: Some(Scheduler::CosineWithWarmup {
+                                warmup_steps: 1,
+                                training_steps: 1,
+                            }),
+                        },
                     },
                 })
                 .await

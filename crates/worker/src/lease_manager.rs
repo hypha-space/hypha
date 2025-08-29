@@ -7,7 +7,10 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::resources::{extract_compute_resource_requirements, extract_other_resource_requirements, ResourceManager, ResourceManagerError};
+use crate::resources::{
+    ResourceManager, ResourceManagerError, extract_compute_resource_requirements,
+    extract_other_resource_requirements,
+};
 
 #[derive(Debug, Clone, Error)]
 #[error("lease error")]
@@ -101,7 +104,10 @@ where
     ) -> Result<Lease<ResourceLease>, LeaseError> {
         let compute_resources = extract_compute_resource_requirements(&requirements);
         let other_resources = extract_other_resource_requirements(&requirements);
-        let reservation = self.resource_manager.reserve(compute_resources, other_resources).await?;
+        let reservation = self
+            .resource_manager
+            .reserve(compute_resources, other_resources)
+            .await?;
 
         let result = self
             .ledger
