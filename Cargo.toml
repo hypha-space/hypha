@@ -80,7 +80,7 @@ tokio-util = { version = "0.7.15", features = ["compat", "rt"] }
 toml = { version = "0.8.23" }
 tower = { version = "0.5.2", features = ["util"] }
 tracing = "0.1.41"
-tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 utoipa = { version = "5.4.0", features = ["axum_extras", "url", "uuid"] }
 uuid = { version = "1.17.0", features = ["serde", "v4"] }
 webpki = { version = "0.103", package = "rustls-webpki", features = ["std"] }
