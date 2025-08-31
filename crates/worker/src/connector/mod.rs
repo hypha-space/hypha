@@ -262,41 +262,30 @@ impl FetchConnector for HttpHfFetcher {
                         hf_hub::RepoType::Model,
                         rev.to_string(),
                     ));
-                    let urls: Vec<(String, String)> = filenames
-                        .iter()
-                        .map(|filename| (filename.clone(), repo.url(filename)))
-                        .collect();
+                    let repo = std::sync::Arc::new(repo);
 
-                    let client = reqwest::Client::new();
-                    let stream =
-                        futures::stream::iter(urls.into_iter()).then(move |(filename, url)| {
-                            let client = client.clone();
-                            async move {
-                                let response = client
-                                    .get(&url)
-                                    .send()
-                                    .await
-                                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-                                if !response.status().is_success() {
-                                    return Err(io::Error::new(
-                                        io::ErrorKind::Other,
-                                        format!("HTTP error: {}", response.status()),
-                                    ));
-                                }
-                                let byte_stream = response
-                                    .bytes_stream()
-                                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e));
-                                let tokio_reader = StreamReader::new(byte_stream);
-                                let fut_reader = tokio_reader.compat();
-                                Ok(ReadItem {
-                                    meta: ItemMeta {
-                                        kind: "huggingface",
-                                        name: filename,
-                                    },
-                                    reader: Box::pin(fut_reader),
-                                })
-                            }
-                        });
+                    let stream = futures::stream::iter(filenames.clone()).then(move |filename| {
+                        let repo = repo.clone();
+                        async move {
+                            // Download to cache (if needed) and get local path
+                            let path = repo
+                                .get(&filename)
+                                .await
+                                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                            // Open as tokio file and adapt to futures::io::AsyncRead
+                            let file = tokio::fs::File::open(path)
+                                .await
+                                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                            let reader = file.compat();
+                            Ok(ReadItem {
+                                meta: ItemMeta {
+                                    kind: "huggingface",
+                                    name: filename,
+                                },
+                                reader: Box::pin(reader),
+                            })
+                        }
+                    });
                     Ok(Box::pin(stream) as ReadItemStream)
                 }
                 _ => Err(ConnectorError::UnsupportedFetch(fetch.as_ref().clone())),
