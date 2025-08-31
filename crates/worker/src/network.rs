@@ -116,7 +116,9 @@ impl Network {
                     )),
                     relay_client,
                     dcutr: dcutr::Behaviour::new(key.public().to_peer_id()),
-                    stream: stream::Behaviour::new(),
+                    stream: stream::Behaviour::with_relay_policy(
+                        libp2p_stream::ConnectionPolicy::IgnoreRelayed,
+                    ),
                     kademlia: kad::Behaviour::new(
                         key.public().to_peer_id(),
                         kad::store::MemoryStore::new(key.public().to_peer_id()),
