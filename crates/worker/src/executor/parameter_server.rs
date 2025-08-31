@@ -9,6 +9,7 @@ use candle_core::{
 use futures::StreamExt;
 use safetensors::serialize_to_file;
 use tokio::{fs, sync::mpsc};
+use tokio::io::{AsyncReadExt as TokioAsyncReadExt, AsyncWriteExt as TokioAsyncWriteExt};
 use tokio_util::{
     compat::{FuturesAsyncReadCompatExt, FuturesAsyncWriteCompatExt},
     sync::CancellationToken,
@@ -92,23 +93,31 @@ impl JobExecutor for ParameterServerExecutor {
 
                 // Spawn a task to accept incoming streams and spawn per-stream copy tasks.
                 let work_dir_accept = work_dir.clone();
-                let task_tracker_clone_clone = task_tracker_clone.clone();
-                task_tracker_clone.spawn(async move {
+                tokio::spawn(async move {
                     while let Some(item) = incoming.next().await.transpose().ok().flatten() {
-                        let name = item.meta.name.clone();
+                    let name = item.meta.name.clone();
                         tracing::info!(file_name = ?name, "Received parameter server update (start)");
                         let mut reader = item.reader.compat();
                         let file_name = work_dir_accept.join(name.clone());
                         let tx = tx.clone();
 
                         // Spawn the copy task; stream data directly to disk without buffering fully in memory.
-                        task_tracker_clone_clone.spawn(async move {
+                        tokio::spawn(async move {
                             match fs::File::create(&file_name).await {
                                 Ok(mut file) => {
-                                    if let Err(e) = tokio::io::copy(&mut reader, &mut file).await {
-                                        tracing::warn!(error = ?e, path = ?file_name, "Failed to write update to file");
-                                        let _ = fs::remove_file(&file_name).await;
-                                        return;
+                                    // Try auto-detect framed (chunked) vs raw stream and copy accordingly.
+                                    match recv_auto(&mut reader, &mut file).await {
+                                        Ok(received) => tracing::info!(
+                                            received_bytes = received,
+                                            path = %file_name.display(),
+                                            from = %name,
+                                            "Parameter server received update"
+                                        ),
+                                        Err(e) => {
+                                            tracing::warn!(error = ?e, path = ?file_name, "Failed to write update to file");
+                                            let _ = fs::remove_file(&file_name).await;
+                                            return;
+                                        }
                                     }
                                     if let Err(e) = fs::set_permissions(&file_name, Permissions::from_mode(0o600)).await {
                                         tracing::warn!(error = ?e, path = ?file_name, "Failed to set file permissions");
@@ -236,21 +245,58 @@ impl JobExecutor for ParameterServerExecutor {
                         tracing::info!("Sending parameter server update");
 
                         match connector.send(results.clone()).await {
-                            Ok(mut writers) => {
-                                while let Some(item_res) = writers.next().await {
+
+                            Ok(writers) => {
+                                tracing::info!("Obtained writers");
+
+                                writers.for_each_concurrent(None,  | item_res| async {
+
                                     match item_res {
                                         Ok(item) => {
+                                                tracing::info!("Sending update to peer, meta {:?}", item.meta);
                                             if let Some((ref result_file_name, _)) = result_tensor {
                                                 match fs::File::open(result_file_name.as_path()).await {
                                                     Ok(mut file) => {
-                                                        if let Err(e) = tokio::io::copy(
-                                                            &mut file,
-                                                            &mut item.writer.compat_write(),
-                                                        )
-                                                        .await
-                                                        {
-                                                            tracing::warn!(error = ?e, "Failed to write update to peer");
+
+                                                        tracing::info!("Opening file, meta {:?}, file: {:?}", item.meta, file.metadata().await);
+
+                                                        // NOTE: Measure exact bytes sent and compare to source length for diagnostics.
+                                                        let expected_len = match file.metadata().await {
+                                                            Ok(meta) => meta.len(),
+                                                            Err(_) => 0,
+                                                        };
+                                                        let mut writer = item.writer.compat_write();
+                                                        // Send in 10MiB framed chunks with a magic header.
+                                                        let sent = match send_in_chunks(&mut file, &mut writer).await {
+                                                            Ok(n) => n,
+                                                            Err(e) => {
+                                                                tracing::warn!(error = ?e, "Failed to write update to peer");
+                                                                0
+                                                            }
+                                                        };
+
+                                                        // Cleanly finish the stream so the receiver knows we're done.
+                                                        if let Err(e) = TokioAsyncWriteExt::flush(&mut writer).await {
+                                                            tracing::warn!(error = ?e, "Failed to flush writer to peer");
                                                         }
+                                                        if let Err(e) = TokioAsyncWriteExt::shutdown(&mut writer).await {
+                                                            tracing::warn!(error = ?e, "Failed to shutdown writer to peer");
+                                                        }
+
+                                                        if sent != expected_len {
+                                                            tracing::warn!(
+                                                                expected_bytes = expected_len,
+                                                                sent_bytes = sent,
+                                                                peer = %item.meta.name,
+                                                                "Parameter server sent byte mismatch"
+                                                            );
+                                                        }
+                                                        tracing::info!(
+                                                            expected_bytes = expected_len,
+                                                            sent_bytes = sent,
+                                                            peer = %item.meta.name,
+                                                            "Finished sending update to peer"
+                                                        );
                                                     }
                                                     Err(e) => {
                                                         tracing::warn!(error = ?e, "Failed to open result tensor file");
@@ -262,7 +308,7 @@ impl JobExecutor for ParameterServerExecutor {
                                             tracing::warn!(error = ?e, "Failed to open writer to peer");
                                         }
                                     }
-                                }
+                                }).await;
                             }
                             Err(e) => {
                                 // Do not panic if peers are not reachable (e.g., no addresses). We'll retry on next batch.
@@ -288,4 +334,97 @@ impl JobExecutor for ParameterServerExecutor {
 
         Ok(ParameterServerExecution { task_tracker })
     }
+}
+
+// NOTE: Simple framed transfer helpers (10 MiB chunks) with a magic prelude for compatibility.
+const CHUNK_SIZE: usize = 10 * 1024 * 1024; // 10 MiB
+const MAX_CHUNK: usize = 64 * 1024 * 1024; // safety cap for headers
+const MAGIC: &[u8; 4] = b"HPCH"; // Hypha Chunk framing
+
+async fn send_in_chunks<R, W>(r: &mut R, w: &mut W) -> std::io::Result<u64>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    let mut total: u64 = 0;
+    let mut buf = vec![0u8; CHUNK_SIZE];
+    // Write magic header once per stream
+    w.write_all(MAGIC).await?;
+    let mut idx: u64 = 0;
+    loop {
+        let n = r.read(&mut buf).await?;
+        if n == 0 {
+            break;
+        }
+        let len = (n as u64).to_le_bytes();
+        w.write_all(&len).await?;
+        w.write_all(&buf[..n]).await?;
+        total += n as u64;
+        tracing::info!(chunk_index = idx, chunk_bytes = n, total_sent = total, "Sent chunk");
+        idx += 1;
+    }
+    Ok(total)
+}
+
+async fn recv_auto<R, W>(r: &mut R, w: &mut W) -> std::io::Result<u64>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    let mut total: u64 = 0;
+    let mut magic = [0u8; 4];
+    // Try to read magic; handle EOF gracefully
+    match read_exact_bytes(r, &mut magic).await {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(0),
+        Err(e) => return Err(e),
+    }
+    if &magic == MAGIC {
+        let mut hdr = [0u8; 8];
+        let mut buf = vec![0u8; CHUNK_SIZE.max(1)];
+        let mut idx: u64 = 0;
+        loop {
+            // Next header; EOF here means done
+            match read_exact_bytes(r, &mut hdr).await {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+                Err(e) => return Err(e),
+            }
+            let len = u64::from_le_bytes(hdr) as usize;
+            if len == 0 || len > MAX_CHUNK {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("invalid chunk len {}", len),
+                ));
+            }
+            if buf.len() < len {
+                buf.resize(len, 0);
+            }
+            read_exact_bytes(r, &mut buf[..len]).await?;
+            TokioAsyncWriteExt::write_all(w, &buf[..len]).await?;
+            total += len as u64;
+            tracing::info!(chunk_index = idx, chunk_bytes = len, total_received = total, "Received chunk");
+            idx += 1;
+        }
+        Ok(total)
+    } else {
+        // Framing is required: reject non-framed streams
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "missing HPCH magic header",
+        ));
+    }
+}
+
+async fn read_exact_bytes<R: tokio::io::AsyncRead + Unpin>(r: &mut R, mut buf: &mut [u8]) -> std::io::Result<()> {
+    while !buf.is_empty() {
+        match TokioAsyncReadExt::read(r, buf).await? {
+            0 => return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "early EOF")),
+            n => {
+                let tmp = buf;
+                buf = &mut tmp[n..];
+            }
+        }
+    }
+    Ok(())
 }

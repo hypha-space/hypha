@@ -343,7 +343,14 @@ where
                                         },
                                         writer: Box::pin(stream),
                                     }),
-                                    Err(e) => Err(ConnectorError::OpenStream(e)),
+                                    Err(e) => {
+                                        tracing::error!(
+                                            "Failed to open stream to peer {}: {}",
+                                            peer,
+                                            e
+                                        );
+                                        Err(ConnectorError::OpenStream(e))
+                                    }
                                 }
                             }
                         });
@@ -353,16 +360,23 @@ where
                         let peer = peers.get(0).copied().ok_or_else(|| {
                             io::Error::new(io::ErrorKind::Other, "no peers provided")
                         })?;
-                        let stream = self.network.stream(peer).await?;
-                        let item = WriteItem {
-                            meta: ItemMeta {
-                                kind: "peer",
-                                name: peer.to_string(),
-                            },
-                            writer: Box::pin(stream),
-                        };
-                        let s = futures::stream::once(async move { Ok(item) });
-                        Ok(Box::pin(s) as WriteItemStream)
+                        match self.network.stream(peer).await {
+                            Ok(stream) => {
+                                let item = WriteItem {
+                                    meta: ItemMeta {
+                                        kind: "peer",
+                                        name: peer.to_string(),
+                                    },
+                                    writer: Box::pin(stream),
+                                };
+                                let s = futures::stream::once(async move { Ok(item) });
+                                Ok(Box::pin(s) as WriteItemStream)
+                            }
+                            Err(e) => {
+                                tracing::error!("Failed to open stream to peer {}: {}", peer, e);
+                                Err(ConnectorError::OpenStream(e))
+                            }
+                        }
                     }
                 },
                 _ => Err(ConnectorError::UnsupportedSend(send.as_ref().clone())),
@@ -399,6 +413,7 @@ where
                     let allow: Vec<PeerId> = peers.clone();
                     let incoming = self.network.streams()?;
                     let stream = incoming.filter_map(move |(peer, s)| {
+                        tracing::info!("Recieving data from peer, {:?}", peer);
                         let allowed = allow.clone();
                         async move {
                             if allowed.is_empty() || allowed.iter().any(|p| p == &peer) {
