@@ -307,7 +307,7 @@ impl JobExecutor for ParameterServerExecutor {
                                             tracing::warn!(error = ?e, "Failed to open writer to peer");
                                         }
                                     }
-                                }).await;
+                                }
                             }
                             Err(e) => {
                                 // Do not panic if peers are not reachable (e.g., no addresses). We'll retry on next batch.
@@ -337,97 +337,4 @@ impl JobExecutor for ParameterServerExecutor {
 
         Ok(ParameterServerExecution { task_tracker })
     }
-}
-
-// NOTE: Simple framed transfer helpers (10 MiB chunks) with a magic prelude for compatibility.
-const CHUNK_SIZE: usize = 10 * 1024 * 1024; // 10 MiB
-const MAX_CHUNK: usize = 64 * 1024 * 1024; // safety cap for headers
-const MAGIC: &[u8; 4] = b"HPCH"; // Hypha Chunk framing
-
-async fn send_in_chunks<R, W>(r: &mut R, w: &mut W) -> std::io::Result<u64>
-where
-    R: tokio::io::AsyncRead + Unpin,
-    W: tokio::io::AsyncWrite + Unpin,
-{
-    let mut total: u64 = 0;
-    let mut buf = vec![0u8; CHUNK_SIZE];
-    // Write magic header once per stream
-    w.write_all(MAGIC).await?;
-    let mut idx: u64 = 0;
-    loop {
-        let n = r.read(&mut buf).await?;
-        if n == 0 {
-            break;
-        }
-        let len = (n as u64).to_le_bytes();
-        w.write_all(&len).await?;
-        w.write_all(&buf[..n]).await?;
-        total += n as u64;
-        tracing::info!(chunk_index = idx, chunk_bytes = n, total_sent = total, "Sent chunk");
-        idx += 1;
-    }
-    Ok(total)
-}
-
-async fn recv_auto<R, W>(r: &mut R, w: &mut W) -> std::io::Result<u64>
-where
-    R: tokio::io::AsyncRead + Unpin,
-    W: tokio::io::AsyncWrite + Unpin,
-{
-    let mut total: u64 = 0;
-    let mut magic = [0u8; 4];
-    // Try to read magic; handle EOF gracefully
-    match read_exact_bytes(r, &mut magic).await {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(0),
-        Err(e) => return Err(e),
-    }
-    if &magic == MAGIC {
-        let mut hdr = [0u8; 8];
-        let mut buf = vec![0u8; CHUNK_SIZE.max(1)];
-        let mut idx: u64 = 0;
-        loop {
-            // Next header; EOF here means done
-            match read_exact_bytes(r, &mut hdr).await {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
-                Err(e) => return Err(e),
-            }
-            let len = u64::from_le_bytes(hdr) as usize;
-            if len == 0 || len > MAX_CHUNK {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!("invalid chunk len {}", len),
-                ));
-            }
-            if buf.len() < len {
-                buf.resize(len, 0);
-            }
-            read_exact_bytes(r, &mut buf[..len]).await?;
-            TokioAsyncWriteExt::write_all(w, &buf[..len]).await?;
-            total += len as u64;
-            tracing::info!(chunk_index = idx, chunk_bytes = len, total_received = total, "Received chunk");
-            idx += 1;
-        }
-        Ok(total)
-    } else {
-        // Framing is required: reject non-framed streams
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "missing HPCH magic header",
-        ));
-    }
-}
-
-async fn read_exact_bytes<R: tokio::io::AsyncRead + Unpin>(r: &mut R, mut buf: &mut [u8]) -> std::io::Result<()> {
-    while !buf.is_empty() {
-        match TokioAsyncReadExt::read(r, buf).await? {
-            0 => return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "early EOF")),
-            n => {
-                let tmp = buf;
-                buf = &mut tmp[n..];
-            }
-        }
-    }
-    Ok(())
 }

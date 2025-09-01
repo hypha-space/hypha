@@ -31,7 +31,6 @@ use tokio_util::{
     sync::CancellationToken,
     task::TaskTracker,
 };
-use tokio::io::{AsyncReadExt as TokioAsyncReadExt, AsyncWriteExt as TokioAsyncWriteExt};
 use utoipa::OpenApi;
 
 use crate::{
@@ -231,7 +230,7 @@ async fn send_resource(
     tokio::spawn(async move {
         while let Some(item) = writers.next().await.transpose().expect("stream") {
             let peer_id = item.meta.name.clone();
-            let mut file = fs::File::open(&abs).await.expect("file exists");
+            let file = fs::File::open(&abs).await.expect("file exists");
             tracing::info!(peer_id = %peer_id, file = %abs.display(), "Sending resource");
             let mut reader = file;
             let mut writer = item.writer.compat_write();
@@ -343,8 +342,7 @@ async fn receive_subscribe(
                 Ok(f) => f,
                 Err(_) => break,
             };
-            // Auto-detect framed (chunked) vs raw; support both for compatibility.
-            let size = match recv_auto(&mut reader.compat(), &mut file).await {
+            let size = match tokio::io::copy(&mut reader.compat(), &mut file).await {
                 Ok(n) => n,
                 Err(_) => break,
             };
@@ -384,97 +382,7 @@ fn derive_name_and_reader(item: ReadItem, idx: usize) -> (String, BoxAsyncRead) 
     let name = if item.meta.name.is_empty() {
         format!("part-{}.bin", idx)
     } else {
-        format!("{}-{}.bin", item.meta.name, idx)
+        item.meta.name
     };
     (name, item.reader)
-}
-
-// Shared with parameter server framing: accept magic+chunks or raw.
-const MAGIC: &[u8; 4] = b"HPCH";
-const MAX_CHUNK: usize = 64 * 1024 * 1024;
-const CHUNK_SIZE: usize = 10 * 1024 * 1024; // 10 MiB
-
-async fn send_in_chunks<R, W>(r: &mut R, w: &mut W) -> std::io::Result<u64>
-where
-    R: tokio::io::AsyncRead + Unpin,
-    W: tokio::io::AsyncWrite + Unpin,
-{
-    let mut total: u64 = 0;
-    let mut buf = vec![0u8; CHUNK_SIZE];
-    // Write magic header once per stream
-    TokioAsyncWriteExt::write_all(w, MAGIC).await?;
-    let mut idx: u64 = 0;
-    loop {
-        let n = TokioAsyncReadExt::read(r, &mut buf).await?;
-        if n == 0 {
-            break;
-        }
-        let len = (n as u64).to_le_bytes();
-        TokioAsyncWriteExt::write_all(w, &len).await?;
-        TokioAsyncWriteExt::write_all(w, &buf[..n]).await?;
-        total += n as u64;
-        tracing::info!(chunk_index = idx, chunk_bytes = n, total_sent = total, "Sent chunk");
-        idx += 1;
-    }
-    Ok(total)
-}
-
-async fn recv_auto<R, W>(r: &mut R, w: &mut W) -> std::io::Result<u64>
-where
-    R: tokio::io::AsyncRead + Unpin,
-    W: tokio::io::AsyncWrite + Unpin,
-{
-    let mut total: u64 = 0;
-    let mut magic = [0u8; 4];
-    match read_exact_bytes(r, &mut magic).await {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(0),
-        Err(e) => return Err(e),
-    }
-    if &magic == MAGIC {
-        let mut hdr = [0u8; 8];
-        let mut buf: Vec<u8> = Vec::new();
-        let mut idx: u64 = 0;
-        loop {
-            match read_exact_bytes(r, &mut hdr).await {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
-                Err(e) => return Err(e),
-            }
-            let len = u64::from_le_bytes(hdr) as usize;
-            if len == 0 || len > MAX_CHUNK {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!("invalid chunk len {}", len),
-                ));
-            }
-            if buf.len() < len {
-                buf.resize(len, 0);
-            }
-            read_exact_bytes(r, &mut buf[..len]).await?;
-            TokioAsyncWriteExt::write_all(w, &buf[..len]).await?;
-            total += len as u64;
-            tracing::info!(chunk_index = idx, chunk_bytes = len, total_received = total, "Received chunk");
-            idx += 1;
-        }
-        Ok(total)
-    } else {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "missing HPCH magic header",
-        ));
-    }
-}
-
-async fn read_exact_bytes<R: tokio::io::AsyncRead + Unpin>(r: &mut R, mut buf: &mut [u8]) -> std::io::Result<()> {
-    while !buf.is_empty() {
-        match TokioAsyncReadExt::read(r, buf).await? {
-            0 => return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "early EOF")),
-            n => {
-                let tmp = buf;
-                buf = &mut tmp[n..];
-            }
-        }
-    }
-    Ok(())
 }

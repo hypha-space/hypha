@@ -338,14 +338,7 @@ where
                                         },
                                         writer: Box::pin(stream),
                                     }),
-                                    Err(e) => {
-                                        tracing::error!(
-                                            "Failed to open stream to peer {}: {}",
-                                            peer,
-                                            e
-                                        );
-                                        Err(ConnectorError::OpenStream(e))
-                                    }
+                                    Err(e) => Err(ConnectorError::OpenStream(e)),
                                 }
                             }
                         });
@@ -401,7 +394,6 @@ where
                     let allow: Vec<PeerId> = peers.clone();
                     let incoming = self.network.streams()?;
                     let stream = incoming.filter_map(move |(peer, s)| {
-                        tracing::info!("Recieving data from peer, {:?}", peer);
                         let allowed = allow.clone();
                         async move {
                             if allowed.is_empty() || allowed.iter().any(|p| p == &peer) {
