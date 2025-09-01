@@ -6,7 +6,7 @@ edition.workspace = true
 license = "Apache-2.0"
 
 [dependencies]
-documented = "0.9.2"
+documented.workspace = true
 figment.workspace = true
 hypha-network.workspace = true
 miette.workspace = true
@@ -15,4 +15,4 @@ thiserror.workspace = true
 toml.workspace = true
 
 [dev-dependencies]
-tempfile = "3.0"
+tempfile.workspace = true

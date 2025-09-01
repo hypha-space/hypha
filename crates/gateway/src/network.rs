@@ -15,7 +15,6 @@ use hypha_network::{
     },
     kad::{KademliaAction, KademliaBehavior, KademliaDriver, KademliaInterface, PendingQueries},
     listen::{ListenAction, ListenDriver, ListenInterface, PendingListens},
-    stream::{StreamInterface, StreamReceiverInterface},
     swarm::{SwarmDriver, SwarmError},
 };
 use libp2p::{
@@ -23,13 +22,11 @@ use libp2p::{
     swarm::{NetworkBehaviour, SwarmEvent},
     tcp, tls, yamux,
 };
-use libp2p_stream as stream;
 use tokio::sync::{SetOnce, mpsc};
 
 #[derive(Clone)]
 pub struct Network {
     action_sender: mpsc::Sender<Action>,
-    stream_control: stream::Control,
 }
 
 #[derive(NetworkBehaviour)]
@@ -37,7 +34,6 @@ pub struct Behaviour {
     ping: ping::Behaviour,
     identify: identify::Behaviour,
     relay: relay::Behaviour,
-    stream: stream::Behaviour,
     kademlia: kad::Behaviour<kad::store::MemoryStore>,
     gossipsub: gossipsub::Behaviour,
 }
@@ -88,7 +84,6 @@ impl Network {
                         "/hypha-identify/0.0.1".to_string(),
                         key.public(),
                     )),
-                    stream: stream::Behaviour::new(),
                     kademlia: kad::Behaviour::new(
                         key.public().to_peer_id(),
                         kad::store::MemoryStore::new(key.public().to_peer_id()),
@@ -112,10 +107,7 @@ impl Network {
             .set_mode(Some(kad::Mode::Server));
 
         Ok((
-            Network {
-                action_sender,
-                stream_control: swarm.behaviour().stream.new_control(),
-            },
+            Network { action_sender },
             NetworkDriver {
                 swarm,
                 pending_dials_map: HashMap::default(),
@@ -226,14 +218,6 @@ impl ExternalAddressInterface for Network {
             .expect("network driver should be running and able to receive actions");
     }
 }
-
-impl StreamInterface for Network {
-    fn stream_control(&self) -> stream::Control {
-        self.stream_control.clone()
-    }
-}
-
-impl StreamReceiverInterface for Network {}
 
 impl KademliaBehavior for Behaviour {
     fn kademlia(&mut self) -> &mut kad::Behaviour<kad::store::MemoryStore> {

@@ -40,7 +40,10 @@ impl Execution for ProcessExecution {
 
 impl ProcessExecutor {
     pub(crate) fn new(connector: Connector<Network>, work_dir_base: PathBuf) -> Self {
-        ProcessExecutor { connector, work_dir_base }
+        ProcessExecutor {
+            connector,
+            work_dir_base,
+        }
     }
 }
 
