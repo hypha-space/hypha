@@ -18,7 +18,6 @@ use tokio_util::{
     sync::CancellationToken,
     task::TaskTracker,
 };
-use tracing::instrument::WithSubscriber;
 use uuid::Uuid;
 
 use crate::{
@@ -76,7 +75,6 @@ impl JobExecutor for ParameterServerExecutor {
         let connector = self.connector.clone();
 
         let task_tracker = TaskTracker::new();
-        let task_tracker_clone = task_tracker.clone();
         task_tracker.spawn(async move {
             let fut = async {
                 let num_workers = updates.get_peers().len();
@@ -302,18 +300,17 @@ impl JobExecutor for ParameterServerExecutor {
                                                         tracing::warn!(error = ?e, "Failed to open result tensor file");
                                                     }
                                             }
-                                        }
-                                        Err(e) => {
-                                            tracing::warn!(error = ?e, "Failed to open writer to peer");
+                                            Err(e) => {
+                                                tracing::warn!(error = ?e, "Failed to open writer to peer");
+                                            }
                                         }
                                     }
                                 }
+                                Err(e) => {
+                                    // Do not panic if peers are not reachable (e.g., no addresses). We'll retry on next batch.
+                                    tracing::warn!(error = ?e, "Failed to send to peers; will retry on next aggregation");
+                                }
                             }
-                            Err(e) => {
-                                // Do not panic if peers are not reachable (e.g., no addresses). We'll retry on next batch.
-                                tracing::warn!(error = ?e, "Failed to send to peers; will retry on next aggregation");
-                            }
-                        }
 
                         fs::remove_file(final_tensor_file_name.as_path()).await.expect("tensor file can be removed");
                     }
