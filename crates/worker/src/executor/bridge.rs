@@ -202,6 +202,7 @@ async fn fetch_resource(
 
         let mut file = fs::File::create(&abs).await?;
         let size = tokio::io::copy(&mut reader.compat(), &mut file).await?;
+        file.sync_all().await?;
         tracing::info!(size, file = %abs.display(), "Copied resource");
         set_permissions(&abs, Permissions::from_mode(0o600)).await?;
 
@@ -345,6 +346,7 @@ async fn receive_subscribe(
                 Ok(n) => n,
                 Err(_) => break,
             };
+            let _ = file.sync_all().await;
             let _ = set_permissions(&file_abs, Permissions::from_mode(0o600)).await;
 
             tracing::info!(size, file = %file_abs.display(), "Received resource");
