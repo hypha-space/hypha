@@ -105,7 +105,7 @@ impl JobExecutor for ParameterServerExecutor {
                                 match item {
                                     Ok(item) => {
                                         let name = item.meta.name.clone();
-                                        tracing::info!(file_name = ?name, "Received parameter server update (start)");
+                                        tracing::info!(peer_id = ?name, "Received parameter server update (start)");
                                         let mut reader = item.reader.compat();
                                         let file_name = work_dir.join(name.clone());
 
@@ -113,6 +113,7 @@ impl JobExecutor for ParameterServerExecutor {
                                             Ok(mut file) => {
                                                 match io::copy(&mut reader, &mut file).await {
                                                     Ok(size) => {
+                                                        file.sync_all().await.unwrap();
                                                         tracing::info!(size, path = ?file_name, "Wrote update to file");
                                                     }
                                                     Err(e) => {
@@ -263,8 +264,6 @@ impl JobExecutor for ParameterServerExecutor {
                     // With that assumption, we can send these updates after 'num_workers' parameters have been received.
                     // TODO: This needs more work to support more complex scenarios.
                     if current_worker == num_workers {
-                        tracing::info!("Sending parameter server update");
-
                         if let Some(ref result_file_name) = current_result_tensor_file_name {
                             // Rename the temporary result to ensure that it's available for updates again.
                             // In edge-cases we might receive updates while still sending out results.
@@ -277,10 +276,12 @@ impl JobExecutor for ParameterServerExecutor {
                             current_worker = 0;
 
                             match connector.send(results.clone()).await {
-                                Ok(mut writers) => {
-                                    while let Some(item_res) = writers.next().await {
+                                Ok(writers) => {
+                                    writers.for_each_concurrent(None, async |item_res| {
                                         match item_res {
                                             Ok(item) => {
+                                                    tracing::info!(peer_id = item.meta.name, "Sending parameter server update");
+
                                                     match fs::File::open(final_tensor_file_name.as_path()).await {
                                                         Ok(mut file) => {
                                                             let mut writer = item.writer.compat_write();
@@ -305,7 +306,7 @@ impl JobExecutor for ParameterServerExecutor {
                                                 tracing::warn!(error = ?e, "Failed to open writer to peer");
                                             }
                                         }
-                                    }
+                                    }).await;
                                 }
                                 Err(e) => {
                                     // Do not panic if peers are not reachable (e.g., no addresses). We'll retry on next batch.
