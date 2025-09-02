@@ -1,6 +1,6 @@
 use hypha_messages::request_worker::Request;
 
-use crate::resources::{extract_compute_resource_requirements};
+use crate::resources::extract_compute_resource_requirements;
 
 pub trait RequestEvaluator {
     fn score(&self, request: &Request) -> f64;

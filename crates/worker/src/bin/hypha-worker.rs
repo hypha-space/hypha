@@ -15,7 +15,7 @@ use hypha_worker::{
     lease_manager::ResourceLeaseManager, network::Network,
     request_evaluator::WeightedResourceRequestEvaluator, resources::StaticResourceManager,
 };
-use libp2p::{multiaddr::Protocol, Multiaddr};
+use libp2p::{Multiaddr, multiaddr::Protocol};
 use miette::{IntoDiagnostic, Result};
 use serde::{Deserialize, Serialize};
 use tokio::signal::unix::{SignalKind, signal};
