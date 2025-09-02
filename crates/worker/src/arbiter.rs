@@ -96,7 +96,7 @@ where
                 interval.tick().await;
                 if let Ok(expired) = lease_manager.proceed().await {
                     if !expired.is_empty() {
-                        tracing::info!("Pruned {} expired leases", expired.len());
+                        tracing::debug!("Pruned {} expired leases", expired.len());
                     }
                 }
             }
@@ -236,11 +236,11 @@ where
         loop {
             tokio::select! {
                 _ = self.token.cancelled() => {
-                    tracing::info!("Arbiter cancelled");
+                    tracing::debug!("Arbiter cancelled");
                     break;
                 },
                 Some(request_batch) = requests_batched.next() => {
-                    tracing::info!("Got a batch of requests");
+                    tracing::debug!("Got a batch of requests");
                     let parsed_requests: Vec<(PeerId, hypha_messages::request_worker::Request)> = request_batch
                         .into_iter()
                         .filter_map(|message| {
@@ -254,15 +254,15 @@ where
                         .collect();
 
                     if parsed_requests.is_empty() {
-                        tracing::info!("No valid requests in batch");
+                        tracing::debug!("No valid requests in batch");
                         continue;
                     }
 
-                    tracing::info!("Received {} requests", parsed_requests.len());
+                    tracing::debug!("Received {} requests", parsed_requests.len());
                     self.process_requests(parsed_requests).await;
                 },
                 else => {
-                    tracing::info!("Request stream ended");
+                    tracing::debug!("Request stream ended");
                     break;
                 }
             }

@@ -149,14 +149,14 @@ where
     }
 
     async fn remove(&mut self, id: &Uuid) -> Result<Lease<ResourceLease>, LeaseError> {
-        tracing::info!("Removing lease {id}");
+        tracing::debug!("Removing lease {id}");
 
         let lease = self.ledger.remove(id).await?;
         self.resource_manager
             .release(lease.leasable.reservation)
             .await?;
 
-        tracing::info!("Removed lease {id} and released resources");
+        tracing::debug!("Removed lease {id} and released resources");
 
         Ok(lease)
     }

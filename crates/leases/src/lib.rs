@@ -68,7 +68,7 @@ where
     }
 
     pub async fn insert(&self, leasable: T, duration: Duration) -> Result<Lease<T>, LedgerError> {
-        tracing::info!("insert");
+        tracing::debug!("insert");
         let mut leases = self.leases.write().await;
 
         let id = Uuid::new_v4();
@@ -99,7 +99,7 @@ where
 
         let lease = leases.remove(id).ok_or(LedgerError::LeaseNotFound(*id))?;
 
-        tracing::info!("Removed lease {id}");
+        tracing::debug!("Removed lease {id}");
         Ok(lease)
     }
 

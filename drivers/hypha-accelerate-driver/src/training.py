@@ -244,6 +244,8 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:
                     # Mark that before the next training epoch we must wait for an update
                     await_update = True
 
+            print(f"Finished training of {job_spec["executor"]["epochs"]} epochs", flush=True)
+
 
 
 if __name__ == "__main__":

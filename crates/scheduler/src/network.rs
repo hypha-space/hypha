@@ -168,7 +168,7 @@ impl SwarmDriver<Behaviour> for NetworkDriver {
                 event = self.swarm.select_next_some() => {
                     match event {
                         SwarmEvent::ConnectionEstablished { connection_id, peer_id, endpoint, .. } => {
-                            tracing::info!(peer_id = %peer_id, ?endpoint, "Established new connection");
+                            tracing::debug!(peer_id = %peer_id, ?endpoint, "Established new connection");
                             self.process_connection_established(peer_id, &connection_id,).await;
                         }
                         SwarmEvent::OutgoingConnectionError { connection_id, error, .. } => {
@@ -193,7 +193,7 @@ impl SwarmDriver<Behaviour> for NetworkDriver {
                             self.process_request_response_event(event).await;
                         }
                         SwarmEvent::Behaviour(BehaviourEvent::Dcutr(event)) => {
-                            tracing::info!("dcutr event: {:?}", event);
+                            tracing::debug!("dcutr event: {:?}", event);
                         }
 
                         _ => {
