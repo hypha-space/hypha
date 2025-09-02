@@ -304,7 +304,7 @@ impl JobExecutor for ParameterServerExecutor {
                                                 tracing::warn!(error = ?e, "Failed to open writer to peer");
                                             }
                                         }
-                                    }
+                                    }).await;
                                 }
                                 Err(e) => {
                                     // Do not panic if peers are not reachable (e.g., no addresses). We'll retry on next batch.
