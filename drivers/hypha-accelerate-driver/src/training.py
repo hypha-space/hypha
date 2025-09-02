@@ -1,13 +1,11 @@
 import argparse
 import json
 import os
-import threading
-import time
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from contextlib import AbstractContextManager, contextmanager
 from types import TracebackType
-from queue import Empty, Queue
-from typing import Any, Optional, Iterable, cast
+from typing import Any, cast
+
 import httpx
 import torch
 import torch.utils.data
@@ -99,6 +97,7 @@ class EventSource:
 
                 yield result
             # Ignore other SSE fields (e.g., event:, id:, retry:)
+
 
 # TODO: This needs to be generic and support user-provided datasets.
 class CustomC4(torch.utils.data.Dataset[int]):
