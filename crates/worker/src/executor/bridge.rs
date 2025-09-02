@@ -16,17 +16,18 @@ use axum::{
     },
     routing::{get, post},
 };
-use futures_util::{StreamExt, io, stream};
+use futures_util::{StreamExt, stream};
 use hypha_messages::{Fetch, Receive, Reference, Send};
 use hypha_network::request_response::RequestResponseError;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::{
     fs::{self, set_permissions},
+    io::{self, AsyncWriteExt},
     net::UnixListener,
 };
 use tokio_util::{
-    compat::{FuturesAsyncReadCompatExt, TokioAsyncReadCompatExt},
+    compat::{FuturesAsyncReadCompatExt, FuturesAsyncWriteCompatExt},
     sync::CancellationToken,
     task::TaskTracker,
 };
@@ -230,12 +231,11 @@ async fn send_resource(
             let peer_id = item.meta.name.clone();
             let file = fs::File::open(&abs).await.expect("file exists");
             tracing::info!(peer_id = %peer_id, file = %abs.display(), "Sending resource");
-            let mut reader = file.compat();
-            let mut writer = item.writer;
+            let mut reader = file;
+            let mut writer = item.writer.compat_write();
             let sent_bytes = io::copy(&mut reader, &mut writer).await.expect("copy");
+            writer.shutdown().await.expect("shutdown");
             tracing::info!(size = sent_bytes, file = %abs.display(), "Sent resource");
-            io::AsyncWriteExt::flush(&mut writer).await.expect("flush");
-            io::AsyncWriteExt::close(&mut writer).await.expect("close");
         }
     });
 
