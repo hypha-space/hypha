@@ -6,15 +6,18 @@ use candle_core::{
     Device,
     safetensors::{Load, MmapedSafetensors},
 };
-use futures::StreamExt;
+use futures_util::StreamExt;
 use safetensors::serialize_to_file;
-use tokio::{fs, sync::mpsc};
+use tokio::{
+    fs,
+    io::{self, AsyncWriteExt},
+    sync::mpsc,
+};
 use tokio_util::{
     compat::{FuturesAsyncReadCompatExt, FuturesAsyncWriteCompatExt},
     sync::CancellationToken,
     task::TaskTracker,
 };
-use tracing::instrument::WithSubscriber;
 use uuid::Uuid;
 
 use crate::{
@@ -72,17 +75,13 @@ impl JobExecutor for ParameterServerExecutor {
         let connector = self.connector.clone();
 
         let task_tracker = TaskTracker::new();
-        let task_tracker_clone = task_tracker.clone();
         task_tracker.spawn(async move {
             let fut = async {
-                let mut result_tensor: Option<(PathBuf, MmapedSafetensors)> = None;
-
                 let num_workers = updates.get_peers().len();
-                let mut current_worker = 0;
 
                 // NOTE: Receive streams in parallel, but keep processing (averaging + broadcasting)
                 // sequential to stay within memory constraints and preserve existing logic.
-                let mut incoming = match connector.receive(updates).await {
+                let incoming = match connector.receive(updates).await {
                     Ok(s) => s,
                     Err(_) => return,
                 };
@@ -91,142 +90,173 @@ impl JobExecutor for ParameterServerExecutor {
                 let (tx, mut rx) = mpsc::channel::<(String, PathBuf)>(num_workers.max(1) * 2);
 
                 // Spawn a task to accept incoming streams and spawn per-stream copy tasks.
-                let work_dir_accept = work_dir.clone();
-                let task_tracker_clone_clone = task_tracker_clone.clone();
-                task_tracker_clone.spawn(async move {
-                    while let Some(item) = incoming.next().await.transpose().ok().flatten() {
-                        let name = item.meta.name.clone();
-                        tracing::info!(file_name = ?name, "Received parameter server update (start)");
-                        let mut reader = item.reader.compat();
-                        let file_name = work_dir_accept.join(name.clone());
-                        let tx = tx.clone();
+                tokio::spawn( {
+                    let work_dir = work_dir.clone();
+                    let cancel = cancel.clone();
+                    async move {
+                    tokio::select! {
+                        _ = cancel.cancelled() => {
+                            tracing::debug!("stopping parameter accept handler");
+                        }
+                        _ = incoming.for_each_concurrent(None, |item| {
+                            let work_dir = work_dir.clone();
+                            let tx = tx.clone();
+                            async move {
+                                match item {
+                                    Ok(item) => {
+                                        let name = item.meta.name.clone();
+                                        tracing::info!(file_name = ?name, "Received parameter server update (start)");
+                                        let mut reader = item.reader.compat();
+                                        let file_name = work_dir.join(name.clone());
 
-                        // Spawn the copy task; stream data directly to disk without buffering fully in memory.
-                        task_tracker_clone_clone.spawn(async move {
-                            match fs::File::create(&file_name).await {
-                                Ok(mut file) => {
-                                    if let Err(e) = tokio::io::copy(&mut reader, &mut file).await {
-                                        tracing::warn!(error = ?e, path = ?file_name, "Failed to write update to file");
-                                        let _ = fs::remove_file(&file_name).await;
-                                        return;
+                                        match fs::File::create(&file_name).await {
+                                            Ok(mut file) => {
+                                                match io::copy(&mut reader, &mut file).await {
+                                                    Ok(size) => {
+                                                        tracing::info!(size, path = ?file_name, "Wrote update to file");
+                                                    }
+                                                    Err(e) => {
+                                                        tracing::warn!(error = ?e, path = ?file_name, "Failed to write update to file");
+                                                        let _ = fs::remove_file(&file_name).await;
+                                                        return;
+                                                    }
+                                                }
+
+                                                if let Err(e) = fs::set_permissions(&file_name, Permissions::from_mode(0o600)).await {
+                                                    tracing::warn!(error = ?e, path = ?file_name, "Failed to set file permissions");
+                                                }
+                                                // Notify processor that this update file is ready.
+                                                let _ = tx.send((name, file_name)).await;
+                                            }
+                                            Err(e) => {
+                                                tracing::warn!(error = ?e, path = ?file_name, "Failed to create update file");
+                                            }
+                                        }
                                     }
-                                    if let Err(e) = fs::set_permissions(&file_name, Permissions::from_mode(0o600)).await {
-                                        tracing::warn!(error = ?e, path = ?file_name, "Failed to set file permissions");
+                                    Err(e) => {
+                                        tracing::warn!(error = ?e, "Failed to receive parameter server update");
                                     }
-                                    // Notify processor that this update file is ready.
-                                    let _ = tx.send((name, file_name)).await;
-                                }
-                                Err(e) => {
-                                    tracing::warn!(error = ?e, path = ?file_name, "Failed to create update file");
                                 }
                             }
-                        });
-                    }
-                });
+                        }) => {
+                            tracing::warn!("parameter accept handler stopped");
+                        }
+                    };
+                }});
+
+                let mut current_result_tensor_file_name: Option<PathBuf> = None;
+                let mut current_worker = 0;
 
                 // Sequentially process completed files as they arrive.
-                while let Some((_name, file_name)) = rx.recv().await {
+                while let Some((name, file_name)) = rx.recv().await {
                     // NOTE: Prefer continuing with the last good aggregation if averaging fails.
                     // Borrow current aggregation state to avoid moving out of `result_tensor`.
-                    let result_tensor_file_name = match result_tensor.as_ref() {
-                        None => file_name,
-                        Some((result_tensor_file_name, result_tensor)) => {
-                            // Average the new tensor with an existing one
-                            match unsafe { MmapedSafetensors::new(file_name) } {
-                                Ok(new_tensor) => {
-                                    if let Err(e) = fs::create_dir_all(&work_dir.join("avg")).await {
-                                        tracing::warn!(error = ?e, "Failed to create avg directory; keeping previous aggregation");
-                                        result_tensor_file_name.clone()
-                                    } else {
-                                        let mut paths = Vec::new();
-                                        for (name, tensor) in result_tensor.tensors() {
-                                            // Load tensors; skip this tensor on failure
-                                            let current_tensor = match tensor.load(&device) {
-                                                Ok(t) => t,
-                                                Err(e) => {
-                                                    tracing::warn!(error = ?e, tensor = %name, "Failed to load current tensor; skipping");
-                                                    continue;
-                                                }
-                                            };
-                                            let other_tensor = match new_tensor.load(&name, &device) {
-                                                Ok(t) => t,
-                                                Err(e) => {
-                                                    tracing::warn!(error = ?e, tensor = %name, "Failed to load new tensor; skipping");
-                                                    continue;
-                                                }
-                                            };
 
-                                            let avg_tensor = match (current_tensor + other_tensor).and_then(|t| t / 2.) {
-                                                Ok(t) => t,
-                                                Err(e) => {
-                                                    tracing::warn!(error = ?e, tensor = %name, "Failed to average tensors; skipping");
-                                                    continue;
-                                                }
-                                            };
-
-                                            let avg_tensor_file_name = work_dir.join("avg").join(&name);
-                                            if let Err(e) = candle_core::safetensors::save(
-                                                &HashMap::from([(name.clone(), avg_tensor)]),
-                                                avg_tensor_file_name.as_path(),
-                                            ) {
-                                                tracing::warn!(error = ?e, tensor = %name, "Failed to save averaged tensor; skipping");
-                                                continue;
-                                            }
-                                            paths.push(avg_tensor_file_name);
-                                        }
-
-                                        let mut updated_file = false;
-                                        if paths.is_empty() {
-                                            tracing::warn!("No tensors averaged; keeping previous aggregation");
-                                        } else if let Ok(all_tensors) = unsafe { MmapedSafetensors::multi(&paths) } {
-                                            match serialize_to_file(
-                                                all_tensors.tensors(),
-                                                &None,
-                                                result_tensor_file_name.as_path(),
-                                            ) {
-                                                Ok(_) => {
-                                                    updated_file = true;
-                                                }
-                                                Err(e) => {
-                                                    tracing::warn!(error = ?e, "Failed to serialize averaged tensors; keeping previous aggregation");
-                                                }
-                                            }
-                                        } else {
-                                            tracing::warn!("Failed to mmap averaged tensors; keeping previous aggregation");
-                                        }
-
-                                        if let Err(e) = fs::remove_dir_all(work_dir.join("avg")).await {
-                                            tracing::warn!(error = ?e, "Failed to cleanup avg directory");
-                                        }
-
-                                        if updated_file {
+                    let result_tensor_file_name = match current_result_tensor_file_name {
+                        None => {
+                            // Create a copy of the initial parameters to avoid overwriting mmaped files.
+                            // In edge-cases we might receive updates while still sending out results.
+                            // If the name of the result file would be the same as one of incoming updates,
+                            // we would overwrite an mmapped file.
+                            let temporary_tensor_file_name = work_dir.join("avg-temporary");
+                            fs::copy(file_name.as_path(), temporary_tensor_file_name.as_path()).await.unwrap();
+                            temporary_tensor_file_name
+                        },
+                        Some(result_tensor_file_name) => {
+                            tokio::task::spawn_blocking({
+                                let device = device.clone();
+                                let work_dir = work_dir.clone();
+                                move || {
+                                // Average the new tensor with an existing one
+                                match unsafe { MmapedSafetensors::new(file_name) } {
+                                    Ok(new_tensor) => {
+                                        if let Err(e) = std::fs::create_dir_all(&work_dir.join("avg").join(name.as_str())) {
+                                            tracing::warn!(error = ?e, "Failed to create avg directory; keeping previous aggregation");
                                             result_tensor_file_name.clone()
                                         } else {
-                                            // Not updated; return previous aggregation file name
+                                            let paths = {
+                                                let result_tensor = unsafe { MmapedSafetensors::new(result_tensor_file_name.as_path()) }.unwrap();
+
+                                                let mut paths = Vec::new();
+                                                for (tensor_name, tensor) in result_tensor.tensors() {
+                                                    // Load tensors; skip this tensor on failure
+                                                    let current_tensor = match tensor.load(&device) {
+                                                        Ok(t) => t,
+                                                        Err(e) => {
+                                                            tracing::warn!(error = ?e, tensor = %tensor_name, "Failed to load current tensor; skipping");
+                                                            continue;
+                                                        }
+                                                    };
+                                                    let other_tensor = match new_tensor.load(&tensor_name, &device) {
+                                                        Ok(t) => t,
+                                                        Err(e) => {
+                                                            tracing::warn!(error = ?e, tensor = %tensor_name, "Failed to load new tensor; skipping");
+                                                            continue;
+                                                        }
+                                                    };
+
+                                                    let avg_tensor = match (current_tensor + other_tensor).and_then(|t| t / 2.) {
+                                                        Ok(t) => t,
+                                                        Err(e) => {
+                                                            tracing::warn!(error = ?e, tensor = %tensor_name, "Failed to average tensors; skipping");
+                                                            continue;
+                                                        }
+                                                    };
+
+                                                    let avg_tensor_file_name = work_dir.join("avg").join(name.as_str()).join(&tensor_name);
+                                                    if let Err(e) = candle_core::safetensors::save(
+                                                        &HashMap::from([(tensor_name.clone(), avg_tensor)]),
+                                                        avg_tensor_file_name.as_path(),
+                                                    ) {
+                                                        tracing::warn!(error = ?e, tensor = %tensor_name, "Failed to save averaged tensor; skipping");
+                                                        continue;
+                                                    }
+                                                    paths.push(avg_tensor_file_name);
+                                                }
+
+                                                paths
+                                            };
+
+                                            if paths.is_empty() {
+                                                tracing::warn!("No tensors averaged; keeping previous aggregation");
+                                            } else if let Ok(all_tensors) = unsafe { MmapedSafetensors::multi(&paths) } {
+                                                // If at this point we're still mmapping 'result_tensor_file_name', we could have undefined behaviour!
+                                                // Make sure that we don't!
+                                                match serialize_to_file(
+                                                    all_tensors.tensors(),
+                                                    &None,
+                                                    result_tensor_file_name.as_path(),
+                                                ) {
+                                                    Ok(_) => {
+                                                        tracing::debug!("Updated averaged tensors");
+                                                    }
+                                                    Err(e) => {
+                                                        tracing::warn!(error = ?e, "Failed to serialize averaged tensors; keeping previous aggregation");
+                                                    }
+                                                }
+                                            } else {
+                                                tracing::warn!("Failed to mmap averaged tensors; keeping previous aggregation");
+                                            }
+
+                                            if let Err(e) = std::fs::remove_dir_all(work_dir.join("avg").join(name.as_str())) {
+                                                tracing::warn!(error = ?e, "Failed to cleanup avg directory");
+                                            }
+
                                             result_tensor_file_name.clone()
                                         }
                                     }
-                                }
-                                Err(e) => {
-                                    tracing::warn!(error = ?e, "Failed to mmap new tensor; keeping previous aggregation");
+                                    Err(e) => {
+                                        tracing::warn!(error = ?e, "Failed to mmap new tensor; keeping previous aggregation");
 
-                                    // Keep previous aggregation file
-                                    result_tensor_file_name.clone()
+                                        // Keep previous aggregation file
+                                        result_tensor_file_name.clone()
+                                    }
                                 }
-                            }
+                            }}).await.unwrap()
                         }
                     };
 
-                    // Refresh mmap of the current aggregation; keep previous on failure.
-                    match unsafe { MmapedSafetensors::new(result_tensor_file_name.as_path()) } {
-                        Ok(mm) => {
-                            result_tensor = Some((result_tensor_file_name.clone(), mm));
-                        }
-                        Err(e) => {
-                            tracing::warn!(error = ?e, path = ?result_tensor_file_name, "Failed to mmap aggregation file; keeping previous state");
-                        }
-                    }
-
+                    current_result_tensor_file_name = Some(result_tensor_file_name);
                     current_worker += 1;
 
                     // We assume that each worker sends their parameters, then waits to receive updates.
@@ -235,49 +265,67 @@ impl JobExecutor for ParameterServerExecutor {
                     if current_worker == num_workers {
                         tracing::info!("Sending parameter server update");
 
-                        match connector.send(results.clone()).await {
-                            Ok(mut writers) => {
-                                while let Some(item_res) = writers.next().await {
-                                    match item_res {
-                                        Ok(item) => {
-                                            if let Some((ref result_file_name, _)) = result_tensor {
-                                                match fs::File::open(result_file_name.as_path()).await {
-                                                    Ok(mut file) => {
-                                                        if let Err(e) = tokio::io::copy(
-                                                            &mut file,
-                                                            &mut item.writer.compat_write(),
-                                                        )
-                                                        .await
-                                                        {
-                                                            tracing::warn!(error = ?e, "Failed to write update to peer");
+                        if let Some(ref result_file_name) = current_result_tensor_file_name {
+                            // Rename the temporary result to ensure that it's available for updates again.
+                            // In edge-cases we might receive updates while still sending out results.
+                            // This will overwrite 'result_file_name'.
+                            let final_tensor_file_name = work_dir.join("avg-final");
+                            fs::rename(result_file_name.as_path(), final_tensor_file_name.as_path()).await.unwrap();
+
+                            // These need to be reset before sending out the result!
+                            current_result_tensor_file_name = None;
+                            current_worker = 0;
+
+                            match connector.send(results.clone()).await {
+                                Ok(mut writers) => {
+                                    while let Some(item_res) = writers.next().await {
+                                        match item_res {
+                                            Ok(item) => {
+                                                    match fs::File::open(final_tensor_file_name.as_path()).await {
+                                                        Ok(mut file) => {
+                                                            let mut writer = item.writer.compat_write();
+
+                                                            if let Err(e) = io::copy(
+                                                                &mut file,
+                                                                &mut writer,
+                                                            )
+                                                            .await
+                                                            {
+                                                                tracing::warn!(error = ?e, "Failed to write update to peer");
+                                                            }
+
+                                                            writer.shutdown().await.expect("Failed to shutdown writer");
                                                         }
-                                                    }
-                                                    Err(e) => {
-                                                        tracing::warn!(error = ?e, "Failed to open result tensor file");
-                                                    }
+                                                        Err(e) => {
+                                                            tracing::warn!(error = ?e, "Failed to open result tensor file");
+                                                        }
                                                 }
                                             }
-                                        }
-                                        Err(e) => {
-                                            tracing::warn!(error = ?e, "Failed to open writer to peer");
+                                            Err(e) => {
+                                                tracing::warn!(error = ?e, "Failed to open writer to peer");
+                                            }
                                         }
                                     }
                                 }
+                                Err(e) => {
+                                    // Do not panic if peers are not reachable (e.g., no addresses). We'll retry on next batch.
+                                    tracing::warn!(error = ?e, "Failed to send to peers; will retry on next aggregation");
+                                }
                             }
-                            Err(e) => {
-                                // Do not panic if peers are not reachable (e.g., no addresses). We'll retry on next batch.
-                                tracing::warn!(error = ?e, "Failed to send to peers; will retry on next aggregation");
-                            }
-                        }
 
-                        current_worker = 0;
+                            fs::remove_file(final_tensor_file_name.as_path()).await.unwrap();
+                        }
                     }
                 }
             };
 
             tokio::select! {
-                _ = cancel.cancelled() => {}
-                _ = fut => {},
+                _ = cancel.cancelled() => {
+                    tracing::debug!("stopping parameter server");
+                }
+                _ = fut => {
+                    tracing::warn!("parameter server stopped");
+                },
             }
 
             // Clean up.
