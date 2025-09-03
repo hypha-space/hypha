@@ -1,9 +1,12 @@
 import argparse
 import json
 import os
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from contextlib import AbstractContextManager, contextmanager
+from types import TracebackType
 from typing import Any, cast
 
+import httpx
 import torch
 import torch.utils.data
 from accelerate import Accelerator
@@ -52,6 +55,50 @@ def merge_models(a: torch.nn.Module, weight_path: str, alpha: float) -> torch.nn
             state_dict[name] += alpha * (b.get_tensor(name) - state_dict[name])
     a.load_state_dict(state_dict)
     return a
+
+
+class Session(AbstractContextManager["Session", None]):
+    def __init__(self, socket_path: str) -> None:
+        transport = httpx.HTTPTransport(uds=socket_path)
+        self._client = httpx.Client(transport=transport)
+
+    def __enter__(self) -> "Session":
+        return self
+
+    def __exit__(
+        self, exc_type: type[BaseException] | None, exc_value: BaseException | None, traceback: TracebackType | None
+    ) -> None:
+        self._client.close()
+
+    @contextmanager
+    def receive(self, req) -> Iterator["EventSource"]:
+        with self._client.stream(
+            "POST",
+            "http://hypha/resources/receive",
+            json=req,
+            headers={"Accept": "text/event-stream"},
+            timeout=None,  # block indefinitely for SSE updates
+        ) as resp:
+            yield EventSource(resp)
+
+
+class EventSource:
+    def __init__(self, response: httpx.Response) -> None:
+        self._response = response
+
+    @property
+    def response(self) -> httpx.Response:
+        return self._response
+
+    def __iter__(self) -> Iterator[Any]:
+        for line in self._response.iter_lines():
+            fieldname, _, value = line.rstrip("\n").partition(":")
+
+            if fieldname == "data":
+                result = json.loads(value)
+
+                yield result
+            # Ignore other SSE fields (e.g., event:, id:, retry:)
 
 
 # TODO: This needs to be generic and support user-provided datasets.
@@ -190,8 +237,7 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:
                     # Mark that before the next training epoch we must wait for an update
                     await_update = True
 
-            print(f"Finished training of {job_spec["executor"]["epochs"]} epochs", flush=True)
-
+            print(f"Finished training of {job_spec['executor']['epochs']} epochs", flush=True)
 
 
 if __name__ == "__main__":
