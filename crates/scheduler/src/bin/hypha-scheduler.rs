@@ -7,7 +7,8 @@ use figment::providers::{Env, Format, Serialized, Toml};
 use futures_util::future::join_all;
 use hypha_config::{ConfigWithMetadata, ConfigWithMetadataTLSExt, builder, to_toml};
 use hypha_messages::{
-    Executor, Fetch, JobSpec, Receive, Requirement, Resources, SelectionStrategy, Send, WorkerSpec,
+    DiLoCoConfig, Executor, Fetch, JobSpec, Optimizer, Receive, Requirement, Resources,
+    SelectionStrategy, Send, WorkerSpec,
 };
 use hypha_network::{
     dial::DialInterface, kad::KademliaInterface, listen::ListenInterface, swarm::SwarmDriver,
@@ -17,7 +18,7 @@ use hypha_scheduler::{
     config::Config,
     network::Network,
 };
-use libp2p::{Multiaddr, multiaddr::Protocol};
+use libp2p::{Multiaddr, PeerId, multiaddr::Protocol};
 use miette::{IntoDiagnostic, Result};
 use serde::Serialize;
 use tokio::time::sleep;
@@ -155,7 +156,7 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
 
     // Request multiple workers to increase chances of two distinct peers
     let mut allocated_workers = Vec::new();
-    for i in 0..2 {
+    for i in 0..4 {
         tracing::info!(worker_index = i, "Requesting worker allocation");
         match allocator.request(worker_spec.clone(), 100.0, None).await {
             Ok(worker) => {
@@ -185,7 +186,7 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
 
     // Request multiple workers to increase chances of two distinct peers
     let mut allocated_parameter_servers = Vec::new();
-    for i in 0..1 {
+    for i in 0..2 {
         tracing::info!(worker_index = i, "Requesting worker allocation");
         match allocator
             .request(parameter_server_spec.clone(), 100.0, None)
@@ -213,22 +214,36 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
             .collect::<Vec<_>>();
         let parameter_server = &mut allocated_parameter_servers[0];
 
-        for worker in &mut allocated_workers {
-            worker
-                .dispatch(JobSpec {
-                    executor: Executor::DiLoCoTransformer {
-                        model: Fetch::uri("EleutherAI/gpt-neo-125m"), // Fetch::uri("https://example.com/"),
-                        data: Fetch::uri("datablations/c4-filter-small"),
-                        updates: Receive::peers(vec![parameter_server.peer_id()]),
-                        results: Send::peers(
-                            vec![parameter_server.peer_id()],
-                            SelectionStrategy::One,
-                        ),
-                    },
-                })
-                .await
-                .into_diagnostic()?;
-        }
+        let model_files = vec!["config.json".to_string(), "model.safetensors".to_string()];
+
+        allocated_workers[0]
+            .dispatch(JobSpec {
+                executor: get_executor_with_dataset(
+                    model_files.clone(),
+                    vec![
+                        "train_0_49.tar.gz".to_string(),
+                        "train_50_99.tar.gz".to_string(),
+                    ],
+                    parameter_server.peer_id().clone(),
+                ),
+            })
+            .await
+            .into_diagnostic()?;
+
+        allocated_workers[1]
+            .dispatch(JobSpec {
+                executor: get_executor_with_dataset(
+                    model_files.clone(),
+                    vec![
+                        "train_100_149.tar.gz".to_string(),
+                        "train_150_199.tar.gz".to_string(),
+                    ],
+                    parameter_server.peer_id().clone(),
+                ),
+            })
+            .await
+            .into_diagnostic()?;
+
         let _p_rx = parameter_server
             .dispatch(JobSpec {
                 executor: Executor::ParameterServer {
@@ -244,6 +259,50 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
 
     let _ = tokio::signal::ctrl_c().await;
     Ok(())
+}
+
+fn get_executor_with_dataset(
+    model_files: Vec<String>,
+    data_files: Vec<String>,
+    parameter_server: PeerId,
+) -> Executor {
+    let token_string = "...".to_string();
+    return Executor::DiLoCoTransformer {
+        model: Fetch::huggingface(
+            "l45k/Resnet50",
+            None,
+            model_files,
+            Some(token_string.clone()),
+            hypha_messages::HFRepoType::Model,
+        ),
+        data: Fetch::huggingface(
+            "l45k/imagnet",
+            None,
+            data_files,
+            Some(token_string.clone()),
+            hypha_messages::HFRepoType::Dataset,
+        ),
+        updates: Receive::peers(vec![parameter_server]),
+        results: Send::peers(vec![parameter_server], SelectionStrategy::One),
+        config: DiLoCoConfig::VisionClassification {
+            optimizer: Optimizer::Adam {
+                learning_rate: 1e-3,
+                betas: None,
+                epsilon: None,
+            },
+            epochs: 30,
+            batch_size: 126,
+            checkpointing: 1,
+            scheduler: None,
+            preprocessor: Some(Fetch::huggingface(
+                "l45k/Resnet50",
+                None,
+                vec!["preprocessor_config.json".to_string()],
+                Some(token_string.clone()),
+                hypha_messages::HFRepoType::Model,
+            )),
+        },
+    };
 }
 
 #[tokio::main]

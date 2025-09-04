@@ -1,6 +1,7 @@
 import argparse
 import json
 import time
+
 import httpx
 
 
@@ -12,7 +13,7 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:
     assert job_spec["executor"]["type"] == "parameter-server"
 
     print(json.dumps(job_spec))
-    
+
     subscribe_req = {"receive": job_spec["executor"]["updates"], "out_dir": work_dir}
     timeout = httpx.Timeout(None, connect=10.0)
     while True:

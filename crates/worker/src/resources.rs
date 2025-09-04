@@ -1,5 +1,10 @@
 use std::{
-    cmp::Ordering, collections::{HashMap, HashSet}, future::Future, iter::Sum, ops::{Add, AddAssign, Sub, SubAssign}, sync::Arc
+    cmp::Ordering,
+    collections::{HashMap, HashSet},
+    future::Future,
+    iter::Sum,
+    ops::{Add, AddAssign, Sub, SubAssign},
+    sync::Arc,
 };
 
 use hypha_messages::Requirement;
@@ -151,9 +156,7 @@ pub fn extract_compute_resource_requirements(requirements: &Vec<Requirement>) ->
             Requirement::Resource(hypha_messages::Resources::Storage { min }) => {
                 acc + ComputeResources::new().with_storage(*min)
             }
-            Requirement::Driver { .. } => {
-                acc
-            }
+            Requirement::Driver { .. } => acc,
         })
 }
 
@@ -162,13 +165,10 @@ pub fn extract_other_resource_requirements(requirements: &Vec<Requirement>) -> V
     requirements
         .iter()
         .filter_map(|x| match x {
-            Requirement::Resource(..) => {
-                None
-            },
-            Requirement::Driver { kind } => {
-                Some(kind.clone())
-            }
-        }).collect()
+            Requirement::Resource(..) => None,
+            Requirement::Driver { kind } => Some(kind.clone()),
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Error)]
@@ -224,19 +224,30 @@ impl ResourceManager for StaticResourceManager {
         let state = self.state.read().await;
         state.compute_resources - state.reservations.values().sum()
     }
-    
+
     async fn other_resources(&self) -> Vec<String> {
         let state = self.state.read().await;
         state.other_resources.clone()
     }
 
-    async fn reserve(&self, compute_resources: ComputeResources, other_resources: Vec<String>) -> Result<Uuid, ResourceManagerError> {
+    async fn reserve(
+        &self,
+        compute_resources: ComputeResources,
+        other_resources: Vec<String>,
+    ) -> Result<Uuid, ResourceManagerError> {
         let available = self.compute_resources().await;
         let hard_constrains = self.other_resources().await;
-        tracing::info!("Reserving resources: {:?} of {:?} and {:?} of {:?}", compute_resources, available, other_resources, hard_constrains);
-        
+        tracing::info!(
+            "Reserving resources: {:?} of {:?} and {:?} of {:?}",
+            compute_resources,
+            available,
+            other_resources,
+            hard_constrains
+        );
+
         let other_resources_set = HashSet::<&String>::from_iter(other_resources.iter());
-        let driver_miss_match = HashSet::from_iter(hard_constrains.iter()).is_disjoint(&other_resources_set) ;
+        let driver_miss_match =
+            HashSet::from_iter(hard_constrains.iter()).is_disjoint(&other_resources_set);
 
         if available >= compute_resources && !driver_miss_match {
             let mut state = self.state.write().await;

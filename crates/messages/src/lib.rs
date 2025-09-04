@@ -158,6 +158,12 @@ pub enum SelectionStrategy {
     One,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub enum HFRepoType {
+    Model,
+    Dataset,
+}
+
 /// Reference types for pointing to models, data, or other resources
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "type")]
@@ -179,6 +185,8 @@ pub enum Reference {
         repository: String,
         revision: Option<String>,
         filenames: Vec<String>,
+        token: Option<String>,
+        repo_type: HFRepoType,
     },
 
     #[serde(rename = "peers")]
@@ -203,11 +211,15 @@ impl Fetch {
         repository: impl Into<String>,
         revision: Option<String>,
         filenames: Vec<String>,
+        token: Option<String>,
+        repo_type: HFRepoType,
     ) -> Self {
         Self(Reference::HuggingFace {
             repository: repository.into(),
             revision,
             filenames,
+            token,
+            repo_type,
         })
     }
 
@@ -325,6 +337,34 @@ impl AsRef<Reference> for Receive {
     }
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(tag = "type")]
+pub enum DiLoCoConfig {
+    CausalLm {
+        optimizer: Optimizer,
+        epochs: i32,
+        batch_size: i32,
+        checkpointing: i32,
+        scheduler: Option<Scheduler>,
+    },
+    VisionClassification {
+        optimizer: Optimizer,
+        epochs: i32,
+        batch_size: i32,
+        checkpointing: i32,
+        scheduler: Option<Scheduler>,
+        preprocessor: Option<Fetch>,
+    },
+    Torch {
+        optimizer: Optimizer,
+        loss_fn: Loss,
+        epochs: i32,
+        batch_size: i32,
+        checkpointing: i32,
+        scheduler: Option<Scheduler>,
+    },
+}
+
 // impl TryFrom<Mode> for AllowedMode {
 //     type Error = ();
 //     fn try_from(m: Mode) -> Result<Self, ()> {
@@ -352,22 +392,50 @@ pub enum Executor {
         data: Fetch,
         updates: Receive,
         results: Send,
+        config: DiLoCoConfig,
     },
     #[serde(rename = "parameter-server")]
     ParameterServer { updates: Receive, results: Send },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(tag = "type")]
 pub enum Optimizer {
     Adam {
         learning_rate: f64,
-        beta1: f64,
-        beta2: f64,
-        epsilon: f64,
+        betas: Option<[f64; 2]>,
+        epsilon: Option<f64>,
     },
     SGD {
         learning_rate: f64,
-        momentum: f64,
+        momentum: Option<f64>,
+    },
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(tag = "type")]
+pub enum Loss {
+    L1,
+    MSE,
+    CrossEntropyLoss,
+    BCEWithLogits,
+    KLDivLoss,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(tag = "type")]
+pub enum Scheduler {
+    CosineWithWarmup {
+        warmup_steps: i32,
+        training_steps: i32,
+    },
+    LinearWithWarmup {
+        warmup_steps: i32,
+        training_steps: i32,
+    },
+    WSD {
+        warmup_steps: i32,
+        decay_steps: i32,
     },
 }
 
