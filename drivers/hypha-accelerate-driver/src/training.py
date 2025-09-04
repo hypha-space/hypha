@@ -4,46 +4,200 @@ import os
 from collections.abc import Iterable, Iterator
 from contextlib import AbstractContextManager, contextmanager
 from types import TracebackType
-from typing import Any, cast
+from typing import Any
+import tarfile
 
 import httpx
 import torch
 import torch.utils.data
 from accelerate import Accelerator
-from datasets import DatasetDict, load_dataset
+from datasets.data_files import Callable
 from safetensors import safe_open
-from safetensors.torch import save_model
+from safetensors.torch import load_file, save_model, load
 from tqdm import tqdm
-from transformers import GPT2Tokenizer, GPTNeoForCausalLM
-from transformers.tokenization_utils import PreTrainedTokenizer
+from transformers import AutoModelForCausalLM, AutoModelForImageClassification, AutoImageProcessor
+from transformers.optimization import (
+    get_constant_schedule,
+    get_cosine_schedule_with_warmup,
+    get_linear_schedule_with_warmup,
+    get_wsd_schedule,
+)
 
 from api import Session
 
 
-def get_model(model_config: str) -> tuple[torch.nn.Module, PreTrainedTokenizer]:
-    # Initializing a model (with random weights) from the EleutherAI/gpt-neo-1.3B style configuration
-    model = GPTNeoForCausalLM.from_pretrained(model_config)
-    tokenizer = GPT2Tokenizer.from_pretrained(model_config)
-    return model, tokenizer
+def prepare_files(config: dict[str, Any], session):
+    if "type" in config["model"] and config["model"]["type"] == "huggingface":
+        session.fetch(config["model"])
+    if "type" in config["data"] and config["data"]["type"] == "huggingface":
+        session.fetch(config["data"])
+    if "type" in config["config"]["preprocessor"] and config["config"]["preprocessor"]["type"] == "huggingface":
+        session.fetch(config["config"]["preprocessor"])
 
 
-def get_optimizer(
-    optimizer_name: str, learning_rate: float, parameters: Iterable[torch.Tensor]
-) -> torch.optim.Optimizer:
-    if optimizer_name == "AdamW":
-        return torch.optim.AdamW(parameters, learning_rate)
+def get_model(model_config: str, model_type: str) -> torch.nn.Module:
+    # Initializing a model from a Hugging Face configuration
+    if model_type == "CausalLm":
+        return AutoModelForCausalLM.from_pretrained(model_config)
+    if model_type == "VisionClassification":
+        return AutoModelForImageClassification.from_pretrained(model_config)
+    # if model_type == "Torch":
+    # ...
+    raise RuntimeError(f"Model type {model_type} not supported.")
+    
+    
+def get_preprocessor(preprocessor_file: str, model_type: str):
+    if model_type == "VisionClassification":
+        return AutoImageProcessor.from_pretrained(preprocessor_file)
+
+
+def get_training_loop(
+    config: dict[str, Any], work_dir
+) -> Callable[
+    [
+        torch.utils.data.DataLoader,
+        torch.optim.Optimizer,
+        torch.nn.Module,
+        Accelerator,
+        torch.optim.lr_scheduler.LRScheduler,
+        tqdm,
+    ],
+    tuple[torch.optim.Optimizer, torch.nn.Module, Accelerator, torch.optim.lr_scheduler.LRScheduler],
+]:
+    if config["type"] == "CausalLm":
+        def causal_lm_loop(
+            data_loader, optimizer, model, accelerator, scheduler, progress_bar
+        ) -> tuple[torch.optim.Optimizer, torch.nn.Module, Accelerator, torch.optim.lr_scheduler.LRScheduler]:
+            for batch in data_loader:
+                optimizer.zero_grad()
+                inputs = batch[0]
+                outputs = model(input_ids=inputs, labels=inputs)
+                loss = outputs["loss"]
+                accelerator.backward(loss)
+                optimizer.step()
+                scheduler.step()
+                if accelerator.is_main_process and progress_bar:
+                        progress_bar.update(1)
+            return optimizer, model, accelerator, scheduler
+
+        return causal_lm_loop
+        
+    if config["type"] == "VisionClassification":
+        def vision_classification_loop(
+            data_loader, optimizer, model, accelerator, scheduler, progress_bar
+        ) -> tuple[torch.optim.Optimizer, torch.nn.Module, Accelerator, torch.optim.lr_scheduler.LRScheduler]:
+            for batch in data_loader:
+                optimizer.zero_grad()
+                outputs = model(**batch)
+                loss = outputs["loss"]
+                accelerator.backward(loss)
+                optimizer.step()
+                scheduler.step()
+                if accelerator.is_main_process and progress_bar:
+                        progress_bar.update(1)
+            return optimizer, model, accelerator, scheduler
+
+        return vision_classification_loop
+
+    if config["type"] == "Torch":
+        loss_fn = get_loss_fn(config["loss_fn"])
+
+        def torch_loop(
+            data_loader, optimizer, model, accelerator, scheduler, progress_bar
+        ) -> tuple[torch.optim.Optimizer, torch.nn.Module, Accelerator, torch.optim.lr_scheduler.LRScheduler]:
+            for inputs, targets in data_loader:
+                optimizer.zero_grad()
+                outputs = model(inputs, targets)
+                loss = loss_fn(outputs, targets)
+                accelerator.backward(loss)
+                optimizer.step()
+                scheduler.step()
+                if accelerator.is_main_process and progress_bar:
+                        progress_bar.update(1)
+            return optimizer, model, accelerator, scheduler
+
+        return torch_loop
+
+    raise RuntimeError(f"Model type {config} not supported for training.")
+
+
+def get_optimizer(optimizer: dict[str, Any], parameters: Iterable[torch.Tensor]) -> torch.optim.Optimizer:
+    if optimizer["type"] == "Adam":
+        lr = optimizer.get("learning_rate")
+        if optimizer.get("betas") and optimizer.get("epsilon"):
+            return torch.optim.AdamW(parameters, lr=lr, betas=optimizer.get("betas"), eps=optimizer.get("epsilon"))
+        if optimizer.get("betas"):
+            return torch.optim.AdamW(parameters, lr=lr, betas=optimizer.get("betas"))
+        if optimizer.get("epsilon"):
+            return torch.optim.AdamW(parameters, lr=lr, eps=optimizer.get("epsilon"))
+        return torch.optim.AdamW(parameters, lr=lr)
     else:
-        raise RuntimeError(f"Optimizer {optimizer_name} doesn't exist.")
+        raise RuntimeError(f"Optimizer {optimizer['type']} doesn't exist.")
 
 
-def get_data_loader(
-    data_set_name: str, batch_size: int, tokenizer: PreTrainedTokenizer
-) -> torch.utils.data.DataLoader[int]:
-    # TODO: data needs to be provided by the task
-    ds = cast(DatasetDict, load_dataset(data_set_name))["train"]
-    train_ds, test_ds = ds.train_test_split(0.2, 0.8, True, seed=40).values()
-    train_ds = CustomC4(train_ds["text"][:6], tokenizer, context_length=2048)
-    return torch.utils.data.DataLoader(train_ds, batch_size=batch_size)
+def get_data_loader(work_dir: str, data_config: dict[str, str], model_type: str, preprocessor_file, batch_size) -> torch.utils.data.DataLoader:
+    if model_type == "CausalLm":
+        ds = load_file(f"{work_dir}/{data_config['filenames'][0]}")
+        data_loader = torch.utils.data.DataLoader(
+            torch.utils.data.TensorDataset(ds["inputs"][:6]), batch_size=batch_size
+        )
+        return data_loader
+    if model_type == "VisionClassification":
+        
+        class VisionDs(torch.utils.data.IterableDataset):
+            def __init__(self, work_dir, files):
+                super(VisionDs).__init__()
+                self.files = [f"{work_dir}/{file}" for file in files]
+                self.processor = get_preprocessor(f"{work_dir}/{preprocessor_file}", model_type)
+                
+            
+            def __iter__(self):
+                for file in self.files:
+                    with tarfile.open(file, "r:gz") as tar:
+                        for f in tar.getnames():
+                            tensors = load(tar.extractfile(f).read())
+                            processed = self.processor(tensors["inputs"])
+                            for p,l in zip(iter(processed["pixel_values"]), iter(tensors["targets"])):
+                                yield({"pixel_values":p, "labels":l})
+            
+            # TODO: This shouldn't be needed. IterableDataSet don't have a length..
+            def __len__(self):
+                cnt = 0
+                for v in self.__iter__():
+                    cnt += 1
+                return cnt
+        
+        return torch.utils.data.DataLoader(VisionDs(work_dir, data_config['filenames']), batch_size=batch_size)
+
+    raise RuntimeError(f"Dataset for {model_type} not supported")
+
+
+def get_loss_fn(loss_fn: str) -> torch.nn.Module:
+    if loss_fn == "L1":
+        return torch.nn.L1()
+    if loss_fn == "MSE":
+        return torch.nn.MSE()
+    if loss_fn == "CrossEntropyLoss":
+        return torch.nn.CrossEntropyLoss()
+    if loss_fn == "BCEWithLogits":
+        return torch.nn.BCEWithLogits()
+    if loss_fn == "KLDivLoss":
+        return torch.nn.KLDivLoss()
+    raise RuntimeError(f"Loss Function {loss_fn} not supported.")
+
+
+def get_scheduler(scheduler: dict[str, Any], optmizer: torch.optim.Optimizer) -> torch.optim.lr_scheduler.LRScheduler:
+    if not scheduler or not scheduler["type"]:
+        return get_constant_schedule(optmizer)
+    if scheduler["type"] == "CosineWithWarmup":
+        return get_cosine_schedule_with_warmup(
+            optmizer, int(scheduler.get("warmup_steps")), int(scheduler.get("training_steps"))
+        )
+    if scheduler["type"] == "LinearWithWarmup":
+        return get_linear_schedule_with_warmup(optmizer, scheduler.get("warmup_steps"), scheduler.get("training_steps"))
+    if scheduler["type"] == "WSD":
+        return get_wsd_schedule(optmizer, int(scheduler.get("warmup_steps")), int(scheduler.get("decay_steps")))
+    raise RuntimeError(f"Learning rate Scheduler {scheduler['type']} not supported")
 
 
 def merge_models(a: torch.nn.Module, weight_path: str, alpha: float) -> torch.nn.Module:
@@ -81,6 +235,15 @@ class Session(AbstractContextManager["Session", None]):
         ) as resp:
             yield EventSource(resp)
 
+    def fetch(self, req) -> httpx.Response:
+        with self._client.stream(
+            "POST",
+            "http://hypha/resources/fetch",
+            json=req,
+            timeout=None,  # block indefinitely for SSE updates
+        ) as resp:
+            return resp
+
 
 class EventSource:
     def __init__(self, response: httpx.Response) -> None:
@@ -101,30 +264,6 @@ class EventSource:
             # Ignore other SSE fields (e.g., event:, id:, retry:)
 
 
-# TODO: This needs to be generic and support user-provided datasets.
-class CustomC4(torch.utils.data.Dataset[int]):
-    def __init__(self, data: Any, tokenizer: PreTrainedTokenizer, context_length: int) -> None:
-        tokenizer.pad_token = tokenizer.eos_token
-        self.tokenizer = tokenizer
-        self.tokenized_data = self._tokenize(data, context_length)
-
-    def _tokenize(self, data: Any, context_length: int) -> list[int]:
-        tokenized_inputs = self.tokenizer(
-            data,
-            return_tensors="pt",
-            max_length=context_length,
-            truncation=True,
-            padding="max_length",
-        )
-        return cast(list[int], tokenized_inputs["input_ids"])
-
-    def __len__(self) -> int:
-        return len(self.tokenized_data)
-
-    def __getitem__(self, idx: int) -> int:
-        return self.tokenized_data[idx]
-
-
 def main(socket_path: str, work_dir: str, job_json: str) -> None:
     # Background receiver context that fills a queue with update pointers
     with Session(socket_path) as session:
@@ -133,56 +272,47 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:
         # ensure that type is `parameter-server`
         assert job_spec["executor"]["type"] == "diloco-transformer"
 
+        # simplify config retrival
+        job_spec = job_spec["executor"]
         print(json.dumps(job_spec))
-        job_spec["executor"]["optimizer"] = "AdamW"
-        job_spec["executor"]["learning_rate"] = 1e-4
-        job_spec["executor"]["epochs"] = 3
-        job_spec["executor"]["batch_size"] = 1
-        job_spec["executor"]["dataset"] = "datablations/c4-filter-small"
-        job_spec["executor"]["checkpointing"] = 2
 
-        # Training loop
-        print(os.listdir(work_dir))
+        # Pre-create subscription for background receiver
+        subscribe_req = {"receive": job_spec["updates"], "out_dir": "incoming"}
+
         print("workdir:", work_dir)
         accelerator = Accelerator(project_dir=work_dir)
         device = accelerator.device
-        print("Device", device)
 
-        model, tokenizer = get_model(job_spec["executor"]["model"]["value"])
+        prepare_files(job_spec, session)
+        print(os.listdir(f"{work_dir}/artifacts"))
+        model = get_model(f"{work_dir}/artifacts", job_spec["config"]["type"])
         optimizer = get_optimizer(
-            job_spec["executor"]["optimizer"],
-            job_spec["executor"]["learning_rate"],
+            job_spec["config"]["optimizer"],
             model.parameters(),
         )
 
-        # Simple warmup + cooldown schedule
-        milestone = int(job_spec["executor"]["epochs"] / 3)
-        scheduler_warmup = torch.optim.lr_scheduler.LinearLR(
-            optimizer, job_spec["executor"]["learning_rate"], 1e-3, milestone
-        )
-        scheduler_cool_down = torch.optim.lr_scheduler.LinearLR(
-            optimizer,
-            1e-3,
-            job_spec["executor"]["learning_rate"],
-            job_spec["executor"]["epochs"] - milestone,
-        )
-        scheduler = torch.optim.lr_scheduler.SequentialLR(
-            optimizer,
-            schedulers=[scheduler_warmup, scheduler_cool_down],
-            milestones=[milestone],
-        )
+        scheduler = get_scheduler(job_spec["config"]["scheduler"], optimizer)
+
+        # response = session.fetch(job_spec["data"])
+        # print(response)
+        # print(os.listdir(f"{work_dir}/artifacts"))
         data_loader = get_data_loader(
-            job_spec["executor"]["data"]["value"], job_spec["executor"]["batch_size"], tokenizer
+            f"{work_dir}/artifacts",
+            job_spec["data"],
+            job_spec["config"]["type"],
+            job_spec["config"]["preprocessor"]["filenames"][0],
+            job_spec["config"]["batch_size"]
         )
 
         model, optimizer, training_dataloader, scheduler = accelerator.prepare(model, optimizer, data_loader, scheduler)
+        run_epoch = get_training_loop(job_spec["config"], f"{work_dir}/artifacts")
 
         # Start receiver immediately, but do not consume until we've sent once
         with session.receive(job_spec["executor"]["updates"], "incoming") as receiver:
             updates_iter = iter(receiver)
             await_update = False
 
-            for epoch in range(job_spec["executor"]["epochs"]):
+            for epoch in range(job_spec["config"]["epochs"]):
                 progress_bar = tqdm(
                     range(len(data_loader)),
                     disable=not accelerator.is_main_process,
@@ -212,33 +342,30 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:
                     finally:
                         await_update = False
 
-                for batch in training_dataloader:
-                    optimizer.zero_grad()
+                optimizer, model, accelerator, scheduler = run_epoch(
+                    training_dataloader, optimizer, model, accelerator, scheduler, progress_bar
+                )
 
-                    # This is specific for training transformer models
-                    # TODO: allow for other models
-                    inputs = batch
-                    outputs = model(input_ids=inputs, labels=inputs)
-                    loss = outputs["loss"]
-                    accelerator.backward(loss)
-                    optimizer.step()
-                    scheduler.step()
-                    if accelerator.is_main_process:
-                        progress_bar.update(1)
-
-                if accelerator.is_main_process and epoch % job_spec["executor"]["checkpointing"] == 0:
+                if accelerator.is_main_process and epoch % job_spec["config"]["checkpointing"] == 0:
                     # For testing purposes set to global!
                     file_name = f"{epoch}_global_weights.pt"
                     result_path = os.path.join(work_dir, file_name)
                     # Save unwrapped model to avoid accelerator wrappers interfering
                     save_model(accelerator.unwrap_model(model), result_path)
-                    session.send(job_spec["executor"]["results"], file_name)
+                    try:
+                        transport = httpx.HTTPTransport(uds=socket_path)
+
+                        with httpx.Client(transport=transport) as client:
+                            req = {"send": job_spec["results"], "path": file_name}
+                            client.post("http://hypha/resources/send", json=req).raise_for_status()
+
+                    except Exception as e:
+                        print(f"send error on {result_path}: {e}")
 
                     # Mark that before the next training epoch we must wait for an update
                     await_update = True
 
             print(f"Finished training of {job_spec['executor']['epochs']} epochs", flush=True)
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

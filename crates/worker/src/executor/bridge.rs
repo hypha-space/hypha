@@ -193,7 +193,10 @@ async fn fetch_resource(
     let mut items = state.connector.fetch(resource).await?;
     let mut idx: usize = 0;
     while let Some(item) = items.next().await.transpose().map_err(Error::Io)? {
+        tracing::debug!("Items recieved {:?}", idx);
         let (file_name, reader) = derive_name_and_reader(item, idx);
+        tracing::debug!("File recieved {:?}", file_name.clone());
+
         let rel = format!("{}/{}", dir_rel, file_name);
         let abs = safe_join(&state.work_dir, &rel)?;
         if let Some(parent) = abs.parent() {
