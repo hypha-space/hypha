@@ -83,7 +83,9 @@ impl JobExecutor for ParameterServerExecutor {
                 // sequential to stay within memory constraints and preserve existing logic.
                 let incoming = match connector.receive(updates).await {
                     Ok(s) => s,
-                    Err(_) => return,
+                    Err(e) => {
+                        tracing::info!("{:?}", e);
+                        return},
                 };
 
                 // Channel to report finished file paths from parallel receivers to the sequenced processor.
@@ -98,7 +100,8 @@ impl JobExecutor for ParameterServerExecutor {
                         _ = cancel.cancelled() => {
                             tracing::debug!("stopping parameter accept handler");
                         }
-                        _ = incoming.for_each_concurrent(None, |item| {
+                        _ = incoming.for_each_concurrent(Some(10), |item| {
+                            tracing::info!("Incoming File");
                             let work_dir = work_dir.clone();
                             let tx = tx.clone();
                             async move {
@@ -196,13 +199,31 @@ impl JobExecutor for ParameterServerExecutor {
                                                         }
                                                     };
 
-                                                    let avg_tensor = match (current_tensor + other_tensor).and_then(|t| t / 2.) {
-                                                        Ok(t) => t,
-                                                        Err(e) => {
-                                                            tracing::warn!(error = ?e, tensor = %tensor_name, "Failed to average tensors; skipping");
-                                                            continue;
-                                                        }
-                                                    };
+                                                    // match current_tensor.dtype() {
+                                                    //     candle_core::DType::U8 => current_tensor.add,
+                                                    //     candle_core::DType::U32 => ,
+                                                    //     candle_core::DType::I64 => ,
+                                                    //     candle_core::DType::BF16 => ,
+                                                    //     candle_core::DType::F16 => ,
+                                                    //     candle_core::DType::F32 => ,
+                                                    //     candle_core::DType::F64 => ,
+                                                    // }
+                                                    let avg_tensor = match tensor_name.contains("num_batches_tracked") {
+                                                        true => match current_tensor.add(&other_tensor) {
+                                                            Ok(t) => t,
+                                                            Err(e) => {
+                                                                tracing::warn!(error = ?e, tensor = %tensor_name, "Failed to add tensors; skipping");
+                                                                continue;
+                                                            }
+                                                        },
+                                                        false => match current_tensor.add(&other_tensor).and_then(|t| t / 2.) {
+                                                            Ok(t) => t,
+                                                            Err(e) => {
+                                                                tracing::warn!(error = ?e, tensor = %tensor_name, "Failed to average tensors; skipping");
+                                                                continue;
+                                                            }
+                                                        },
+                                                    } ;
 
                                                     let avg_tensor_file_name = work_dir.join("avg").join(name.as_str()).join(&tensor_name);
                                                     if let Err(e) = candle_core::safetensors::save(

@@ -182,7 +182,7 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
 
     // Request multiple workers to increase chances of two distinct peers
     let mut allocated_workers = Vec::new();
-    for i in 0..4 {
+    for i in 0..3 {
         tracing::info!(worker_index = i, "Requesting worker allocation");
         match allocator.request(worker_spec.clone(), 100.0, None).await {
             Ok(worker) => {
@@ -212,7 +212,7 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
 
     // Request multiple workers to increase chances of two distinct peers
     let mut allocated_parameter_servers = Vec::new();
-    for i in 0..2 {
+    for i in 0..1 {
         tracing::info!(worker_index = i, "Requesting worker allocation");
         match allocator
             .request(parameter_server_spec.clone(), 100.0, None)
@@ -248,7 +248,7 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
                     model_files.clone(),
                     vec![
                         "train_0_49.tar.gz".to_string(),
-                        "train_50_99.tar.gz".to_string(),
+                        // "train_50_99.tar.gz".to_string(),
                     ],
                     parameter_server.peer_id().clone(),
                 ),
@@ -262,7 +262,7 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
                     model_files.clone(),
                     vec![
                         "train_100_149.tar.gz".to_string(),
-                        "train_150_199.tar.gz".to_string(),
+                        // "train_150_199.tar.gz".to_string(),
                     ],
                     parameter_server.peer_id().clone(),
                 ),
@@ -327,6 +327,7 @@ fn get_executor_with_dataset(
                 Some(token_string.clone()),
                 hypha_messages::HFRepoType::Model,
             )),
+            batches_per_local_epoch: 1,
         },
     };
 }

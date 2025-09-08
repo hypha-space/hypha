@@ -354,6 +354,7 @@ pub enum DiLoCoConfig {
         checkpointing: i32,
         scheduler: Option<Scheduler>,
         preprocessor: Option<Fetch>,
+        batches_per_local_epoch: i32,
     },
     Torch {
         optimizer: Optimizer,

@@ -52,10 +52,9 @@ def get_preprocessor(preprocessor_file: str, model_type: str):
 
 
 def get_training_loop(
-    config: dict[str, Any], work_dir
+    config: dict[str, Any], work_dir, data_iter,
 ) -> Callable[
     [
-        torch.utils.data.DataLoader,
         torch.optim.Optimizer,
         torch.nn.Module,
         Accelerator,
@@ -66,9 +65,9 @@ def get_training_loop(
 ]:
     if config["type"] == "CausalLm":
         def causal_lm_loop(
-            data_loader, optimizer, model, accelerator, scheduler, progress_bar
+            optimizer, model, accelerator, scheduler, progress_bar
         ) -> tuple[torch.optim.Optimizer, torch.nn.Module, Accelerator, torch.optim.lr_scheduler.LRScheduler]:
-            for batch in data_loader:
+            for batch in data_iter:
                 optimizer.zero_grad()
                 inputs = batch[0]
                 outputs = model(input_ids=inputs, labels=inputs)
@@ -77,16 +76,18 @@ def get_training_loop(
                 optimizer.step()
                 scheduler.step()
                 if accelerator.is_main_process and progress_bar:
-                        progress_bar.update(1)
+                    progress_bar.update(1)
             return optimizer, model, accelerator, scheduler
 
         return causal_lm_loop
         
     if config["type"] == "VisionClassification":
         def vision_classification_loop(
-            data_loader, optimizer, model, accelerator, scheduler, progress_bar
+            optimizer, model, accelerator, scheduler, progress_bar
         ) -> tuple[torch.optim.Optimizer, torch.nn.Module, Accelerator, torch.optim.lr_scheduler.LRScheduler]:
-            for batch in data_loader:
+            for _ in range(config["batches_per_local_epoch"]):
+                batch = next(data_iter)
+                print(batch["pixel_values"].shape)
                 optimizer.zero_grad()
                 outputs = model(**batch)
                 loss = outputs["loss"]
@@ -94,7 +95,7 @@ def get_training_loop(
                 optimizer.step()
                 scheduler.step()
                 if accelerator.is_main_process and progress_bar:
-                        progress_bar.update(1)
+                    progress_bar.update(1)
             return optimizer, model, accelerator, scheduler
 
         return vision_classification_loop
@@ -103,9 +104,9 @@ def get_training_loop(
         loss_fn = get_loss_fn(config["loss_fn"])
 
         def torch_loop(
-            data_loader, optimizer, model, accelerator, scheduler, progress_bar
+            optimizer, model, accelerator, scheduler, progress_bar
         ) -> tuple[torch.optim.Optimizer, torch.nn.Module, Accelerator, torch.optim.lr_scheduler.LRScheduler]:
-            for inputs, targets in data_loader:
+            for inputs, targets in data_iter:
                 optimizer.zero_grad()
                 outputs = model(inputs, targets)
                 loss = loss_fn(outputs, targets)
@@ -149,7 +150,6 @@ def get_data_loader(work_dir: str, data_config: dict[str, str], model_type: str,
                 super(VisionDs).__init__()
                 self.files = [f"{work_dir}/{file}" for file in files]
                 self.processor = get_preprocessor(f"{work_dir}/{preprocessor_file}", model_type)
-                
             
             def __iter__(self):
                 for file in self.files:
@@ -161,11 +161,11 @@ def get_data_loader(work_dir: str, data_config: dict[str, str], model_type: str,
                                 yield({"pixel_values":p, "labels":l})
             
             # TODO: This shouldn't be needed. IterableDataSet don't have a length..
-            def __len__(self):
-                cnt = 0
-                for v in self.__iter__():
-                    cnt += 1
-                return cnt
+            # def __len__(self):
+            #     cnt = 0
+            #     for v in self.__iter__():
+            #         cnt += 1
+            #     return cnt
         
         return torch.utils.data.DataLoader(VisionDs(work_dir, data_config['filenames']), batch_size=batch_size)
 
@@ -206,9 +206,18 @@ def merge_models(a: torch.nn.Module, weight_path: str, alpha: float) -> torch.nn
     state_dict = a.state_dict()
     with safe_open(weight_path, framework="pt", device="cpu") as b:  # type: ignore
         for name in b.keys():  # noqa: SIM118
-            state_dict[name] += alpha * (b.get_tensor(name) - state_dict[name])
+            state_dict[name] += (alpha * (b.get_tensor(name) - state_dict[name])).to(state_dict[name].dtype)          
     a.load_state_dict(state_dict)
     return a
+    
+    
+def dataset_wrapper(dataset):
+    def wrap():
+        while True:
+            for batch in dataset:
+                yield(batch)
+    
+    return iter(wrap())
 
 
 class Session(AbstractContextManager["Session", None]):
@@ -281,7 +290,6 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:
 
         print("workdir:", work_dir)
         accelerator = Accelerator(project_dir=work_dir)
-        device = accelerator.device
 
         prepare_files(job_spec, session)
         print(os.listdir(f"{work_dir}/artifacts"))
@@ -293,8 +301,6 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:
 
         scheduler = get_scheduler(job_spec["config"]["scheduler"], optimizer)
 
-        # response = session.fetch(job_spec["data"])
-        # print(response)
         # print(os.listdir(f"{work_dir}/artifacts"))
         data_loader = get_data_loader(
             f"{work_dir}/artifacts",
@@ -305,8 +311,9 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:
         )
 
         model, optimizer, training_dataloader, scheduler = accelerator.prepare(model, optimizer, data_loader, scheduler)
-        run_epoch = get_training_loop(job_spec["config"], f"{work_dir}/artifacts")
-
+        training_data_iter = dataset_wrapper(training_dataloader)
+        run_epoch = get_training_loop(job_spec["config"], f"{work_dir}/artifacts", training_data_iter)
+        
         # Start receiver immediately, but do not consume until we've sent once
         with session.receive(job_spec["executor"]["updates"], "incoming") as receiver:
             updates_iter = iter(receiver)
@@ -314,7 +321,7 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:
 
             for epoch in range(job_spec["config"]["epochs"]):
                 progress_bar = tqdm(
-                    range(len(data_loader)),
+                    range(job_spec["config"]["batches_per_local_epoch"]),
                     disable=not accelerator.is_main_process,
                 )
 
@@ -332,8 +339,8 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:
                                 if isinstance(rel_path, str):
                                     path = os.path.join(work_dir, rel_path)
                                     base_model = accelerator.unwrap_model(model)
-                                    merge_models(base_model, path, 0.9)
-                                    base_model.to(device)
+                                    base_model = merge_models(base_model, path, 0.9)
+                                    model = accelerator.prepare(base_model)
                                     print("Weights updated from", rel_path, flush=True)
                             except Exception as e:
                                 print(f"pointer handling error: {e}")
@@ -343,7 +350,7 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:
                         await_update = False
 
                 optimizer, model, accelerator, scheduler = run_epoch(
-                    training_dataloader, optimizer, model, accelerator, scheduler, progress_bar
+                    optimizer, model, accelerator, scheduler, progress_bar
                 )
 
                 if accelerator.is_main_process and epoch % job_spec["config"]["checkpointing"] == 0:
@@ -365,7 +372,7 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:
                     # Mark that before the next training epoch we must wait for an update
                     await_update = True
 
-            print(f"Finished training of {job_spec['executor']['epochs']} epochs", flush=True)
+            print(f"Finished training of {job_spec['config']['epochs']} epochs", flush=True)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

@@ -104,10 +104,10 @@ impl Worker {
 
                             let duration = timeout
                                 .duration_since(SystemTime::now())
-                                .unwrap_or(Duration::from_millis(500))
-                                .min(Duration::from_millis(500));
+                                .unwrap_or(Duration::from_millis(10000))
+                                .min(Duration::from_millis(10000));
 
-                            let safe_duration = duration / 4;
+                            let safe_duration = duration * 3 / 4;
 
                             tracing::info!(
                                 duration = duration.as_millis(),
