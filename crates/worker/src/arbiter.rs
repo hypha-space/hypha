@@ -1,4 +1,4 @@
-use futures::stream::StreamExt;
+use futures_util::StreamExt;
 use hypha_messages::{self, Request, Response, dispatch_job, renew_lease};
 use hypha_network::{
     gossipsub::{self, GossipsubInterface},

@@ -5,7 +5,7 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use futures::{Stream, StreamExt};
+use futures_util::{Stream, StreamExt};
 use hypha_messages::{
     Request, Response, WorkerSpec, request_worker,
     worker_offer::{self, Request as WorkerOfferRequest},
