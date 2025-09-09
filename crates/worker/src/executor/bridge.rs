@@ -181,16 +181,16 @@ struct FileResponse {
 
 async fn fetch_resource(
     State(state): State<Arc<SockState>>,
-    Json(fetch): Json<Fetch>,
+    Json(resource): Json<Fetch>,
 ) -> Result<Json<Vec<FileResponse>>, Error> {
-    validate_fetch(&fetch)?;
+    validate_fetch(&resource)?;
 
     let dir_rel = "artifacts".to_string();
     let dir_abs = safe_join(&state.work_dir, &dir_rel)?;
     fs::create_dir_all(&dir_abs).await?;
 
     let mut out: Vec<FileResponse> = Vec::new();
-    let mut items = state.connector.fetch(fetch).await?;
+    let mut items = state.connector.fetch(resource).await?;
     let mut idx: usize = 0;
     while let Some(item) = items.next().await.transpose().map_err(Error::Io)? {
         let (file_name, reader) = derive_name_and_reader(item, idx);
@@ -215,7 +215,7 @@ async fn fetch_resource(
 
 #[derive(Debug, Deserialize)]
 struct SendRequest {
-    send: Send,
+    resource: Send,
     path: String,
 }
 
@@ -224,7 +224,7 @@ async fn send_resource(
     Json(req): Json<SendRequest>,
 ) -> Result<(), Error> {
     let abs = safe_join(&state.work_dir, &req.path)?;
-    let mut writers = state.connector.send(req.send).await?;
+    let mut writers = state.connector.send(req.resource).await?;
 
     // Copy the resource in the background to avoid blocking.
     tokio::spawn(async move {
@@ -264,8 +264,8 @@ fn safe_join(work_dir: &Path, rel: &str) -> Result<PathBuf, Error> {
 
 // TODO: We should not only validate the URI, but also check it against an allow list
 // to restrict access to _trusted_ sources.
-fn validate_fetch(fetch: &Fetch) -> Result<(), Error> {
-    match fetch.as_ref() {
+fn validate_fetch(resource: &Fetch) -> Result<(), Error> {
+    match resource.as_ref() {
         Reference::Uri { value } => {
             if !(value.starts_with("http://") || value.starts_with("https://")) {
                 return Err(Error::InvalidStatus(format!(
@@ -294,8 +294,8 @@ fn validate_fetch(fetch: &Fetch) -> Result<(), Error> {
 
 #[derive(Debug, Deserialize)]
 struct ReceiveSubscribeRequest {
-    receive: Receive,
-    out_dir: Option<String>,
+    resource: Receive,
+    path: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -309,7 +309,7 @@ async fn receive_subscribe(
     State(state): State<Arc<SockState>>,
     Json(req): Json<ReceiveSubscribeRequest>,
 ) -> Result<Sse<impl futures_util::Stream<Item = Result<Event, std::convert::Infallible>>>, Error> {
-    let dir_rel = req.out_dir.unwrap_or_else(|| "incoming".to_string());
+    let dir_rel = req.path.unwrap_or_else(|| "incoming".to_string());
     let dir_abs = safe_join(&state.work_dir, &dir_rel)?;
     fs::create_dir_all(&dir_abs).await?;
 
@@ -317,11 +317,11 @@ async fn receive_subscribe(
     let (tx, rx) = tokio::sync::mpsc::channel::<Event>(64);
     let connector = state.connector.clone();
     let work_dir = state.work_dir.clone();
-    let receive = req.receive.clone();
+    let resource = req.resource.clone();
 
     // Background task: receive loops until the client disconnects or an error occurs
     tokio::spawn(async move {
-        let mut incoming = match connector.receive(receive).await {
+        let mut incoming = match connector.receive(resource).await {
             Ok(s) => s,
             Err(_) => return,
         };
