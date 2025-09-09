@@ -2,7 +2,7 @@
 
 use std::{io, pin::Pin, sync::Arc};
 
-use futures::{
+use futures_util::{
     Stream, StreamExt, TryStreamExt,
     io::{AsyncRead, AsyncWrite},
 };
@@ -63,7 +63,7 @@ pub trait FetchConnector: Send + Sync {
     fn fetch<'a>(
         &'a self,
         fetch: &'a Fetch,
-    ) -> Pin<Box<dyn futures::Future<Output = Result<ReadItemStream, ConnectorError>> + Send + 'a>>;
+    ) -> Pin<Box<dyn Future<Output = Result<ReadItemStream, ConnectorError>> + Send + 'a>>;
 }
 
 pub trait SendConnector: Send + Sync {
@@ -71,7 +71,7 @@ pub trait SendConnector: Send + Sync {
     fn send<'a>(
         &'a self,
         send: &'a SendRef,
-    ) -> Pin<Box<dyn futures::Future<Output = Result<WriteItemStream, ConnectorError>> + Send + 'a>>;
+    ) -> Pin<Box<dyn Future<Output = Result<WriteItemStream, ConnectorError>> + Send + 'a>>;
 }
 
 pub trait ReceiveConnector: Send + Sync {
@@ -79,7 +79,7 @@ pub trait ReceiveConnector: Send + Sync {
     fn receive<'a>(
         &'a self,
         recv: &'a Receive,
-    ) -> Pin<Box<dyn futures::Future<Output = Result<ReadItemStream, ConnectorError>> + Send + 'a>>;
+    ) -> Pin<Box<dyn Future<Output = Result<ReadItemStream, ConnectorError>> + Send + 'a>>;
 }
 
 // Main router
@@ -241,7 +241,7 @@ impl FetchConnector for HttpHfFetcher {
                         meta: ItemMeta { kind: "uri", name },
                         reader: Box::pin(fut_reader),
                     };
-                    let s = futures::stream::once(async move { Ok(item) });
+                    let s = futures_util::stream::once(async move { Ok(item) });
                     Ok(Box::pin(s) as ReadItemStream)
                 }
                 Reference::HuggingFace {
@@ -250,7 +250,7 @@ impl FetchConnector for HttpHfFetcher {
                     filenames,
                 } => {
                     if filenames.is_empty() {
-                        let s = futures::stream::empty::<Result<ReadItem, io::Error>>();
+                        let s = futures_util::stream::empty::<Result<ReadItem, io::Error>>();
                         return Ok(Box::pin(s) as ReadItemStream);
                     }
 
@@ -264,28 +264,29 @@ impl FetchConnector for HttpHfFetcher {
                     ));
                     let repo = std::sync::Arc::new(repo);
 
-                    let stream = futures::stream::iter(filenames.clone()).then(move |filename| {
-                        let repo = repo.clone();
-                        async move {
-                            // Download to cache (if needed) and get local path
-                            let path = repo
-                                .get(&filename)
-                                .await
-                                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-                            // Open as tokio file and adapt to futures::io::AsyncRead
-                            let file = tokio::fs::File::open(path)
-                                .await
-                                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-                            let reader = file.compat();
-                            Ok(ReadItem {
-                                meta: ItemMeta {
-                                    kind: "huggingface",
-                                    name: filename,
-                                },
-                                reader: Box::pin(reader),
-                            })
-                        }
-                    });
+                    let stream =
+                        futures_util::stream::iter(filenames.clone()).then(move |filename| {
+                            let repo = repo.clone();
+                            async move {
+                                // Download to cache (if needed) and get local path
+                                let path = repo
+                                    .get(&filename)
+                                    .await
+                                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                                // Open as tokio file and adapt to futures::io::AsyncRead
+                                let file = tokio::fs::File::open(path)
+                                    .await
+                                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                                let reader = file.compat();
+                                Ok(ReadItem {
+                                    meta: ItemMeta {
+                                        kind: "huggingface",
+                                        name: filename,
+                                    },
+                                    reader: Box::pin(reader),
+                                })
+                            }
+                        });
                     Ok(Box::pin(stream) as ReadItemStream)
                 }
                 _ => Err(ConnectorError::UnsupportedFetch(fetch.as_ref().clone())),
@@ -325,14 +326,13 @@ where
     fn send<'a>(
         &'a self,
         send: &'a SendRef,
-    ) -> Pin<Box<dyn futures::Future<Output = Result<WriteItemStream, ConnectorError>> + Send + 'a>>
-    {
+    ) -> Pin<Box<dyn Future<Output = Result<WriteItemStream, ConnectorError>> + Send + 'a>> {
         Box::pin(async move {
             match send.as_ref() {
                 Reference::Peers { peers, strategy } => match strategy {
                     SelectionStrategy::All => {
                         let network = self.network.clone();
-                        let it = futures::stream::iter(peers.clone()).then(move |peer| {
+                        let it = futures_util::stream::iter(peers.clone()).then(move |peer| {
                             let network = network.clone();
                             async move {
                                 match network.stream(peer).await {
@@ -343,14 +343,7 @@ where
                                         },
                                         writer: Box::pin(stream),
                                     }),
-                                    Err(e) => {
-                                        tracing::error!(
-                                            "Failed to open stream to peer {}: {}",
-                                            peer,
-                                            e
-                                        );
-                                        Err(ConnectorError::OpenStream(e))
-                                    }
+                                    Err(e) => Err(ConnectorError::OpenStream(e)),
                                 }
                             }
                         });
@@ -360,23 +353,16 @@ where
                         let peer = peers.get(0).copied().ok_or_else(|| {
                             io::Error::new(io::ErrorKind::Other, "no peers provided")
                         })?;
-                        match self.network.stream(peer).await {
-                            Ok(stream) => {
-                                let item = WriteItem {
-                                    meta: ItemMeta {
-                                        kind: "peer",
-                                        name: peer.to_string(),
-                                    },
-                                    writer: Box::pin(stream),
-                                };
-                                let s = futures::stream::once(async move { Ok(item) });
-                                Ok(Box::pin(s) as WriteItemStream)
-                            }
-                            Err(e) => {
-                                tracing::error!("Failed to open stream to peer {}: {}", peer, e);
-                                Err(ConnectorError::OpenStream(e))
-                            }
-                        }
+                        let stream = self.network.stream(peer).await?;
+                        let item = WriteItem {
+                            meta: ItemMeta {
+                                kind: "peer",
+                                name: peer.to_string(),
+                            },
+                            writer: Box::pin(stream),
+                        };
+                        let s = futures_util::stream::once(async move { Ok(item) });
+                        Ok(Box::pin(s) as WriteItemStream)
                     }
                 },
                 _ => Err(ConnectorError::UnsupportedSend(send.as_ref().clone())),
@@ -402,8 +388,7 @@ where
     fn receive<'a>(
         &'a self,
         recv: &'a Receive,
-    ) -> Pin<Box<dyn futures::Future<Output = Result<ReadItemStream, ConnectorError>> + Send + 'a>>
-    {
+    ) -> Pin<Box<dyn Future<Output = Result<ReadItemStream, ConnectorError>> + Send + 'a>> {
         Box::pin(async move {
             match recv.as_ref() {
                 Reference::Peers {
@@ -413,7 +398,6 @@ where
                     let allow: Vec<PeerId> = peers.clone();
                     let incoming = self.network.streams()?;
                     let stream = incoming.filter_map(move |(peer, s)| {
-                        tracing::info!("Recieving data from peer, {:?}", peer);
                         let allowed = allow.clone();
                         async move {
                             if allowed.is_empty() || allowed.iter().any(|p| p == &peer) {

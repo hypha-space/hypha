@@ -115,9 +115,7 @@ impl Network {
                     )),
                     relay_client,
                     dcutr: dcutr::Behaviour::new(key.public().to_peer_id()),
-                    stream: stream::Behaviour::with_relay_policy(
-                        libp2p_stream::ConnectionPolicy::IgnoreRelayed,
-                    ),
+                    stream: stream::Behaviour::new(),
                     kademlia: kad::Behaviour::new(
                         key.public().to_peer_id(),
                         kad::store::MemoryStore::new(key.public().to_peer_id()),
@@ -165,11 +163,11 @@ impl SwarmDriver<Behaviour> for NetworkDriver {
                 event = self.swarm.select_next_some() => {
                     match event {
                         SwarmEvent::ConnectionEstablished { peer_id, connection_id, endpoint, .. } => {
-                            tracing::info!(peer_id = %peer_id, ?endpoint, "Established new connection");
+                            tracing::debug!(peer_id = %peer_id, ?endpoint, "Established new connection");
                             self.process_connection_established(peer_id, &connection_id).await;
                         }
                         SwarmEvent::ConnectionClosed { peer_id, endpoint, .. } => {
-                            tracing::info!(peer_id = %peer_id, ?endpoint, "Closed connection");
+                            tracing::debug!(peer_id = %peer_id, ?endpoint, "Closed connection");
                         }
                         SwarmEvent::OutgoingConnectionError { connection_id, error, .. } => {
                             self.process_connection_error(&connection_id, error).await;
@@ -193,7 +191,7 @@ impl SwarmDriver<Behaviour> for NetworkDriver {
                             self.process_request_response_event(event).await;
                         }
                         SwarmEvent::Behaviour(BehaviourEvent::Dcutr(event)) => {
-                            tracing::info!("dcutr event: {:?}", event);
+                            tracing::debug!("dcutr event: {:?}", event);
                         }
 
                         _ => {

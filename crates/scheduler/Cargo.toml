@@ -10,7 +10,6 @@ ciborium.workspace = true
 clap.workspace = true
 documented.workspace = true
 figment.workspace = true
-futures.workspace = true
 futures-util.workspace = true
 hypha-config.workspace = true
 hypha-leases.workspace = true

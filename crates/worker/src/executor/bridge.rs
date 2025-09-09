@@ -16,21 +16,21 @@ use axum::{
     },
     routing::{get, post},
 };
-use futures_util::{StreamExt, io, stream};
+use futures_util::{StreamExt, stream};
 use hypha_messages::{Fetch, Receive, Reference, Send};
 use hypha_network::request_response::RequestResponseError;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::{
     fs::{self, set_permissions},
+    io::{self, AsyncWriteExt},
     net::UnixListener,
 };
 use tokio_util::{
-    compat::{FuturesAsyncReadCompatExt, FuturesAsyncWriteCompatExt, TokioAsyncReadCompatExt},
+    compat::{FuturesAsyncReadCompatExt, FuturesAsyncWriteCompatExt},
     sync::CancellationToken,
     task::TaskTracker,
 };
-use tokio::io::{AsyncReadExt as TokioAsyncReadExt, AsyncWriteExt as TokioAsyncWriteExt};
 use utoipa::OpenApi;
 
 use crate::{
@@ -181,16 +181,16 @@ struct FileResponse {
 
 async fn fetch_resource(
     State(state): State<Arc<SockState>>,
-    Json(fetch): Json<Fetch>,
+    Json(resource): Json<Fetch>,
 ) -> Result<Json<Vec<FileResponse>>, Error> {
-    validate_fetch(&fetch)?;
+    validate_fetch(&resource)?;
 
     let dir_rel = "artifacts".to_string();
     let dir_abs = safe_join(&state.work_dir, &dir_rel)?;
     fs::create_dir_all(&dir_abs).await?;
 
     let mut out: Vec<FileResponse> = Vec::new();
-    let mut items = state.connector.fetch(fetch).await?;
+    let mut items = state.connector.fetch(resource).await?;
     let mut idx: usize = 0;
     while let Some(item) = items.next().await.transpose().map_err(Error::Io)? {
         let (file_name, reader) = derive_name_and_reader(item, idx);
@@ -202,6 +202,7 @@ async fn fetch_resource(
 
         let mut file = fs::File::create(&abs).await?;
         let size = tokio::io::copy(&mut reader.compat(), &mut file).await?;
+        file.sync_all().await?;
         tracing::info!(size, file = %abs.display(), "Copied resource");
         set_permissions(&abs, Permissions::from_mode(0o600)).await?;
 
@@ -214,7 +215,7 @@ async fn fetch_resource(
 
 #[derive(Debug, Deserialize)]
 struct SendRequest {
-    send: Send,
+    resource: Send,
     path: String,
 }
 
@@ -223,23 +224,19 @@ async fn send_resource(
     Json(req): Json<SendRequest>,
 ) -> Result<(), Error> {
     let abs = safe_join(&state.work_dir, &req.path)?;
-    let mut writers = state.connector.send(req.send).await?;
+    let mut writers = state.connector.send(req.resource).await?;
 
     // Copy the resource in the background to avoid blocking.
     tokio::spawn(async move {
         while let Some(item) = writers.next().await.transpose().unwrap() {
             let peer_id = item.meta.name.clone();
-            let mut file = fs::File::open(&abs).await.expect("file exists");
+            let file = fs::File::open(&abs).await.expect("file exists");
             tracing::info!(peer_id = %peer_id, file = %abs.display(), "Sending resource");
+            let mut reader = file;
             let mut writer = item.writer.compat_write();
-            // Send using 10MiB chunked framing to match receivers.
-            let sent_bytes = send_in_chunks(&mut file, &mut writer)
-                .await
-                .expect("chunked send");
+            let sent_bytes = io::copy(&mut reader, &mut writer).await.expect("copy");
+            writer.shutdown().await.expect("shutdown");
             tracing::info!(size = sent_bytes, file = %abs.display(), "Sent resource");
-            // Clean finish
-            TokioAsyncWriteExt::flush(&mut writer).await.expect("flush");
-            TokioAsyncWriteExt::shutdown(&mut writer).await.expect("shutdown");
         }
     });
 
@@ -267,8 +264,8 @@ fn safe_join(work_dir: &Path, rel: &str) -> Result<PathBuf, Error> {
 
 // TODO: We should not only validate the URI, but also check it against an allow list
 // to restrict access to _trusted_ sources.
-fn validate_fetch(fetch: &Fetch) -> Result<(), Error> {
-    match fetch.as_ref() {
+fn validate_fetch(resource: &Fetch) -> Result<(), Error> {
+    match resource.as_ref() {
         Reference::Uri { value } => {
             if !(value.starts_with("http://") || value.starts_with("https://")) {
                 return Err(Error::InvalidStatus(format!(
@@ -297,8 +294,8 @@ fn validate_fetch(fetch: &Fetch) -> Result<(), Error> {
 
 #[derive(Debug, Deserialize)]
 struct ReceiveSubscribeRequest {
-    receive: Receive,
-    out_dir: Option<String>,
+    resource: Receive,
+    path: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -311,8 +308,8 @@ struct UpdatePointer {
 async fn receive_subscribe(
     State(state): State<Arc<SockState>>,
     Json(req): Json<ReceiveSubscribeRequest>,
-) -> Result<Sse<impl futures::Stream<Item = Result<Event, std::convert::Infallible>>>, Error> {
-    let dir_rel = req.out_dir.unwrap_or_else(|| "incoming".to_string());
+) -> Result<Sse<impl futures_util::Stream<Item = Result<Event, std::convert::Infallible>>>, Error> {
+    let dir_rel = req.path.unwrap_or_else(|| "incoming".to_string());
     let dir_abs = safe_join(&state.work_dir, &dir_rel)?;
     fs::create_dir_all(&dir_abs).await?;
 
@@ -320,11 +317,11 @@ async fn receive_subscribe(
     let (tx, rx) = tokio::sync::mpsc::channel::<Event>(64);
     let connector = state.connector.clone();
     let work_dir = state.work_dir.clone();
-    let receive = req.receive.clone();
+    let resource = req.resource.clone();
 
     // Background task: receive loops until the client disconnects or an error occurs
     tokio::spawn(async move {
-        let mut incoming = match connector.receive(receive).await {
+        let mut incoming = match connector.receive(resource).await {
             Ok(s) => s,
             Err(_) => return,
         };
@@ -345,11 +342,11 @@ async fn receive_subscribe(
                 Ok(f) => f,
                 Err(_) => break,
             };
-            // Auto-detect framed (chunked) vs raw; support both for compatibility.
-            let size = match recv_auto(&mut reader.compat(), &mut file).await {
+            let size = match tokio::io::copy(&mut reader.compat(), &mut file).await {
                 Ok(n) => n,
                 Err(_) => break,
             };
+            let _ = file.sync_all().await;
             let _ = set_permissions(&file_abs, Permissions::from_mode(0o600)).await;
 
             tracing::info!(size, file = %file_abs.display(), "Received resource");
@@ -388,97 +385,7 @@ fn derive_name_and_reader(item: ReadItem, idx: usize) -> (String, BoxAsyncRead) 
     let name = if item.meta.name.is_empty() {
         format!("part-{}.bin", idx)
     } else {
-        format!("{}-{}.bin", item.meta.name, idx)
+        item.meta.name
     };
     (name, item.reader)
-}
-
-// Shared with parameter server framing: accept magic+chunks or raw.
-const MAGIC: &[u8; 4] = b"HPCH";
-const MAX_CHUNK: usize = 64 * 1024 * 1024;
-const CHUNK_SIZE: usize = 10 * 1024 * 1024; // 10 MiB
-
-async fn send_in_chunks<R, W>(r: &mut R, w: &mut W) -> std::io::Result<u64>
-where
-    R: tokio::io::AsyncRead + Unpin,
-    W: tokio::io::AsyncWrite + Unpin,
-{
-    let mut total: u64 = 0;
-    let mut buf = vec![0u8; CHUNK_SIZE];
-    // Write magic header once per stream
-    TokioAsyncWriteExt::write_all(w, MAGIC).await?;
-    let mut idx: u64 = 0;
-    loop {
-        let n = TokioAsyncReadExt::read(r, &mut buf).await?;
-        if n == 0 {
-            break;
-        }
-        let len = (n as u64).to_le_bytes();
-        TokioAsyncWriteExt::write_all(w, &len).await?;
-        TokioAsyncWriteExt::write_all(w, &buf[..n]).await?;
-        total += n as u64;
-        tracing::info!(chunk_index = idx, chunk_bytes = n, total_sent = total, "Sent chunk");
-        idx += 1;
-    }
-    Ok(total)
-}
-
-async fn recv_auto<R, W>(r: &mut R, w: &mut W) -> std::io::Result<u64>
-where
-    R: tokio::io::AsyncRead + Unpin,
-    W: tokio::io::AsyncWrite + Unpin,
-{
-    let mut total: u64 = 0;
-    let mut magic = [0u8; 4];
-    match read_exact_bytes(r, &mut magic).await {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(0),
-        Err(e) => return Err(e),
-    }
-    if &magic == MAGIC {
-        let mut hdr = [0u8; 8];
-        let mut buf: Vec<u8> = Vec::new();
-        let mut idx: u64 = 0;
-        loop {
-            match read_exact_bytes(r, &mut hdr).await {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
-                Err(e) => return Err(e),
-            }
-            let len = u64::from_le_bytes(hdr) as usize;
-            if len == 0 || len > MAX_CHUNK {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!("invalid chunk len {}", len),
-                ));
-            }
-            if buf.len() < len {
-                buf.resize(len, 0);
-            }
-            read_exact_bytes(r, &mut buf[..len]).await?;
-            TokioAsyncWriteExt::write_all(w, &buf[..len]).await?;
-            total += len as u64;
-            tracing::info!(chunk_index = idx, chunk_bytes = len, total_received = total, "Received chunk");
-            idx += 1;
-        }
-        Ok(total)
-    } else {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "missing HPCH magic header",
-        ));
-    }
-}
-
-async fn read_exact_bytes<R: tokio::io::AsyncRead + Unpin>(r: &mut R, mut buf: &mut [u8]) -> std::io::Result<()> {
-    while !buf.is_empty() {
-        match TokioAsyncReadExt::read(r, buf).await? {
-            0 => return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "early EOF")),
-            n => {
-                let tmp = buf;
-                buf = &mut tmp[n..];
-            }
-        }
-    }
-    Ok(())
 }
