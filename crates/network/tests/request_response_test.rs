@@ -7,7 +7,7 @@ use std::{
     time::Duration,
 };
 
-use futures::StreamExt;
+use futures_util::StreamExt;
 use hypha_network::{
     request_response::*,
     swarm::{SwarmDriver, SwarmError},

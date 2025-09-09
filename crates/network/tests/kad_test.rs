@@ -1,6 +1,6 @@
 use std::{collections::HashMap, time::Duration};
 
-use futures::StreamExt;
+use futures_util::StreamExt;
 use hypha_network::{
     dial::*,
     kad::*,
