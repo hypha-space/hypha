@@ -1,7 +1,7 @@
 use std::{collections::HashMap, error::Error, fs, path::PathBuf, time::Duration};
 
 use clap::{Parser, Subcommand};
-use futures::StreamExt;
+use futures_util::StreamExt;
 use hypha_network::{
     cert::{load_certs_from_pem, load_crls_from_pem, load_private_key_from_pem},
     dial::{DialAction, DialDriver, DialInterface, PendingDials},
