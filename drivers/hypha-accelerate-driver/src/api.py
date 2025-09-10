@@ -25,9 +25,12 @@ class Session(AbstractContextManager["Session", None]):
         resp = self._client.post("http://hypha/resources/send", json=req)
         resp.raise_for_status()
 
-    def fetch(self, resource: Any, path: str) -> None:
-        req = {"resource": resource, "path": path}
-        resp = self._client.post("http://hypha/resources/fetch", json=req)
+    def fetch(self, resource: Any):
+        resp = self._client.post(
+            "http://hypha/resources/fetch",
+            json=resource,
+            timeout=None,  # block indefinitely for SSE updates
+        )
         resp.raise_for_status()
 
     @contextmanager
