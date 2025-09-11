@@ -1,14 +1,22 @@
 //! Worker binary.
 
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 use clap::{Parser, Subcommand, ValueEnum};
 use figment::providers::{Env, Format, Serialized, Toml};
 use futures_util::future::join_all;
 use hypha_config::{ConfigWithMetadata, ConfigWithMetadataTLSExt, builder, to_toml};
+use hypha_messages::health;
 use hypha_network::{
     dial::DialInterface, external_address::ExternalAddressInterface, kad::KademliaInterface,
-    listen::ListenInterface, swarm::SwarmDriver,
+    listen::ListenInterface, request_response::RequestResponseInterfaceExt, swarm::SwarmDriver,
 };
 use hypha_worker::{
     arbiter::Arbiter, config::Config, connector::Connector, job_manager::JobManager,
@@ -47,6 +55,42 @@ enum Commands {
         /// Path where the configuration file will be written
         #[clap(short, long, default_value = "config.toml")]
         output: PathBuf,
+    },
+
+    /// Probe a target multiaddr for readiness and exit 0 if healthy.
+    #[serde(untagged)]
+    Probe {
+        /// Path to the configuration file.
+        #[clap(short, long("config"), default_value = "config.toml")]
+        config_file: PathBuf,
+
+        /// Path to the certificate pem.
+        #[clap(long("cert"))]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cert_pem: Option<PathBuf>,
+
+        /// Path to the private key pem.
+        #[clap(long("key"))]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        key_pem: Option<PathBuf>,
+
+        /// Path to the trust pem (bundle).
+        #[clap(long("trust"))]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        trust_pem: Option<PathBuf>,
+
+        /// Path to the certificate revocation list pem.
+        #[clap(long("crls"))]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        crls_pem: Option<PathBuf>,
+
+        /// Target multiaddr to probe (e.g., /ip4/127.0.0.1/tcp/18081)
+        #[clap(long)]
+        target: String,
+
+        /// Timeout in milliseconds
+        #[clap(long, default_value_t = 2000)]
+        timeout: u64,
     },
     #[serde(untagged)]
     Run {
@@ -89,6 +133,11 @@ enum Commands {
 }
 
 async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
+    // NOTE: Healthy (readiness) is defined as:
+    // - listening on all addresses
+    // - DHT bootstrap complete
+    let healthy = Arc::new(AtomicBool::new(false));
+
     // Load certificates and private key
     let (network, network_driver) = Network::create(
         config.load_cert_chain()?,
@@ -99,6 +148,33 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
     .into_diagnostic()?;
 
     let network_handle = tokio::spawn(network_driver.run());
+
+    // Register health handler responding with readiness (listen + DHT bootstrap)
+    {
+        let ready = healthy.clone();
+        let network_clone = network.clone();
+        tokio::spawn(async move {
+            let builder = network_clone.on::<health::Codec, _>(|_: &health::Request| true);
+            match builder.into_stream().await {
+                Ok(stream) => {
+                    stream
+                        .respond_with_concurrent(None, move |(_, _req)| {
+                            let ready = ready.clone();
+                            async move {
+                                let ready_flag = ready.load(Ordering::Relaxed);
+                                health::Response {
+                                    healthy: ready_flag,
+                                }
+                            }
+                        })
+                        .await;
+                }
+                Err(e) => {
+                    tracing::error!(error=%e, "failed to register health handler");
+                }
+            }
+        });
+    }
 
     join_all(
         config
@@ -180,6 +256,9 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
     // NOTE: Wait until DHT bootstrapping is done.
     network.wait_for_bootstrap().await.into_diagnostic()?;
 
+    // NOTE: Mark worker as ready only after listening + bootstrap complete.
+    healthy.store(true, Ordering::Relaxed);
+
     let token = CancellationToken::new();
 
     // NOTE: Create arbiter for resource allocation - this is the primary worker allocation mechanism
@@ -242,11 +321,51 @@ async fn main() -> miette::Result<()> {
             println!("Configuration written to: {output:?}");
             Ok(())
         }
+        args @ Commands::Probe {
+            config_file,
+            target,
+            timeout,
+            ..
+        } => {
+            let config: ConfigWithMetadata<Config> = builder()
+                .with_provider(Toml::file(config_file))
+                .with_provider(Env::prefixed("HYPHA_"))
+                .with_provider(Serialized::defaults(&args))
+                .build()?;
+
+            let (network, driver) = Network::create(
+                config.load_cert_chain()?,
+                config.load_key()?,
+                config.load_trust_chain()?,
+                config.load_crls()?,
+            )
+            .into_diagnostic()?;
+
+            tokio::spawn(driver.run());
+
+            let addr: Multiaddr = target.parse().into_diagnostic()?;
+            let d = std::time::Duration::from_millis(*timeout);
+            tokio::time::timeout(d, async move {
+                let peer = network.dial(addr).await.into_diagnostic()?;
+                let resp = network
+                    .request::<health::Codec>(peer, health::Request {})
+                    .await
+                    .into_diagnostic()?;
+                if resp.healthy {
+                    Ok(())
+                } else {
+                    Err(miette::miette!("unhealthy"))
+                }
+            })
+            .await
+            .into_diagnostic()??;
+            Ok(())
+        }
         args @ Commands::Run { config_file, .. } => {
             let config: ConfigWithMetadata<Config> = builder()
                 .with_provider(Toml::file(config_file))
                 .with_provider(Env::prefixed("HYPHA_"))
-                .with_provider(Serialized::defaults(args))
+                .with_provider(Serialized::defaults(&args))
                 .build()?;
 
             run(config).await

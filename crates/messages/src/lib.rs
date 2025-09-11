@@ -1,6 +1,6 @@
 use std::{error::Error, fmt, str::FromStr, time::SystemTime};
 
-use libp2p::PeerId;
+use libp2p::{PeerId, request_response::cbor::codec::Codec as CborCodec};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -11,25 +11,52 @@ pub struct ArtifactHeader {
     pub epoch: u64,
 }
 
-#[allow(clippy::large_enum_variant)]
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum Request {
-    WorkerOffer(worker_offer::Request),
-    RenewLease(renew_lease::Request),
-    JobStatus(job_status::Request),
-    DispatchJob(dispatch_job::Request),
-    ParameterPull(parameter_pull::Request),
-    ParameterPush(parameter_push::Request),
+pub mod api {
+    use super::*;
+
+    pub type Codec = CborCodec<Request, Response>;
+
+    pub const IDENTIFIER: &str = "/hypha-api/0.0.1";
+
+    #[allow(clippy::large_enum_variant)]
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    pub enum Request {
+        WorkerOffer(worker_offer::Request),
+        RenewLease(renew_lease::Request),
+        JobStatus(job_status::Request),
+        DispatchJob(dispatch_job::Request),
+        ParameterPull(parameter_pull::Request),
+        ParameterPush(parameter_push::Request),
+    }
+
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    pub enum Response {
+        WorkerOffer(worker_offer::Response),
+        RenewLease(renew_lease::Response),
+        JobStatus(job_status::Response),
+        DispatchJob(dispatch_job::Response),
+        ParameterPull(parameter_pull::Response),
+        ParameterPush(parameter_push::Response),
+    }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum Response {
-    WorkerOffer(worker_offer::Response),
-    RenewLease(renew_lease::Response),
-    JobStatus(job_status::Response),
-    DispatchJob(dispatch_job::Response),
-    ParameterPull(parameter_pull::Response),
-    ParameterPush(parameter_push::Response),
+/// Health request/response messages
+pub mod health {
+    use core::str;
+
+    use super::*;
+
+    pub type Codec = CborCodec<Request, Response>;
+
+    pub static IDENTIFIER: &str = "/hypha-health/0.0.1";
+
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    pub struct Request {}
+
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    pub struct Response {
+        pub healthy: bool,
+    }
 }
 
 // Protocol: Scheduler requests available workers

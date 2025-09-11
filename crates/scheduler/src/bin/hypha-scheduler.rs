@@ -1,6 +1,6 @@
 //! Scheduler binary.
 
-use std::fs;
+use std::{fs, path::PathBuf, time::Duration};
 
 use clap::{Parser, Subcommand};
 use figment::providers::{Env, Format, Serialized, Toml};
@@ -8,11 +8,11 @@ use futures_util::future::join_all;
 use hypha_config::{ConfigWithMetadata, ConfigWithMetadataTLSExt, builder, to_toml};
 use hypha_messages::{
     DiLoCoConfig, Executor, Fetch, JobSpec, Optimizer, Receive, Requirement, Resources,
-    SelectionStrategy, Send, WorkerSpec,
+    SelectionStrategy, Send, WorkerSpec, health,
 };
 use hypha_network::{
     dial::DialInterface, external_address::ExternalAddressInterface, kad::KademliaInterface,
-    listen::ListenInterface, swarm::SwarmDriver,
+    listen::ListenInterface, request_response::RequestResponseInterfaceExt, swarm::SwarmDriver,
 };
 use hypha_scheduler::{
     allocator::{Allocator, GreedyWorkerAllocator},
@@ -43,6 +43,41 @@ enum Commands {
         /// Path where the configuration file will be written
         #[clap(short, long, default_value = "config.toml")]
         output: std::path::PathBuf,
+    },
+    /// Probe a target multiaddr for readiness and exit 0 if healthy.
+    #[serde(untagged)]
+    Probe {
+        /// Path to the configuration file.
+        #[clap(short, long("config"), default_value = "config.toml")]
+        config_file: PathBuf,
+
+        /// Path to the certificate pem.
+        #[clap(long("cert"))]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cert_pem: Option<PathBuf>,
+
+        /// Path to the private key pem.
+        #[clap(long("key"))]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        key_pem: Option<PathBuf>,
+
+        /// Path to the trust pem (bundle).
+        #[clap(long("trust"))]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        trust_pem: Option<PathBuf>,
+
+        /// Path to the certificate revocation list pem.
+        #[clap(long("crls"))]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        crls_pem: Option<PathBuf>,
+
+        /// Timeout in milliseconds
+        #[clap(long, default_value_t = 2000)]
+        timeout: u64,
+
+        /// Target multiaddr to probe (e.g., /ip4/127.0.0.1/tcp/8080)
+        #[clap(index = 1)]
+        address: String,
     },
     #[serde(untagged)]
     Run {
@@ -340,6 +375,45 @@ async fn main() -> Result<()> {
             fs::write(output, &to_toml(&Config::default())?).into_diagnostic()?;
 
             println!("Configuration written to: {output:?}");
+            Ok(())
+        }
+        args @ Commands::Probe {
+            config_file,
+            address,
+            timeout,
+            ..
+        } => {
+            let config: ConfigWithMetadata<Config> = builder()
+                .with_provider(Toml::file(config_file))
+                .with_provider(Env::prefixed("HYPHA_SCHEDULER_"))
+                .with_provider(Serialized::from(&args, figment::Profile::Default))
+                .build()?;
+
+            let (network, driver) = Network::create(
+                config.load_cert_chain()?,
+                config.load_key()?,
+                config.load_trust_chain()?,
+                config.load_crls()?,
+            )
+            .into_diagnostic()?;
+            tokio::spawn(driver.run());
+
+            let addr: Multiaddr = address.parse().into_diagnostic()?;
+            tokio::time::timeout(Duration::from_millis(*timeout), async move {
+                let peer = network.dial(addr).await.into_diagnostic()?;
+                let resp = network
+                    .request::<health::Codec>(peer, health::Request {})
+                    .await
+                    .into_diagnostic()?;
+                if resp.healthy {
+                    Ok(())
+                } else {
+                    Err(miette::miette!("unhealthy"))
+                }
+            })
+            .await
+            .into_diagnostic()??;
+
             Ok(())
         }
         args @ Commands::Run { config_file, .. } => {

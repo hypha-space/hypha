@@ -7,7 +7,7 @@ use std::{
 
 use futures_util::{Stream, StreamExt};
 use hypha_messages::{
-    Request, Response, WorkerSpec, request_worker,
+    WorkerSpec, api, request_worker,
     worker_offer::{self, Request as WorkerOfferRequest},
 };
 use hypha_network::{gossipsub::GossipsubInterface, request_response::RequestResponseInterfaceExt};
@@ -84,25 +84,18 @@ impl Allocator for GreedyWorkerAllocator {
         // NOTE: Set up a handler to receive and ack offers
         let offer_handle = tokio::spawn(
             self.network
-                .on(move |req: &Request| {
-                    matches!(
-                        req,
-                        Request::WorkerOffer(
-                        worker_offer::Request { request_id, .. }
-                    ) if request_id == &id
-                    )
-                })
+                .on::<api::Codec, _>(move |req: &api::Request| matches!(req, api::Request::WorkerOffer(worker_offer::Request { request_id, .. }) if request_id == &id))
                 .into_stream()
                 .await
                 .map_err(|e| AllocatorError::BroadcastFailed(Box::new(e)))?
                 .respond_with_concurrent(None, move |request| {
                     let tx = tx.clone();
                     async move {
-                        if let (peer_id, Request::WorkerOffer(offer)) = request {
+                        if let (peer_id, api::Request::WorkerOffer(offer)) = request {
                             let _ = tx.send((peer_id, offer)).await;
                         }
 
-                        Response::WorkerOffer(worker_offer::Response {})
+                        api::Response::WorkerOffer(worker_offer::Response {})
                     }
                 }),
         );

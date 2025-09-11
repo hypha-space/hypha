@@ -182,10 +182,13 @@ async fn test_simple_request_response() {
             .await;
     });
 
-    let response = interface1
-        .request(peer2, TestRequest::Ping("Hello".to_string()))
-        .await
-        .unwrap();
+    let response = hypha_network::request_response::RequestResponseInterface::request(
+        &interface1,
+        peer2,
+        TestRequest::Ping("Hello".to_string()),
+    )
+    .await
+    .unwrap();
 
     assert_eq!(response, TestResponse::Pong("Got: Hello".to_string()));
 }
@@ -242,16 +245,22 @@ async fn test_multiple_handlers_with_patterns() {
             .await;
     });
 
-    let ping_response = interface1
-        .request(peer2, TestRequest::Ping("ping".to_string()))
-        .await
-        .unwrap();
+    let ping_response = hypha_network::request_response::RequestResponseInterface::request(
+        &interface1,
+        peer2,
+        TestRequest::Ping("ping".to_string()),
+    )
+    .await
+    .unwrap();
     assert_eq!(ping_response, TestResponse::Pong("ping".to_string()));
 
-    let echo_response = interface1
-        .request(peer2, TestRequest::Echo("echo".to_string()))
-        .await
-        .unwrap();
+    let echo_response = hypha_network::request_response::RequestResponseInterface::request(
+        &interface1,
+        peer2,
+        TestRequest::Echo("echo".to_string()),
+    )
+    .await
+    .unwrap();
 
     assert_eq!(echo_response, TestResponse::Echo("echo".to_string()));
 }
@@ -324,9 +333,12 @@ async fn test_concurrent_request_processing() {
     for _ in 0..6 {
         let interface = interface1.clone();
         let future = tokio::spawn(async move {
-            interface
-                .request(peer2, TestRequest::Slow { delay_ms: 100 })
-                .await
+            hypha_network::request_response::RequestResponseInterface::request(
+                &interface,
+                peer2,
+                TestRequest::Slow { delay_ms: 100 },
+            )
+            .await
         });
         response_futures.push(future);
     }
@@ -379,28 +391,28 @@ async fn test_handler_with_complex_pattern() {
             .await;
     });
 
-    let response = interface1
-        .request(
-            peer2,
-            TestRequest::Work {
-                id: 2,
-                data: "test".to_string(),
-            },
-        )
-        .await
-        .unwrap();
+    let response = hypha_network::request_response::RequestResponseInterface::request(
+        &interface1,
+        peer2,
+        TestRequest::Work {
+            id: 2,
+            data: "test".to_string(),
+        },
+    )
+    .await
+    .unwrap();
 
     assert_eq!(response, TestResponse::WorkDone { id: 2 });
 
-    let result = interface1
-        .request(
-            peer2,
-            TestRequest::Work {
-                id: 3,
-                data: "test".to_string(),
-            },
-        )
-        .await;
+    let result = hypha_network::request_response::RequestResponseInterface::request(
+        &interface1,
+        peer2,
+        TestRequest::Work {
+            id: 3,
+            data: "test".to_string(),
+        },
+    )
+    .await;
 
     assert!(result.is_err());
 }
@@ -450,10 +462,13 @@ async fn test_handler_stream_manual_processing() {
         }
     });
 
-    let response = interface1
-        .request(peer2, TestRequest::Echo("hello".to_string()))
-        .await
-        .unwrap();
+    let response = hypha_network::request_response::RequestResponseInterface::request(
+        &interface1,
+        peer2,
+        TestRequest::Echo("hello".to_string()),
+    )
+    .await
+    .unwrap();
 
     assert_eq!(response, TestResponse::Echo("HELLO".to_string()));
 }
@@ -496,18 +511,24 @@ async fn test_handler_unregistration() {
         }
     });
 
-    let response = interface1
-        .request(peer2, TestRequest::Ping("test".to_string()))
-        .await
-        .unwrap();
+    let response = hypha_network::request_response::RequestResponseInterface::request(
+        &interface1,
+        peer2,
+        TestRequest::Ping("test".to_string()),
+    )
+    .await
+    .unwrap();
 
     assert_eq!(response, TestResponse::Pong("first".to_string()));
 
     handler_task.await.unwrap();
 
-    let result = interface1
-        .request(peer2, TestRequest::Ping("test2".to_string()))
-        .await;
+    let result = hypha_network::request_response::RequestResponseInterface::request(
+        &interface1,
+        peer2,
+        TestRequest::Ping("test2".to_string()),
+    )
+    .await;
 
     assert!(
         matches!(result, Err(RequestResponseError::Request(_))),
@@ -534,17 +555,21 @@ async fn test_duplicate_handlers() {
 
     // NOTE: We're creating multiple handlers for the same pattern.
     // Only the first should handle requests.
-    let handler1 = interface2
-        .on(|req: &TestRequest| matches!(req, TestRequest::Echo(_)))
-        .into_stream()
-        .await
-        .unwrap();
+    let handler1 = hypha_network::request_response::RequestResponseInterfaceExt::on(
+        &interface2,
+        |req: &TestRequest| matches!(req, TestRequest::Echo(_)),
+    )
+    .into_stream()
+    .await
+    .unwrap();
 
-    let handler2 = interface2
-        .on(|req: &TestRequest| matches!(req, TestRequest::Echo(_)))
-        .into_stream()
-        .await
-        .unwrap();
+    let handler2 = hypha_network::request_response::RequestResponseInterfaceExt::on(
+        &interface2,
+        |req: &TestRequest| matches!(req, TestRequest::Echo(_)),
+    )
+    .into_stream()
+    .await
+    .unwrap();
 
     tokio::spawn(async move {
         handler1
@@ -572,9 +597,12 @@ async fn test_duplicate_handlers() {
     for i in 0..5 {
         let interface1_clone = interface1.clone();
         let future = tokio::spawn(async move {
-            interface1_clone
-                .request(peer2, TestRequest::Echo(format!("msg{i}")))
-                .await
+            hypha_network::request_response::RequestResponseInterface::request(
+                &interface1_clone,
+                peer2,
+                TestRequest::Echo(format!("msg{i}")),
+            )
+            .await
         });
         response_futures.push(future);
     }
@@ -611,11 +639,13 @@ async fn test_concurrent_request_handling() {
     let concurrent_count_clone = concurrent_count.clone();
     let max_concurrent_seen_clone = max_concurrent_seen.clone();
 
-    let handler = interface2
-        .on(|req: &TestRequest| matches!(req, TestRequest::Slow { .. }))
-        .into_stream()
-        .await
-        .unwrap();
+    let handler = hypha_network::request_response::RequestResponseInterfaceExt::on(
+        &interface2,
+        |req: &TestRequest| matches!(req, TestRequest::Slow { .. }),
+    )
+    .into_stream()
+    .await
+    .unwrap();
 
     tokio::spawn(async move {
         handler
@@ -657,9 +687,12 @@ async fn test_concurrent_request_handling() {
     for _ in 0..20 {
         let interface1_clone = interface1.clone();
         let future = tokio::spawn(async move {
-            interface1_clone
-                .request(peer2, TestRequest::Slow { delay_ms: 50 })
-                .await
+            hypha_network::request_response::RequestResponseInterface::request(
+                &interface1_clone,
+                peer2,
+                TestRequest::Slow { delay_ms: 50 },
+            )
+            .await
         });
         response_futures.push(future);
     }
@@ -694,9 +727,12 @@ async fn test_request_without_handlers() {
     tokio::spawn(driver1.run());
     tokio::spawn(driver2.run());
 
-    let result = interface1
-        .request(peer2, TestRequest::Ping("test".to_string()))
-        .await;
+    let result = hypha_network::request_response::RequestResponseInterface::request(
+        &interface1,
+        peer2,
+        TestRequest::Ping("test".to_string()),
+    )
+    .await;
 
     assert!(
         matches!(result, Err(RequestResponseError::Request(_))),
@@ -741,9 +777,12 @@ async fn test_request_after_disconnect() {
     })
     .await;
 
-    let result = interface1
-        .request(peer2, TestRequest::Ping("test".to_string()))
-        .await;
+    let result = hypha_network::request_response::RequestResponseInterface::request(
+        &interface1,
+        peer2,
+        TestRequest::Ping("test".to_string()),
+    )
+    .await;
 
     assert!(
         matches!(result, Err(RequestResponseError::Request(_))),
@@ -751,4 +790,50 @@ async fn test_request_after_disconnect() {
     );
     driver1_handle.abort();
     handler_task.abort();
+}
+
+#[tokio::test]
+async fn test_codec_ext() {
+    let mut swarm1 = create_test_swarm();
+    let mut swarm2 = create_test_swarm();
+
+    swarm1.listen().with_memory_addr_external().await;
+    swarm2.listen().with_memory_addr_external().await;
+
+    swarm1.connect(&mut swarm2).await;
+
+    let peer2 = *swarm2.local_peer_id();
+
+    let (interface1, driver1) = TestInterface::create(swarm1);
+    let (interface2, driver2) = TestInterface::create(swarm2);
+
+    tokio::spawn(driver1.run());
+    tokio::spawn(driver2.run());
+
+    let handler = interface2
+        .on(|req: &TestRequest| matches!(req, TestRequest::Ping(_)))
+        .into_stream()
+        .await
+        .unwrap();
+
+    tokio::spawn(async move {
+        handler
+            .respond_with_concurrent(Some(1), |(_, req)| async move {
+                match req {
+                    TestRequest::Ping(msg) => TestResponse::Pong(format!("Got: {msg}")),
+                    _ => unreachable!(),
+                }
+            })
+            .await;
+    });
+
+    let response = hypha_network::request_response::RequestResponseInterface::request(
+        &interface1,
+        peer2,
+        TestRequest::Ping("Hello".to_string()),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(response, TestResponse::Pong("Got: Hello".to_string()));
 }

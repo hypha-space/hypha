@@ -1,11 +1,7 @@
 use std::time::{Duration, SystemTime};
 
-use hypha_messages::{
-    JobSpec, Request, Response, WorkerSpec, dispatch_job, job_status, renew_lease,
-};
-use hypha_network::request_response::{
-    RequestResponseError, RequestResponseInterface, RequestResponseInterfaceExt,
-};
+use hypha_messages::{JobSpec, WorkerSpec, api, dispatch_job, job_status, renew_lease};
+use hypha_network::request_response::{RequestResponseError, RequestResponseInterfaceExt};
 use libp2p::PeerId;
 use thiserror::Error;
 use tokio::{
@@ -86,13 +82,13 @@ impl Worker {
                 loop {
                     tracing::info!(lease_id =%lease_id, peer_id = %peer_id, "Refreshing lease");
                     match network
-                        .request(
+                        .request::<api::Codec>(
                             peer_id,
-                            Request::RenewLease(renew_lease::Request { id: lease_id }),
+                            api::Request::RenewLease(renew_lease::Request { id: lease_id }),
                         )
                         .await
                     {
-                        Ok(Response::RenewLease(renew_lease::Response::Renewed {
+                        Ok(api::Response::RenewLease(renew_lease::Response::Renewed {
                             id: _,
                             timeout,
                         })) => {
@@ -116,7 +112,7 @@ impl Worker {
 
                             sleep(safe_duration).await;
                         }
-                        Ok(Response::RenewLease(renew_lease::Response::Failed)) => {
+                        Ok(api::Response::RenewLease(renew_lease::Response::Failed)) => {
                             // Handle failed response
                             tracing::error!(lease_id = %lease_id, peer_id=%peer_id, "Failed to renew lease");
                             break;
@@ -168,10 +164,10 @@ impl Worker {
         // NOTE: Create job status handler for the job
         self.jobs.spawn(
             self.network
-                .on(move |req: &Request| {
+                .on::<api::Codec, _>(move |req: &api::Request| {
                     matches!(
                         req,
-                        Request::JobStatus(
+                        api::Request::JobStatus(
                         job_status::Request { job_id, .. }
                     ) if job_id == &id
                     )
@@ -182,13 +178,15 @@ impl Worker {
                 .respond_with_concurrent(None, move |request| {
                     let tx = tx.clone();
                     async move {
-                        if let (_peer_id, Request::JobStatus(job_status::Request { status, .. })) =
-                            request
+                        if let (
+                            _peer_id,
+                            api::Request::JobStatus(job_status::Request { status, .. }),
+                        ) = request
                         {
                             let _ = tx.send(status).await;
                         }
 
-                        Response::JobStatus(job_status::Response {})
+                        api::Response::JobStatus(job_status::Response {})
                     }
                 }),
         );
@@ -196,13 +194,13 @@ impl Worker {
         // NOTE: Dispatch job status to the worker
         match self
             .network
-            .request(
+            .request::<api::Codec>(
                 self.peer_id,
-                Request::DispatchJob(dispatch_job::Request { id, spec: job_spec }),
+                api::Request::DispatchJob(dispatch_job::Request { id, spec: job_spec }),
             )
             .await
         {
-            Ok(Response::DispatchJob(dispatch_job::Response::Dispatched { id, timeout })) => {
+            Ok(api::Response::DispatchJob(dispatch_job::Response::Dispatched { id, timeout })) => {
                 tracing::info!(
                     job_id = %id,
                     peer_id = %self.peer_id,
@@ -211,7 +209,7 @@ impl Worker {
                 );
                 // TODO: Consider sending this also as a status event along with the updates from the worker
             }
-            Ok(Response::DispatchJob(dispatch_job::Response::Failed)) => {
+            Ok(api::Response::DispatchJob(dispatch_job::Response::Failed)) => {
                 tracing::error!(
                     job_id = %id,
                     peer_id = %self.peer_id,

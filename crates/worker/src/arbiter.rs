@@ -1,10 +1,8 @@
 use futures_util::StreamExt;
-use hypha_messages::{self, Request, Response, dispatch_job, renew_lease};
+use hypha_messages::{self, api, dispatch_job, renew_lease};
 use hypha_network::{
     gossipsub::{self, GossipsubInterface},
-    request_response::{
-        RequestResponseError, RequestResponseInterface, RequestResponseInterfaceExt,
-    },
+    request_response::{RequestResponseError, RequestResponseInterfaceExt},
     utils::Batched,
 };
 use libp2p::PeerId;
@@ -105,7 +103,7 @@ where
 
         let renewal_requests = self
             .network
-            .on(|req: &Request| matches!(req, Request::RenewLease(_)))
+            .on::<api::Codec, _>(|req: &api::Request| matches!(req, api::Request::RenewLease(_)))
             .into_stream()
             .await?;
 
@@ -115,14 +113,14 @@ where
                 .respond_with_concurrent(None, move |(peer_id, request)| {
                     let lease_manager = lease_manager.clone();
                     async move {
-                        if let Request::RenewLease(renew_lease::Request { id }) = request {
+                        if let api::Request::RenewLease(renew_lease::Request { id }) = request {
                             // NOTE: Validate that only the owning peer can renew the lease
                             match lease_manager.get(&id).await {
                                 Ok(lease) => {
                                     if lease.leasable.peer_id == peer_id {
                                         match lease_manager.renew(&id, LEASE_TIMEOUT).await {
                                             Ok(lease) => {
-                                                return Response::RenewLease(
+                                                return api::Response::RenewLease(
                                                     renew_lease::Response::Renewed {
                                                         id,
                                                         timeout: lease.timeout,
@@ -157,7 +155,7 @@ where
                                 }
                             }
                         }
-                        Response::RenewLease(renew_lease::Response::Failed)
+                        api::Response::RenewLease(renew_lease::Response::Failed)
                     }
                 })
                 .await
@@ -166,7 +164,7 @@ where
         // NOTE: Handle DispatchJob requests from schedulers
         let dispatch_requests = self
             .network
-            .on(|req: &Request| matches!(req, Request::DispatchJob(_)))
+            .on::<api::Codec, _>(|req: &api::Request| matches!(req, api::Request::DispatchJob(_)))
             .into_stream()
             .await?;
 
@@ -178,7 +176,9 @@ where
                     let mut job_manager = job_manager.clone();
                     let lease_manager = lease_manager.clone();
                     async move {
-                        if let Request::DispatchJob(dispatch_job::Request { id, spec }) = request {
+                        if let api::Request::DispatchJob(dispatch_job::Request { id, spec }) =
+                            request
+                        {
                             // NOTE: Validate that the scheduler has a valid lease
                             match lease_manager.get_by_peer(&peer_id).await {
                                 Ok(lease) => {
@@ -196,7 +196,7 @@ where
                                                 scheduler_id = %peer_id,
                                                 "Task successfully dispatched"
                                             );
-                                            Response::DispatchJob(
+                                            api::Response::DispatchJob(
                                                 dispatch_job::Response::Dispatched {
                                                     id,
                                                     // NOTE: We currently acknowledge with the existing lease timeout.
@@ -212,7 +212,9 @@ where
                                                 error = ?e,
                                                 "Failed to dispatch job"
                                             );
-                                            Response::DispatchJob(dispatch_job::Response::Failed)
+                                            api::Response::DispatchJob(
+                                                dispatch_job::Response::Failed,
+                                            )
                                         }
                                     }
                                 }
@@ -223,11 +225,11 @@ where
                                         error = ?e,
                                         "Rejecting job from scheduler without valid lease"
                                     );
-                                    Response::DispatchJob(dispatch_job::Response::Failed)
+                                    api::Response::DispatchJob(dispatch_job::Response::Failed)
                                 }
                             }
                         } else {
-                            Response::DispatchJob(dispatch_job::Response::Failed)
+                            api::Response::DispatchJob(dispatch_job::Response::Failed)
                         }
                     }
                 })
@@ -304,10 +306,13 @@ where
 
         for (_, peer_id, request) in scored_requests {
             tracing::info!("Processing request from peer {}", peer_id);
-            if let Ok(lease) = self
-                .lease_manager
-                .request(peer_id, request.spec.requirements.clone(), OFFER_TIMEOUT)
-                .await
+            if let Ok(lease) = LeaseManager::request(
+                &mut self.lease_manager,
+                peer_id,
+                request.spec.requirements.clone(),
+                OFFER_TIMEOUT,
+            )
+            .await
             {
                 let offer = hypha_messages::worker_offer::Request {
                     id: lease.id,
@@ -323,7 +328,7 @@ where
                 self.tasks.spawn(async move {
                     // NOTE: Send offer to peer
                     if let Err(err) = network
-                        .request(peer_id, hypha_messages::Request::WorkerOffer(offer.clone()))
+                        .request::<api::Codec>(peer_id, api::Request::WorkerOffer(offer.clone()))
                         .await
                     {
                         tracing::error!(
