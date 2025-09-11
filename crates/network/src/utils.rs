@@ -110,13 +110,13 @@ impl<S: Stream> Stream for Batched<S> {
                     }
 
                     // Poll the delay timer.
-                    if let Some(delay) = this.delay.as_mut().as_pin_mut() {
-                        if delay.poll(cx).is_ready() {
-                            // Timer has fired, flush the buffer.
-                            this.delay.set(None);
-                            let out = std::mem::take(this.buffer);
-                            return Poll::Ready(Some(out));
-                        }
+                    if let Some(delay) = this.delay.as_mut().as_pin_mut()
+                        && delay.poll(cx).is_ready()
+                    {
+                        // Timer has fired, flush the buffer.
+                        this.delay.set(None);
+                        let out = std::mem::take(this.buffer);
+                        return Poll::Ready(Some(out));
                     }
 
                     // Timer has not fired yet, and inner stream is pending.

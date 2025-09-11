@@ -54,7 +54,6 @@ where
     request_evaluator: R,
     job_manager: JobManager,
     tasks: JoinSet<()>,
-    token: CancellationToken,
 }
 
 impl<L, R> Arbiter<L, R>
@@ -68,7 +67,6 @@ where
         request_evaluator: R,
         network: Network,
         job_manager: JobManager,
-        token: CancellationToken,
     ) -> Self {
         Self {
             network,
@@ -76,11 +74,10 @@ where
             request_evaluator,
             job_manager,
             tasks: JoinSet::new(),
-            token,
         }
     }
 
-    pub async fn run(mut self) -> Result<(), ArbiterError> {
+    pub async fn run(mut self, cancel: CancellationToken) -> Result<(), ArbiterError> {
         let requests = self.network.subscribe(WORKER_TOPIC).await?;
 
         // NOTE: Use windowed stream to batch incoming gossipsub messages
@@ -94,10 +91,10 @@ where
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 interval.tick().await;
-                if let Ok(expired) = lease_manager.proceed().await {
-                    if !expired.is_empty() {
-                        tracing::debug!("Pruned {} expired leases", expired.len());
-                    }
+                if let Ok(expired) = lease_manager.proceed().await
+                    && !expired.is_empty()
+                {
+                    tracing::debug!("Pruned {} expired leases", expired.len());
                 }
             }
         });
@@ -235,7 +232,7 @@ where
 
         loop {
             tokio::select! {
-                _ = self.token.cancelled() => {
+                _ = cancel.cancelled() => {
                     tracing::debug!("Arbiter cancelled");
                     break;
                 },
@@ -244,10 +241,9 @@ where
                     let parsed_requests: Vec<(PeerId, hypha_messages::request_worker::Request)> = request_batch
                         .into_iter()
                         .filter_map(|message| {
-                            if let Ok(m) = message {
-                                if let Ok(request) = ciborium::from_reader::<hypha_messages::request_worker::Request, _>(&m.data[..]) {
+                            if let Ok(m) = message
+                                && let Ok(request) = ciborium::from_reader::<hypha_messages::request_worker::Request, _>(&m.data[..]) {
                                     return Some((m.source, request));
-                                }
                             }
                             None
                         })
@@ -274,10 +270,10 @@ where
         self.tasks.abort_all();
 
         while let Some(result) = self.tasks.join_next().await {
-            if let Err(e) = result {
-                if !e.is_cancelled() {
-                    tracing::error!("Task failed: {:?}", e);
-                }
+            if let Err(e) = result
+                && !e.is_cancelled()
+            {
+                tracing::error!("Task failed: {:?}", e);
             }
         }
 
@@ -296,7 +292,7 @@ where
             .map(|(peer_id, request)| {
                 let score = self.request_evaluator.score(request);
 
-                (score, peer_id.clone(), request.clone())
+                (score, *peer_id, request.clone())
             })
             .collect();
 

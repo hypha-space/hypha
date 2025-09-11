@@ -113,7 +113,7 @@ impl JobExecutor for ParameterServerExecutor {
                                             Ok(mut file) => {
                                                 match io::copy(&mut reader, &mut file).await {
                                                     Ok(size) => {
-                                                        file.sync_all().await.unwrap();
+                                                        file.sync_all().await.expect("file is synced");
                                                         tracing::info!(size, path = ?file_name, "Wrote update to file");
                                                     }
                                                     Err(e) => {
@@ -160,7 +160,7 @@ impl JobExecutor for ParameterServerExecutor {
                             // If the name of the result file would be the same as one of incoming updates,
                             // we would overwrite an mmapped file.
                             let temporary_tensor_file_name = work_dir.join("avg-temporary");
-                            fs::copy(file_name.as_path(), temporary_tensor_file_name.as_path()).await.unwrap();
+                            fs::copy(file_name.as_path(), temporary_tensor_file_name.as_path()).await.expect("file can be copied");
                             temporary_tensor_file_name
                         },
                         Some(result_tensor_file_name) => {
@@ -171,12 +171,12 @@ impl JobExecutor for ParameterServerExecutor {
                                 // Average the new tensor with an existing one
                                 match unsafe { MmapedSafetensors::new(file_name) } {
                                     Ok(new_tensor) => {
-                                        if let Err(e) = std::fs::create_dir_all(&work_dir.join("avg").join(name.as_str())) {
+                                        if let Err(e) = std::fs::create_dir_all(work_dir.join("avg").join(name.as_str())) {
                                             tracing::warn!(error = ?e, "Failed to create avg directory; keeping previous aggregation");
                                             result_tensor_file_name.clone()
                                         } else {
                                             let paths = {
-                                                let result_tensor = unsafe { MmapedSafetensors::new(result_tensor_file_name.as_path()) }.unwrap();
+                                                let result_tensor = unsafe { MmapedSafetensors::new(result_tensor_file_name.as_path()) }.expect("tensor file is readable");
 
                                                 let mut paths = Vec::new();
                                                 for (tensor_name, tensor) in result_tensor.tensors() {
@@ -253,7 +253,7 @@ impl JobExecutor for ParameterServerExecutor {
                                         result_tensor_file_name.clone()
                                     }
                                 }
-                            }}).await.unwrap()
+                            }}).await.expect("averaging tasks runs to completion")
                         }
                     };
 
@@ -263,59 +263,57 @@ impl JobExecutor for ParameterServerExecutor {
                     // We assume that each worker sends their parameters, then waits to receive updates.
                     // With that assumption, we can send these updates after 'num_workers' parameters have been received.
                     // TODO: This needs more work to support more complex scenarios.
-                    if current_worker == num_workers {
-                        if let Some(ref result_file_name) = current_result_tensor_file_name {
-                            // Rename the temporary result to ensure that it's available for updates again.
-                            // In edge-cases we might receive updates while still sending out results.
-                            // This will overwrite 'result_file_name'.
-                            let final_tensor_file_name = work_dir.join("avg-final");
-                            fs::rename(result_file_name.as_path(), final_tensor_file_name.as_path()).await.unwrap();
+                    if current_worker == num_workers && let Some(ref result_file_name) = current_result_tensor_file_name {
+                        // Rename the temporary result to ensure that it's available for updates again.
+                        // In edge-cases we might receive updates while still sending out results.
+                        // This will overwrite 'result_file_name'.
+                        let final_tensor_file_name = work_dir.join("avg-final");
+                        fs::rename(result_file_name.as_path(), final_tensor_file_name.as_path()).await.expect("tensor file can be renamed");
 
-                            // These need to be reset before sending out the result!
-                            current_result_tensor_file_name = None;
-                            current_worker = 0;
+                        // These need to be reset before sending out the result!
+                        current_result_tensor_file_name = None;
+                        current_worker = 0;
 
-                            match connector.send(results.clone()).await {
-                                Ok(writers) => {
-                                    writers.for_each_concurrent(None, async |item_res| {
-                                        match item_res {
-                                            Ok(item) => {
-                                                    tracing::info!(peer_id = item.meta.name, "Sending parameter server update");
+                        match connector.send(results.clone()).await {
+                            Ok(writers) => {
+                                writers.for_each_concurrent(None, async |item_res| {
+                                    match item_res {
+                                        Ok(item) => {
+                                                tracing::info!(peer_id = item.meta.name, "Sending parameter server update");
 
-                                                    match fs::File::open(final_tensor_file_name.as_path()).await {
-                                                        Ok(mut file) => {
-                                                            let mut writer = item.writer.compat_write();
+                                                match fs::File::open(final_tensor_file_name.as_path()).await {
+                                                    Ok(mut file) => {
+                                                        let mut writer = item.writer.compat_write();
 
-                                                            if let Err(e) = io::copy(
-                                                                &mut file,
-                                                                &mut writer,
-                                                            )
-                                                            .await
-                                                            {
-                                                                tracing::warn!(error = ?e, "Failed to write update to peer");
-                                                            }
-
-                                                            writer.shutdown().await.expect("Failed to shutdown writer");
+                                                        if let Err(e) = io::copy(
+                                                            &mut file,
+                                                            &mut writer,
+                                                        )
+                                                        .await
+                                                        {
+                                                            tracing::warn!(error = ?e, "Failed to write update to peer");
                                                         }
-                                                        Err(e) => {
-                                                            tracing::warn!(error = ?e, "Failed to open result tensor file");
-                                                        }
-                                                }
-                                            }
-                                            Err(e) => {
-                                                tracing::warn!(error = ?e, "Failed to open writer to peer");
+
+                                                        writer.shutdown().await.expect("Failed to shutdown writer");
+                                                    }
+                                                    Err(e) => {
+                                                        tracing::warn!(error = ?e, "Failed to open result tensor file");
+                                                    }
                                             }
                                         }
-                                    }).await;
-                                }
-                                Err(e) => {
-                                    // Do not panic if peers are not reachable (e.g., no addresses). We'll retry on next batch.
-                                    tracing::warn!(error = ?e, "Failed to send to peers; will retry on next aggregation");
-                                }
+                                        Err(e) => {
+                                            tracing::warn!(error = ?e, "Failed to open writer to peer");
+                                        }
+                                    }
+                                }).await;
                             }
-
-                            fs::remove_file(final_tensor_file_name.as_path()).await.unwrap();
+                            Err(e) => {
+                                // Do not panic if peers are not reachable (e.g., no addresses). We'll retry on next batch.
+                                tracing::warn!(error = ?e, "Failed to send to peers; will retry on next aggregation");
+                            }
                         }
+
+                        fs::remove_file(final_tensor_file_name.as_path()).await.expect("tensor file can be removed");
                     }
                 }
             };

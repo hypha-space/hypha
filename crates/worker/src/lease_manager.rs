@@ -121,7 +121,7 @@ where
             .await
             .map_err(LeaseError::from);
 
-        if let Err(_) = result {
+        if result.is_err() {
             self.resource_manager.release(reservation).await?;
         }
 

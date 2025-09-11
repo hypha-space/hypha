@@ -67,6 +67,7 @@ impl Allocator for GreedyWorkerAllocator {
         deadline: Option<Duration>,
     ) -> Result<Worker, AllocatorError> {
         let id = Uuid::new_v4();
+        let deadline = deadline.unwrap_or(DEFAULT_TIMEOUT);
 
         tracing::info!(
         request_id = %id,
@@ -78,7 +79,6 @@ impl Allocator for GreedyWorkerAllocator {
         let (tx, rx) = mpsc::channel(100);
 
         // NOTE: Set up a handler to receive and ack offers
-        let id_clone = id;
         let offer_handle = tokio::spawn(
             self.network
                 .on(move |req: &Request| {
@@ -86,7 +86,7 @@ impl Allocator for GreedyWorkerAllocator {
                         req,
                         Request::WorkerOffer(
                         worker_offer::Request { request_id, .. }
-                    ) if request_id == &id_clone
+                    ) if request_id == &id
                     )
                 })
                 .into_stream()
@@ -110,7 +110,7 @@ impl Allocator for GreedyWorkerAllocator {
             &request_worker::Request {
                 id,
                 spec: spec.clone(),
-                timeout: SystemTime::now() + deadline.unwrap_or(DEFAULT_TIMEOUT),
+                timeout: SystemTime::now() + deadline,
                 bid,
             },
             &mut message,
@@ -126,7 +126,7 @@ impl Allocator for GreedyWorkerAllocator {
         let mut offer_aggregator = pin!(GreedyOfferAggregator::new(
             ReceiverStream::new(rx),
             id,
-            deadline.unwrap_or(DEFAULT_TIMEOUT),
+            deadline,
             None, // TODO: configure max offers
         ));
 
@@ -190,11 +190,11 @@ where
         let mut this = self.project();
 
         // First check if we've reached max offers limit
-        if let Some(max) = this.max_offers {
-            if *this.offers_received >= *max {
-                tracing::debug!("Reached maximum offer limit");
-                return Poll::Ready(this.best_offer.take());
-            }
+        if let Some(max) = this.max_offers
+            && *this.offers_received >= *max
+        {
+            tracing::debug!("Reached maximum offer limit");
+            return Poll::Ready(this.best_offer.take());
         }
 
         // Poll the deadline timer
@@ -228,24 +228,22 @@ where
                     };
 
                     // Update deadline timer if new best offer expires sooner
-                    if should_update_timer {
-                        if let Some((_, offer)) = &this.best_offer {
-                            let now = SystemTime::now();
-                            let expiry_buffer = Duration::from_millis(100);
+                    if should_update_timer && let Some((_, offer)) = &this.best_offer {
+                        let now = SystemTime::now();
+                        let expiry_buffer = Duration::from_millis(100);
 
-                            // Calculate time until offer expires
-                            if let Ok(time_until_expiry) = offer.timeout.duration_since(now) {
-                                let duration_until_expiry = if time_until_expiry > expiry_buffer {
-                                    time_until_expiry - expiry_buffer
-                                } else {
-                                    Duration::from_millis(0)
-                                };
+                        // Calculate time until offer expires
+                        if let Ok(time_until_expiry) = offer.timeout.duration_since(now) {
+                            let duration_until_expiry = if time_until_expiry > expiry_buffer {
+                                time_until_expiry - expiry_buffer
+                            } else {
+                                Duration::from_millis(0)
+                            };
 
-                                // Reset the timer to the earlier of current deadline or offer expiry
-                                this.deadline
-                                    .as_mut()
-                                    .reset(tokio::time::Instant::now() + duration_until_expiry);
-                            }
+                            // Reset the timer to the earlier of current deadline or offer expiry
+                            this.deadline
+                                .as_mut()
+                                .reset(tokio::time::Instant::now() + duration_until_expiry);
                         }
                     }
 

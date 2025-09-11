@@ -52,6 +52,12 @@ impl ComputeResources {
     }
 }
 
+impl Default for ComputeResources {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Sub for ComputeResources {
     type Output = ComputeResources;
 
@@ -120,7 +126,7 @@ impl PartialOrd for ComputeResources {
             match (acc, field) {
                 (o1, o2) if o1 == o2 => Ok(o1),
                 (Ordering::Equal, o) | (o, Ordering::Equal) => Ok(o),
-                _ => return Err(()),
+                _ => Err(()),
             }
         })
         .ok()
@@ -135,12 +141,12 @@ impl Sum for ComputeResources {
 
 impl<'a> Sum<&'a ComputeResources> for ComputeResources {
     fn sum<I: Iterator<Item = &'a Self>>(iter: I) -> Self {
-        iter.fold(ComputeResources::new(), |acc, x| acc + x.clone())
+        iter.fold(ComputeResources::new(), |acc, x| acc + *x)
     }
 }
 
 /// Extracts resource requirements from a worker specification
-pub fn extract_compute_resource_requirements(requirements: &Vec<Requirement>) -> ComputeResources {
+pub fn extract_compute_resource_requirements(requirements: &[Requirement]) -> ComputeResources {
     requirements
         .iter()
         .fold(ComputeResources::new(), |acc, req| match req {
@@ -161,7 +167,7 @@ pub fn extract_compute_resource_requirements(requirements: &Vec<Requirement>) ->
 }
 
 /// Extracts resource requirements from a worker specification
-pub fn extract_other_resource_requirements(requirements: &Vec<Requirement>) -> Vec<String> {
+pub fn extract_other_resource_requirements(requirements: &[Requirement]) -> Vec<String> {
     requirements
         .iter()
         .filter_map(|x| match x {

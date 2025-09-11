@@ -81,7 +81,6 @@ impl Worker {
         let mut jobs = JoinSet::new();
 
         jobs.spawn({
-            let peer_id = peer_id;
             let network = network.clone();
             async move {
                 // NOTE: Refresh at 75% of lease duration to ensure we renew before expiry
@@ -169,7 +168,6 @@ impl Worker {
         let (tx, rx) = mpsc::channel(100);
 
         // NOTE: Create job status handler for the job
-        let id_clone = id.clone();
         self.jobs.spawn(
             self.network
                 .on(move |req: &Request| {
@@ -177,7 +175,7 @@ impl Worker {
                         req,
                         Request::JobStatus(
                         job_status::Request { job_id, .. }
-                    ) if job_id == &id_clone
+                    ) if job_id == &id
                     )
                 })
                 .into_stream()

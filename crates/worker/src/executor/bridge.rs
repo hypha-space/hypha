@@ -228,7 +228,7 @@ async fn send_resource(
 
     // Copy the resource in the background to avoid blocking.
     tokio::spawn(async move {
-        while let Some(item) = writers.next().await.transpose().unwrap() {
+        while let Some(item) = writers.next().await.transpose().expect("stream") {
             let peer_id = item.meta.name.clone();
             let file = fs::File::open(&abs).await.expect("file exists");
             tracing::info!(peer_id = %peer_id, file = %abs.display(), "Sending resource");
@@ -333,10 +333,10 @@ async fn receive_subscribe(
                 Ok(p) => p,
                 Err(_) => break,
             };
-            if let Some(parent) = file_abs.parent() {
-                if fs::create_dir_all(parent).await.is_err() {
-                    break;
-                }
+            if let Some(parent) = file_abs.parent()
+                && fs::create_dir_all(parent).await.is_err()
+            {
+                break;
             }
             let mut file = match fs::File::create(&file_abs).await {
                 Ok(f) => f,
@@ -368,10 +368,7 @@ async fn receive_subscribe(
     });
 
     let stream = stream::unfold(rx, |mut rx| async move {
-        match rx.recv().await {
-            Some(ev) => Some((Ok(ev), rx)),
-            None => None,
-        }
+        rx.recv().await.map(|ev| (Ok(ev), rx))
     });
 
     Ok(Sse::new(stream).keep_alive(

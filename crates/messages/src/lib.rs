@@ -11,6 +11,7 @@ pub struct ArtifactHeader {
     pub epoch: u64,
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Request {
     WorkerOffer(worker_offer::Request),
@@ -210,10 +211,6 @@ impl Fetch {
             filenames,
         })
     }
-
-    pub fn as_ref(&self) -> &Reference {
-        &self.0
-    }
 }
 
 impl TryFrom<Reference> for Fetch {
@@ -245,10 +242,6 @@ pub struct Send(Reference);
 impl Send {
     pub fn peers(peers: Vec<PeerId>, strategy: SelectionStrategy) -> Self {
         Self(Reference::Peers { peers, strategy })
-    }
-
-    pub fn as_ref(&self) -> &Reference {
-        &self.0
     }
 }
 
@@ -286,10 +279,6 @@ impl Receive {
         })
     }
 
-    pub fn as_ref(&self) -> &Reference {
-        &self.0
-    }
-
     pub fn get_peers(&self) -> &Vec<PeerId> {
         match &self.0 {
             Reference::Peers { peers, .. } => peers,
@@ -325,22 +314,6 @@ impl AsRef<Reference> for Receive {
     }
 }
 
-// impl TryFrom<Mode> for AllowedMode {
-//     type Error = ();
-//     fn try_from(m: Mode) -> Result<Self, ()> {
-//         match m {
-//             Mode::A | Mode::B => Ok(Self(m)),
-//             _ => Err(()),
-//         }
-//     }
-// }
-
-// impl From<AllowedMode> for Mode {
-//     fn from(am: AllowedMode) -> Mode {
-//         am.0
-//     }
-// }
-
 /// Driver specifications for different ML frameworks
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[non_exhaustive]
@@ -365,7 +338,7 @@ pub enum Optimizer {
         beta2: f64,
         epsilon: f64,
     },
-    SGD {
+    Sgd {
         learning_rate: f64,
         momentum: f64,
     },

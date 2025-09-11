@@ -226,13 +226,11 @@ impl FetchConnector for HttpHfFetcher {
                     let client = reqwest::Client::new();
                     let response = client.get(value).send().await?;
                     if !response.status().is_success() {
-                        return Err(ConnectorError::Http(reqwest::Error::from(
+                        return Err(ConnectorError::Http(
                             response.error_for_status().unwrap_err(),
-                        )));
+                        ));
                     }
-                    let byte_stream = response
-                        .bytes_stream()
-                        .map_err(|e| io::Error::new(io::ErrorKind::Other, e));
+                    let byte_stream = response.bytes_stream().map_err(io::Error::other);
                     let tokio_reader = StreamReader::new(byte_stream);
                     let fut_reader = tokio_reader.compat();
 
@@ -269,14 +267,11 @@ impl FetchConnector for HttpHfFetcher {
                             let repo = repo.clone();
                             async move {
                                 // Download to cache (if needed) and get local path
-                                let path = repo
-                                    .get(&filename)
-                                    .await
-                                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                                let path = repo.get(&filename).await.map_err(io::Error::other)?;
                                 // Open as tokio file and adapt to futures::io::AsyncRead
                                 let file = tokio::fs::File::open(path)
                                     .await
-                                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                                    .map_err(io::Error::other)?;
                                 let reader = file.compat();
                                 Ok(ReadItem {
                                     meta: ItemMeta {
@@ -350,9 +345,10 @@ where
                         Ok(Box::pin(it) as WriteItemStream)
                     }
                     SelectionStrategy::One | SelectionStrategy::Random => {
-                        let peer = peers.get(0).copied().ok_or_else(|| {
-                            io::Error::new(io::ErrorKind::Other, "no peers provided")
-                        })?;
+                        let peer = peers
+                            .first()
+                            .copied()
+                            .ok_or_else(|| io::Error::other("no peers provided"))?;
                         let stream = self.network.stream(peer).await?;
                         let item = WriteItem {
                             meta: ItemMeta {

@@ -191,12 +191,14 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
         WeightedResourceRequestEvaluator::default(),
         network.clone(),
         JobManager::new(Connector::new(network.clone()), config.work_dir().clone()),
-        token.clone(),
     );
 
-    let arbiter_handle = tokio::spawn(async move {
-        if let Err(e) = arbiter.run().await {
-            tracing::error!(error = %e, "Arbiter failed");
+    let arbiter_handle = tokio::spawn({
+        let token = token.clone();
+        async move {
+            if let Err(e) = arbiter.run(token).await {
+                tracing::error!(error = %e, "Arbiter failed");
+            }
         }
     });
 

@@ -67,6 +67,7 @@ pub struct NetworkDriver {
     request_handlers: HyphaRequestHandlers,
 }
 
+#[allow(clippy::large_enum_variant)]
 enum Action {
     Dial(DialAction),
     Listen(ListenAction),

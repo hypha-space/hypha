@@ -56,6 +56,15 @@ where
     leases: Arc<RwLock<HashMap<Uuid, Lease<T>>>>,
 }
 
+impl<T> Default for Ledger<T>
+where
+    T: Clone + Send + Sync,
+{
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<T> Ledger<T>
 where
     T: Clone + Send + Sync,
