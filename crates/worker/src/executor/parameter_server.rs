@@ -304,12 +304,15 @@ impl JobExecutor for ParameterServerExecutor {
                                                 tracing::warn!(error = ?e, "Failed to open writer to peer");
                                             }
                                         }
-                                    }).await;
-                                }
-                                Err(e) => {
-                                    // Do not panic if peers are not reachable (e.g., no addresses). We'll retry on next batch.
-                                    tracing::warn!(error = ?e, "Failed to send to peers; will retry on next aggregation");
-                                }
+                                        Err(e) => {
+                                            tracing::warn!(error = ?e, "Failed to open writer to peer");
+                                        }
+                                    }
+                                }).await;
+                            }
+                            Err(e) => {
+                                // Do not panic if peers are not reachable (e.g., no addresses). We'll retry on next batch.
+                                tracing::warn!(error = ?e, "Failed to send to peers; will retry on next aggregation");
                             }
 
                         fs::remove_file(final_tensor_file_name.as_path()).await.expect("tensor file can be removed");
