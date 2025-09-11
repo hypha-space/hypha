@@ -6,6 +6,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use futures_util::stream::StreamExt;
+use hypha_messages::{api, health};
 use hypha_network::{
     CertificateDer, CertificateRevocationListDer, PrivateKeyDer,
     dial::{DialAction, DialDriver, DialInterface, PendingDials},
@@ -28,15 +29,15 @@ use hypha_network::{
 };
 use libp2p::{
     PeerId, StreamProtocol, Swarm, SwarmBuilder, dcutr, gossipsub, identify, kad, ping, relay,
-    request_response::{self, cbor::codec::Codec},
+    request_response,
     swarm::{ConnectionId, DialError, NetworkBehaviour, SwarmEvent},
     tcp, tls, yamux,
 };
 use libp2p_stream as stream;
 use tokio::sync::{SetOnce, mpsc, oneshot};
 
-pub type HyphaCodec = Codec<hypha_messages::Request, hypha_messages::Response>;
-type HyphaRequestHandlers = Vec<RequestHandler<HyphaCodec>>;
+type HyphaRequestHandlers = Vec<RequestHandler<api::Codec>>;
+type HealthRequestHandlers = Vec<RequestHandler<health::Codec>>;
 
 #[derive(Clone)]
 pub struct Network {
@@ -53,7 +54,8 @@ pub struct Behaviour {
     stream: stream::Behaviour,
     kademlia: kad::Behaviour<kad::store::MemoryStore>,
     gossipsub: gossipsub::Behaviour,
-    request_response: request_response::Behaviour<HyphaCodec>,
+    request_response: request_response::Behaviour<api::Codec>,
+    health_request_response: request_response::Behaviour<health::Codec>,
 }
 
 pub struct NetworkDriver {
@@ -64,9 +66,12 @@ pub struct NetworkDriver {
     pending_bootstrap: Arc<SetOnce<()>>,
     subscriptions: Subscriptions,
     action_receiver: mpsc::Receiver<Action>,
-    outbound_requests_map: OutboundRequests<HyphaCodec>,
+    outbound_requests_map: OutboundRequests<api::Codec>,
     outbound_responses_map: OutboundResponses,
     request_handlers: HyphaRequestHandlers,
+    health_outbound_requests_map: OutboundRequests<health::Codec>,
+    health_outbound_responses_map: OutboundResponses,
+    health_request_handlers: HealthRequestHandlers,
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -75,7 +80,8 @@ enum Action {
     Listen(ListenAction),
     Kademlia(KademliaAction),
     Gossipsub(GossipsubAction),
-    RequestResponse(RequestResponseAction<HyphaCodec>),
+    RequestResponse(RequestResponseAction<api::Codec>),
+    HealthRequestResponse(RequestResponseAction<health::Codec>),
     ExternalAddress(ExternalAddressAction),
 }
 
@@ -127,10 +133,17 @@ impl Network {
                         kad::store::MemoryStore::new(key.public().to_peer_id()),
                     ),
                     gossipsub,
-                    request_response: request_response::Behaviour::<HyphaCodec>::new(
+                    request_response: request_response::Behaviour::<api::Codec>::new(
                         [(
-                            StreamProtocol::new("/hypha-api/0.0.1"),
+                            StreamProtocol::new(api::IDENTIFIER),
                             request_response::ProtocolSupport::Full,
+                        )],
+                        request_response::Config::default(),
+                    ),
+                    health_request_response: request_response::Behaviour::<health::Codec>::new(
+                        [(
+                            StreamProtocol::new(health::IDENTIFIER),
+                            request_response::ProtocolSupport::Outbound,
                         )],
                         request_response::Config::default(),
                     ),
@@ -156,6 +169,9 @@ impl Network {
                 outbound_requests_map: HashMap::default(),
                 outbound_responses_map: HashMap::default(),
                 request_handlers: Vec::new(),
+                health_outbound_requests_map: HashMap::default(),
+                health_outbound_responses_map: HashMap::default(),
+                health_request_handlers: Vec::new(),
                 action_receiver,
             },
         ))
@@ -191,7 +207,10 @@ impl SwarmDriver<Behaviour> for NetworkDriver {
                         self.process_gossipsub_event(event).await;
                         }
                         SwarmEvent::Behaviour(BehaviourEvent::RequestResponse(event)) => {
-                            self.process_request_response_event(event).await;
+                            <NetworkDriver as RequestResponseDriver<Behaviour, api::Codec>>::process_request_response_event(&mut self, event).await;
+                        }
+                        SwarmEvent::Behaviour(BehaviourEvent::HealthRequestResponse(event)) => {
+                            <NetworkDriver as RequestResponseDriver<Behaviour, health::Codec>>::process_request_response_event(&mut self, event).await;
                         }
                         SwarmEvent::Behaviour(BehaviourEvent::Dcutr(event)) => {
                             tracing::debug!("dcutr event: {:?}", event);
@@ -217,7 +236,9 @@ impl SwarmDriver<Behaviour> for NetworkDriver {
                             self.process_gossipsub_action(action).await;
                         },
                         Action::RequestResponse(action) =>
-                            self.process_request_response_action(action).await,
+                            <NetworkDriver as RequestResponseDriver<Behaviour, api::Codec>>::process_request_response_action(&mut self, action).await,
+                        Action::HealthRequestResponse(action) =>
+                            <NetworkDriver as RequestResponseDriver<Behaviour, health::Codec>>::process_request_response_action(&mut self, action).await,
                         Action::ExternalAddress(action) =>
                             self.process_external_address_action(action).await,
                     }
@@ -319,14 +340,14 @@ impl GossipsubInterface for Network {
     }
 }
 
-impl RequestResponseBehaviour<HyphaCodec> for Behaviour {
-    fn request_response(&mut self) -> &mut libp2p::request_response::Behaviour<HyphaCodec> {
+impl RequestResponseBehaviour<api::Codec> for Behaviour {
+    fn request_response(&mut self) -> &mut libp2p::request_response::Behaviour<api::Codec> {
         &mut self.request_response
     }
 }
 
-impl RequestResponseDriver<Behaviour, HyphaCodec> for NetworkDriver {
-    fn outbound_requests(&mut self) -> &mut OutboundRequests<HyphaCodec> {
+impl RequestResponseDriver<Behaviour, api::Codec> for NetworkDriver {
+    fn outbound_requests(&mut self) -> &mut OutboundRequests<api::Codec> {
         &mut self.outbound_requests_map
     }
 
@@ -339,8 +360,8 @@ impl RequestResponseDriver<Behaviour, HyphaCodec> for NetworkDriver {
     }
 }
 
-impl RequestResponseInterface<HyphaCodec> for Network {
-    async fn send(&self, action: RequestResponseAction<HyphaCodec>) {
+impl RequestResponseInterface<api::Codec> for Network {
+    async fn send(&self, action: RequestResponseAction<api::Codec>) {
         self.action_sender
             .send(Action::RequestResponse(action))
             .await
@@ -349,10 +370,48 @@ impl RequestResponseInterface<HyphaCodec> for Network {
 
     fn try_send(
         &self,
-        action: RequestResponseAction<HyphaCodec>,
+        action: RequestResponseAction<api::Codec>,
     ) -> Result<(), RequestResponseError> {
         self.action_sender
             .try_send(Action::RequestResponse(action))
+            .map_err(|_| RequestResponseError::Other("Failed to send action".to_string()))
+    }
+}
+
+impl RequestResponseBehaviour<health::Codec> for Behaviour {
+    fn request_response(&mut self) -> &mut libp2p::request_response::Behaviour<health::Codec> {
+        &mut self.health_request_response
+    }
+}
+
+impl RequestResponseDriver<Behaviour, health::Codec> for NetworkDriver {
+    fn outbound_requests(&mut self) -> &mut OutboundRequests<health::Codec> {
+        &mut self.health_outbound_requests_map
+    }
+
+    fn outbound_responses(&mut self) -> &mut OutboundResponses {
+        &mut self.health_outbound_responses_map
+    }
+
+    fn request_handlers(&mut self) -> &mut HealthRequestHandlers {
+        &mut self.health_request_handlers
+    }
+}
+
+impl RequestResponseInterface<health::Codec> for Network {
+    async fn send(&self, action: RequestResponseAction<health::Codec>) {
+        self.action_sender
+            .send(Action::HealthRequestResponse(action))
+            .await
+            .expect("network driver is running");
+    }
+
+    fn try_send(
+        &self,
+        action: RequestResponseAction<health::Codec>,
+    ) -> Result<(), RequestResponseError> {
+        self.action_sender
+            .try_send(Action::HealthRequestResponse(action))
             .map_err(|_| RequestResponseError::Other("Failed to send action".to_string()))
     }
 }

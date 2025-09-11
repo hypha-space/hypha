@@ -9,3 +9,4 @@ license = "Apache-2.0"
 libp2p.workspace = true
 serde.workspace = true
 uuid.workspace = true
+hypha-network.workspace = true

@@ -1920,6 +1920,7 @@ dependencies = [
  "figment",
  "futures-util",
  "hypha-config",
+ "hypha-messages",
  "hypha-network",
  "libp2p",
  "miette",
@@ -1943,6 +1944,7 @@ dependencies = [
 name = "hypha-messages"
 version = "0.0.0"
 dependencies = [
+ "hypha-network",
  "libp2p",
  "serde",
  "uuid",
