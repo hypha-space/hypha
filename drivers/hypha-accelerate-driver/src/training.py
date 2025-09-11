@@ -78,7 +78,7 @@ class CustomC4(torch.utils.data.Dataset[int]):
         return self.tokenized_data[idx]
 
 
-def main(socket_path: str, work_dir: str, job_json: str) -> None:
+def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR0915
     # Background receiver context that fills a queue with update pointers
     with Session(socket_path) as session:
         job_spec = json.loads(job_json)
@@ -190,8 +190,7 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:
                     # Mark that before the next training epoch we must wait for an update
                     await_update = True
 
-            print(f"Finished training of {job_spec["executor"]["epochs"]} epochs", flush=True)
-
+            print(f"Finished training of {job_spec['executor']['epochs']} epochs", flush=True)
 
 
 if __name__ == "__main__":

@@ -42,6 +42,7 @@ class Session(AbstractContextManager["Session", None]):
         ) as resp:
             yield EventSource(resp)
 
+
 class EventSource:
     def __init__(self, response: httpx.Response) -> None:
         self._response = response
