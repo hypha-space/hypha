@@ -145,6 +145,10 @@ impl JobExecutor for ProcessExecutor {
                 }
             }
 
+            // At this point the process is no longer running but the bridge still is.
+            // By cancelling here, the bridge will stop serving and terminate.
+            shutdown.cancel();
+
             // NOTE: Bridge::wait returns Result; we currently ignore errors here
             // since we cannot propagate them.
             let _ = bridge.wait().await;
