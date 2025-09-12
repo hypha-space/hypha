@@ -11,6 +11,7 @@ use candle_core::{
     safetensors::{Load, MmapedSafetensors},
 };
 use futures_util::StreamExt;
+use libp2p::PeerId;
 use safetensors::serialize_to_file;
 use sha2::{Digest, Sha256};
 use tokio::{
@@ -71,6 +72,8 @@ impl JobExecutor for ParameterServerExecutor {
         &self,
         job: hypha_messages::JobSpec,
         cancel: CancellationToken,
+        _: Uuid,
+        _: PeerId,
     ) -> Result<ParameterServerExecution, Error> {
         tracing::info!(job_spec = ?job, "Executing parameter server job");
 

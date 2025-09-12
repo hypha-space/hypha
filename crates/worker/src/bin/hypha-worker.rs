@@ -304,7 +304,11 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
         )),
         WeightedResourceRequestEvaluator::default(),
         network.clone(),
-        JobManager::new(Connector::new(network.clone()), config.work_dir().clone()),
+        JobManager::new(
+            Connector::new(network.clone()),
+            network.clone(),
+            config.work_dir().clone(),
+        ),
     );
 
     let arbiter_handle = tokio::spawn({

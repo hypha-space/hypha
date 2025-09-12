@@ -1,4 +1,4 @@
-use std::{error::Error, fmt, str::FromStr, time::SystemTime};
+use std::{collections::HashMap, time::SystemTime};
 
 use libp2p::{PeerId, request_response::cbor::codec::Codec as CborCodec};
 use serde::{Deserialize, Serialize};
@@ -491,37 +491,19 @@ pub enum Resources {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct Status {
+    pub round: u32,
+    pub metrics: HashMap<String, f32>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(tag = "type")]
 pub enum JobStatus {
-    Running,
+    Running { status: Status },
     Finished,
     Failed,
     Unknown,
 }
-
-impl FromStr for JobStatus {
-    type Err = StatusParseError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "Running" => Ok(Self::Running),
-            "Finished" => Ok(Self::Finished),
-            "Failed" => Ok(Self::Failed),
-            "Unknown" => Ok(Self::Unknown),
-            other => Err(StatusParseError(other.to_string())),
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct StatusParseError(String);
-
-impl fmt::Display for StatusParseError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "unknown job status '{}'", self.0)
-    }
-}
-
-impl Error for StatusParseError {}
 
 // Protocol: Pull parameters from parameter server
 pub mod parameter_pull {

@@ -1,6 +1,10 @@
 use std::time::{Duration, SystemTime};
 
-use hypha_messages::{JobSpec, WorkerSpec, api, dispatch_job, job_status, renew_lease};
+use hypha_messages::{
+    JobSpec, WorkerSpec,
+    api::{self, Request, Response},
+    dispatch_job, job_status, renew_lease,
+};
 use hypha_network::request_response::{RequestResponseError, RequestResponseInterfaceExt};
 use libp2p::PeerId;
 use thiserror::Error;
@@ -160,6 +164,7 @@ impl Worker {
         // The worker will acknowledge with success/failure and handle the job execution
         let id = Uuid::new_v4();
         let (tx, rx) = mpsc::channel(100);
+        // let bridge = status_bridge.clone();
 
         // NOTE: Create job status handler for the job
         self.jobs.spawn(
@@ -178,15 +183,18 @@ impl Worker {
                 .respond_with_concurrent(None, move |request| {
                     let tx = tx.clone();
                     async move {
-                        if let (
-                            _peer_id,
-                            api::Request::JobStatus(job_status::Request { status, .. }),
-                        ) = request
+                        if let (peer_id, Request::JobStatus(job_status::Request { status, .. })) =
+                            request
                         {
-                            let _ = tx.send(status).await;
+                            // Send response
+                            let _ = tx.send(status.clone()).await;
+                            tracing::info!(
+                                %peer_id,
+                                ?status,
+                                "Received status",
+                            );
                         }
-
-                        api::Response::JobStatus(job_status::Response {})
+                        Response::JobStatus(job_status::Response {})
                     }
                 }),
         );

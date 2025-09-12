@@ -20,11 +20,14 @@ use hypha_scheduler::{
     config::Config,
     network::Network,
     slice_tracker::SliceTracker,
+    status_bridge::{AimConnector, NoOpConnector, StatusBridge, with_id},
 };
 use hypha_telemetry as telemetry;
 use libp2p::{Multiaddr, PeerId, multiaddr::Protocol};
 use miette::{IntoDiagnostic, Result};
 use serde::Serialize;
+use tokio_stream::wrappers::ReceiverStream;
+use tokio_util::sync::CancellationToken;
 use tracing_subscriber::{
     EnvFilter, Layer, Registry, layer::SubscriberExt, util::SubscriberInitExt,
 };
@@ -250,6 +253,8 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
     // Wait until DHT bootstrapping is done.
     network.wait_for_bootstrap().await.into_diagnostic()?;
 
+    let token = CancellationToken::new();
+
     // NOTE: Create allocator for resource allocation alongside existing job management
     let allocator = GreedyWorkerAllocator::new(network.clone());
 
@@ -326,7 +331,7 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
 
     let tracker_task = tokio::spawn(slice_tracker.run().await.expect("network ready"));
 
-    if allocated_workers.len() > 1 && allocated_parameter_servers.len() == 1 {
+    let status_handle = if allocated_workers.len() > 1 && allocated_parameter_servers.len() == 1 {
         let worker_ids = allocated_workers
             .iter()
             .map(|w| w.peer_id())
@@ -335,7 +340,7 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
 
         let model_files = vec!["config.json".to_string(), "model.safetensors".to_string()];
 
-        allocated_workers[0]
+        let w1_rx = allocated_workers[0]
             .dispatch(JobSpec {
                 executor: get_executor_with_dataset(
                     model_files.clone(),
@@ -348,7 +353,7 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
             .into_diagnostic()?;
 
         // TODO: use a different dataset here.
-        allocated_workers[1]
+        let w2_rx = allocated_workers[1]
             .dispatch(JobSpec {
                 executor: get_executor_with_dataset(
                     model_files.clone(),
@@ -360,7 +365,7 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
             .await
             .into_diagnostic()?;
 
-        let _p_rx = parameter_server
+        let p_rx = parameter_server
             .dispatch(JobSpec {
                 executor: Executor::ParameterServer {
                     updates: Receive::peers(worker_ids.clone()),
@@ -373,9 +378,35 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
             })
             .await
             .into_diagnostic()?;
+
+        let mut status_bridge = match config.status_bridge() {
+            Some(value) => StatusBridge::new(Box::new(AimConnector::new(value))),
+            None => StatusBridge::new(Box::new(NoOpConnector::new())),
+        };
+
+        status_bridge.register_stream(with_id(
+            allocated_workers[0].peer_id(),
+            ReceiverStream::new(w1_rx),
+        ));
+        status_bridge.register_stream(with_id(
+            allocated_workers[1].peer_id(),
+            ReceiverStream::new(w2_rx),
+        ));
+        status_bridge.register_stream(with_id(
+            parameter_server.peer_id(),
+            ReceiverStream::new(p_rx),
+        ));
+
+        let cancel_token = token.clone();
+        tokio::spawn(async move {
+            if let Err(e) = status_bridge.run(cancel_token).await {
+                tracing::error!(error = %e, "Status Bridge failed");
+            }
+        })
     } else {
         tracing::warn!("Insufficient workers allocated for diloco training");
-    }
+        tokio::spawn(async move {})
+    };
 
     // Wait for Ctrl-C or driver termination.
     tokio::select! {
@@ -384,6 +415,9 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
         }
         _ = &mut driver_task => {
             tracing::warn!("Network driver terminated, shutting down");
+        }
+        _ = status_handle => {
+            tracing::debug!("Scheduler terminated")
         }
     }
 
@@ -431,8 +465,8 @@ fn get_executor_with_dataset(
                 betas: None,
                 epsilon: None,
             },
-            epochs: 3,
-            batch_size: 126,
+            epochs: 4,
+            batch_size: 26,
             checkpointing: 1,
             scheduler: None,
             preprocessor: Some(Fetch::huggingface(
@@ -442,7 +476,7 @@ fn get_executor_with_dataset(
                 Some(token_string.clone()),
                 hypha_messages::HFRepoType::Model,
             )),
-            batches_per_local_epoch: 1,
+            batches_per_local_epoch: 10,
         },
     }
 }
