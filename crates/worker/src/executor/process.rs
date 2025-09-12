@@ -1,6 +1,7 @@
 use std::{future::Future, path::PathBuf, pin::Pin, process::Stdio, time::Duration};
 
 use hypha_messages::Executor;
+use libp2p::PeerId;
 use nix::{
     libc::pid_t,
     sys::signal::{self, Signal},
@@ -23,6 +24,7 @@ use crate::{
 
 pub struct ProcessExecutor {
     connector: Connector<Network>,
+    network: Network,
     work_dir_base: PathBuf,
 }
 
@@ -39,9 +41,14 @@ impl Execution for ProcessExecution {
 }
 
 impl ProcessExecutor {
-    pub(crate) fn new(connector: Connector<Network>, work_dir_base: PathBuf) -> Self {
+    pub(crate) fn new(
+        connector: Connector<Network>,
+        network: Network,
+        work_dir_base: PathBuf,
+    ) -> Self {
         ProcessExecutor {
             connector,
+            network,
             work_dir_base,
         }
     }
@@ -53,6 +60,8 @@ impl JobExecutor for ProcessExecutor {
         &self,
         job: hypha_messages::JobSpec,
         cancel: CancellationToken,
+        job_id: Uuid,
+        scheduler: PeerId,
     ) -> Result<ProcessExecution, Error> {
         let id = Uuid::new_v4();
         // NOTE: Place per-job workdir under configured base and keep socket within it
@@ -63,9 +72,12 @@ impl JobExecutor for ProcessExecutor {
         // NOTE: Create a bridge to allow for process <> network communication
         let bridge = Bridge::try_new(
             self.connector.clone(),
+            self.network.clone(),
             work_dir.clone(),
             sock_path.clone(),
             cancel.clone(),
+            job_id,
+            scheduler,
         )
         .await?;
 
