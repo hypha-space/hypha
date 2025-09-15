@@ -239,12 +239,23 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
             .collect::<Vec<_>>();
         let parameter_server = &mut allocated_parameter_servers[0];
 
+        // Find the data provider for the requested dataset
+        let tensor_name = "data_6";
+        let data_provider_peer_id = *network
+            .find_provider(tensor_name)
+            .await
+            .expect("data providers")
+            .into_iter()
+            .collect::<Vec<_>>()
+            .first()
+            .expect("a data provider");
+
         for worker in &mut allocated_workers {
             worker
                 .dispatch(JobSpec {
                     executor: Executor::DiLoCoTransformer {
-                        model: Fetch::uri("EleutherAI/gpt-neo-125m"), // Fetch::uri("https://example.com/"),
-                        data: Fetch::uri("datablations/c4-filter-small"),
+                        model: Fetch::uri("EleutherAI/gpt-neo-125m"),
+                        data: Fetch::data_peer(data_provider_peer_id, tensor_name),
                         updates: Receive::peers(vec![parameter_server.peer_id()]),
                         results: Send::peers(
                             vec![parameter_server.peer_id()],

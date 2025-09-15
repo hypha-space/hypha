@@ -186,6 +186,7 @@ pub enum Reference {
     Peers {
         peers: Vec<PeerId>,
         strategy: SelectionStrategy,
+        resource: Option<String>,
     },
 }
 
@@ -211,15 +212,20 @@ impl Fetch {
             filenames,
         })
     }
+
+    pub fn data_peer(peer_id: PeerId, resource: &str) -> Self {
+        Self(Reference::Peers {
+            peers: vec![peer_id],
+            strategy: SelectionStrategy::One,
+            resource: Some(resource.to_string()),
+        })
+    }
 }
 
 impl TryFrom<Reference> for Fetch {
     type Error = &'static str;
     fn try_from(r: Reference) -> Result<Self, Self::Error> {
-        match r {
-            Reference::Uri { .. } | Reference::HuggingFace { .. } => Ok(Fetch(r)),
-            _ => Err("Fetch can only be created from Uri or HuggingFace"),
-        }
+        Ok(Fetch(r))
     }
 }
 
@@ -241,7 +247,11 @@ pub struct Send(Reference);
 
 impl Send {
     pub fn peers(peers: Vec<PeerId>, strategy: SelectionStrategy) -> Self {
-        Self(Reference::Peers { peers, strategy })
+        Self(Reference::Peers {
+            peers,
+            strategy,
+            resource: None,
+        })
     }
 }
 
@@ -276,6 +286,7 @@ impl Receive {
         Self(Reference::Peers {
             peers,
             strategy: SelectionStrategy::All,
+            resource: None,
         })
     }
 

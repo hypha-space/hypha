@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/certutil",
     "crates/config",
+    "crates/data",
     "crates/gateway",
     "crates/leases",
     "crates/messages",
@@ -13,6 +14,7 @@ members = [
 default-members = [
     "crates/certutil",
     "crates/config",
+    "crates/data",
     "crates/gateway",
     "crates/network",
     "crates/scheduler",
@@ -55,6 +57,7 @@ libp2p = { version = "0.56.0", features = [
 ] }
 libp2p-stream = { version = "0.4.0-alpha" }
 libp2p-swarm-test = { version = "0.6.0", features = ["tokio"] }
+memmap2 = "0.9.8"
 miette = { version = "7.6.0", features = ["fancy"] }
 mime = "0.3.17"
 mockall = "0.13.1"
@@ -79,7 +82,7 @@ tokio = { version = "1.43.0", features = [
     "signal",
     "io-util",
 ] }
-tokio-stream = { version = "0.1.17", features = ["sync"] }
+tokio-stream = { version = "0.1.17", features = ["fs", "sync"] }
 tokio-util = { version = "0.7.15", features = ["compat", "rt"] }
 toml = { version = "0.9.5" }
 tower = { version = "0.5.2", features = ["util"] }
@@ -96,8 +99,8 @@ debug = true
 
 [patch.crates-io]
 # Patch 'libp2p' to enable mTLS support
-libp2p = { git = "https://github.com/hypha-space/rust-libp2p", tag = "v0.56.0-mtls3" }
-libp2p-quic = { git = "https://github.com/hypha-space/rust-libp2p", tag = "v0.56.0-mtls3" }
-libp2p-stream = { git = "https://github.com/hypha-space/rust-libp2p", tag = "v0.56.0-mtls3" }
-libp2p-swarm-test = { git = "https://github.com/hypha-space/rust-libp2p", tag = "v0.56.0-mtls3" }
-libp2p-tls = { git = "https://github.com/hypha-space/rust-libp2p", tag = "v0.56.0-mtls3" }
+libp2p = { git = "https://github.com/hypha-space/rust-libp2p", tag = "v0.56.0-mtls4" }
+libp2p-quic = { git = "https://github.com/hypha-space/rust-libp2p", tag = "v0.56.0-mtls4" }
+libp2p-stream = { git = "https://github.com/hypha-space/rust-libp2p", tag = "v0.56.0-mtls4" }
+libp2p-swarm-test = { git = "https://github.com/hypha-space/rust-libp2p", tag = "v0.56.0-mtls4" }
+libp2p-tls = { git = "https://github.com/hypha-space/rust-libp2p", tag = "v0.56.0-mtls4" }

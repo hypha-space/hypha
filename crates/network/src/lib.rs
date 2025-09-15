@@ -41,7 +41,8 @@ pub mod gossipsub;
 pub mod kad;
 pub mod listen;
 pub mod request_response;
-pub mod stream;
+pub mod stream_pull;
+pub mod stream_push;
 pub mod swarm;
 pub mod utils;
 

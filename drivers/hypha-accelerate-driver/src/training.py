@@ -2,12 +2,10 @@ import argparse
 import json
 import os
 from collections.abc import Iterable
-from typing import Any, cast
 
 import torch
 import torch.utils.data
 from accelerate import Accelerator
-from datasets import DatasetDict, load_dataset
 from safetensors import safe_open
 from safetensors.torch import save_model
 from tqdm import tqdm
@@ -33,14 +31,10 @@ def get_optimizer(
         raise RuntimeError(f"Optimizer {optimizer_name} doesn't exist.")
 
 
-def get_data_loader(
-    data_set_name: str, batch_size: int, tokenizer: PreTrainedTokenizer
-) -> torch.utils.data.DataLoader[int]:
-    # TODO: data needs to be provided by the task
-    ds = cast(DatasetDict, load_dataset(data_set_name))["train"]
-    train_ds, test_ds = ds.train_test_split(0.2, 0.8, True, seed=40).values()
-    train_ds = CustomC4(train_ds["text"][:6], tokenizer, context_length=2048)
-    return torch.utils.data.DataLoader(train_ds, batch_size=batch_size)
+def get_data_loader(data_set_name: str, batch_size: int) -> torch.utils.data.DataLoader[int]:
+    with safe_open(data_set_name, framework="pt", device="cpu") as data:
+        ds = data.get_tensor(data.keys()[0])
+        return torch.utils.data.DataLoader(ds, batch_size=batch_size)
 
 
 def merge_models(a: torch.nn.Module, weight_path: str, alpha: float) -> torch.nn.Module:
@@ -52,30 +46,6 @@ def merge_models(a: torch.nn.Module, weight_path: str, alpha: float) -> torch.nn
             state_dict[name] += alpha * (b.get_tensor(name) - state_dict[name])
     a.load_state_dict(state_dict)
     return a
-
-
-# TODO: This needs to be generic and support user-provided datasets.
-class CustomC4(torch.utils.data.Dataset[int]):
-    def __init__(self, data: Any, tokenizer: PreTrainedTokenizer, context_length: int) -> None:
-        tokenizer.pad_token = tokenizer.eos_token
-        self.tokenizer = tokenizer
-        self.tokenized_data = self._tokenize(data, context_length)
-
-    def _tokenize(self, data: Any, context_length: int) -> list[int]:
-        tokenized_inputs = self.tokenizer(
-            data,
-            return_tensors="pt",
-            max_length=context_length,
-            truncation=True,
-            padding="max_length",
-        )
-        return cast(list[int], tokenized_inputs["input_ids"])
-
-    def __len__(self) -> int:
-        return len(self.tokenized_data)
-
-    def __getitem__(self, idx: int) -> int:
-        return self.tokenized_data[idx]
 
 
 def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR0915
@@ -91,8 +61,11 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR09
         job_spec["executor"]["learning_rate"] = 1e-4
         job_spec["executor"]["epochs"] = 3
         job_spec["executor"]["batch_size"] = 1
-        job_spec["executor"]["dataset"] = "datablations/c4-filter-small"
         job_spec["executor"]["checkpointing"] = 2
+
+        # Fetch dataset
+        tensor_data = session.fetch(job_spec["executor"]["data"])
+        tensor_data_path = os.path.join(work_dir, tensor_data[0]["path"])
 
         # Training loop
         print(os.listdir(work_dir))
@@ -124,9 +97,7 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR09
             schedulers=[scheduler_warmup, scheduler_cool_down],
             milestones=[milestone],
         )
-        data_loader = get_data_loader(
-            job_spec["executor"]["data"]["value"], job_spec["executor"]["batch_size"], tokenizer
-        )
+        data_loader = get_data_loader(tensor_data_path, job_spec["executor"]["batch_size"])
 
         model, optimizer, training_dataloader, scheduler = accelerator.prepare(model, optimizer, data_loader, scheduler)
 
