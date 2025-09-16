@@ -10,6 +10,8 @@ mod process;
 pub use parameter_server::ParameterServerExecutor;
 pub use process::ProcessExecutor;
 
+use crate::executor::parameter_server::TensorOpError;
+
 #[derive(Error, Debug)]
 pub enum Error {
     #[error("Bridge error")]
@@ -19,6 +21,10 @@ pub enum Error {
     Io(#[from] std::io::Error),
     #[error("Unsupported job spec")]
     UnsupportedJobSpec(),
+    #[error("Unsupported optimizer")]
+    UnsupportedOptimizer(),
+    #[error("Tensor error")]
+    TensorError(#[from] TensorOpError),
 }
 
 pub trait JobExecutor {

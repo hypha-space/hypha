@@ -275,6 +275,10 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
                 executor: Executor::ParameterServer {
                     updates: Receive::peers(worker_ids.clone()),
                     results: Send::peers(worker_ids.clone(), SelectionStrategy::All),
+                    optimizer: Optimizer::Nesterov {
+                        learning_rate: 0.7,
+                        momentum: 0.9,
+                    },
                 },
             })
             .await
