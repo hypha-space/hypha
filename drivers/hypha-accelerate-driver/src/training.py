@@ -10,7 +10,7 @@ import torch
 import torch.utils.data
 from accelerate import Accelerator
 from safetensors import safe_open
-from safetensors.torch import load, load_file, save_model
+from safetensors.torch import load, load_file, save_file, save_model
 from torch.nn import Module
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
@@ -189,15 +189,23 @@ def get_scheduler(type: str, args: dict[str, float], optmizer: Optimizer) -> tor
     raise RuntimeError(f"Learning rate Scheduler {type} not supported")
 
 
-def merge_models(origin: Module, weight_path: str, alpha: float) -> Module:
-    # All weights need to be on CPU
-    origin.to("cpu")
-    state_dict = origin.state_dict()
-    with safe_open(weight_path, framework="pt", device="cpu") as b:  # type: ignore
-        for name in b.keys():  # noqa: SIM118
-            state_dict[name] += (alpha * (b.get_tensor(name) - state_dict[name])).to(state_dict[name].dtype)
-    origin.load_state_dict(state_dict)
-    return origin
+def merge_models(old_model: str, weight_path: str) -> dict[str, torch.Tensor]:
+    state_dict: dict[str, torch.Tensor] = {}
+    with (
+        safe_open(weight_path, framework="pt", device="cpu") as g,  # type: ignore[no-untyped-call]
+        safe_open(old_model, framework="pt", device="cpu") as m,  # type: ignore[no-untyped-call]
+    ):
+        for name in m.keys():  # noqa: SIM118
+            # state_dict[name] += (alpha * (b.get_tensor(name) - state_dict[name])).to(state_dict[name].dtype)
+            state_dict[name] = m.get_tensor(name) - g.get_tensor(name)
+    return state_dict
+
+
+def extract_gradients(state_dict: dict[str, torch.Tensor], previous_model_path: str) -> dict[str, torch.Tensor]:
+    with safe_open(previous_model_path, framework="pt", device="cpu") as p:  # type: ignore[no-untyped-call]
+        for name in p:
+            state_dict[name] -= p.get_tensor(name).to(state_dict[name].dtype)
+    return state_dict
 
 
 def dataset_wrapper(dataset: torch.utils.data.DataLoader) -> Iterator[dict[str, torch.Tensor]]:  # type: ignore[type-arg]
@@ -248,6 +256,10 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR09
             job_spec["config"]["batch_size"],
         )
 
+        # Serialize the model to disk
+        previous_model_path = os.path.join(work_dir, "0_global_weights.pt")
+        save_model(model, previous_model_path)
+
         model, optimizer, training_dataloader, scheduler = accelerator.prepare(model, optimizer, data_loader, scheduler)
         training_data_iter = dataset_wrapper(training_dataloader)
         run_epoch = get_training_loop(job_spec["config"], training_data_iter)
@@ -276,9 +288,11 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR09
                                 rel_path = parameters.get("path") if parameters else latest.get("path")
                                 if isinstance(rel_path, str):
                                     path = os.path.join(work_dir, rel_path)
-                                    base_model = accelerator.unwrap_model(model)
-                                    merge_models(base_model, path, 0.9)
-                                    model = accelerator.prepare(base_model)
+                                    # Load new model with outer gradients
+                                    model.load_state_dict(merge_models(previous_model_path, path))
+                                    # over write previous model
+                                    save_model(model, previous_model_path)
+                                    model = accelerator.prepare(model)
                                     print("Weights updated from", rel_path, flush=True)
                             except Exception as e:
                                 print(f"pointer handling error: {e}")
@@ -293,10 +307,15 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR09
 
                 if accelerator.is_main_process and epoch % job_spec["config"]["checkpointing"] == 0:
                     # For testing purposes set to global!
-                    file_name = f"{epoch}_global_weights.pt"
+                    file_name = f"{epoch}_local_gradients.pt"
                     result_path = os.path.join(work_dir, file_name)
                     # Save unwrapped model to avoid accelerator wrappers interfering
-                    save_model(accelerator.unwrap_model(model), result_path)
+                    #
+                    model = accelerator.unwrap_model(model)
+                    # All weights need to be on CPU
+                    model.to("cpu")
+
+                    save_file(extract_gradients(model.state_dict(), previous_model_path), result_path)
                     session.send(job_spec["results"], file_name)
 
                     # Mark that before the next training epoch we must wait for an update

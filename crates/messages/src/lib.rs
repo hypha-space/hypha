@@ -370,7 +370,11 @@ pub enum Executor {
         config: DiLoCoConfig,
     },
     #[serde(rename = "parameter-server")]
-    ParameterServer { updates: Receive, results: Send },
+    ParameterServer {
+        updates: Receive,
+        results: Send,
+        optimizer: Optimizer,
+    },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -381,9 +385,9 @@ pub enum Optimizer {
         betas: Option<[f64; 2]>,
         epsilon: Option<f64>,
     },
-    Sgd {
+    Nesterov {
         learning_rate: f64,
-        momentum: Option<f64>,
+        momentum: f64,
     },
 }
 
