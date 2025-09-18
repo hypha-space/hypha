@@ -10,7 +10,7 @@
 //! ## Setting up a Request Handler
 //!
 //! ```no_run
-//! use hypha_network::{request_response::RequestResponseInterfaceExt};
+//! use hypha_network::{request_response::RequestResponseInterfaceHandlerExt};
 //! use libp2p::request_response::cbor::codec::Codec;
 //! use serde::{Deserialize, Serialize};
 //! use futures_util::StreamExt;
@@ -38,7 +38,7 @@
 //!
 //! # async fn example<N>(network: N) -> Result<(), Box<dyn std::error::Error>>
 //! # where
-//! #     N: RequestResponseInterfaceExt<MyCodec> + Clone + Send + Sync + 'static,
+//! #     N: RequestResponseInterfaceHandlerExt<MyCodec> + Clone + Send + Sync + 'static,
 //! # {
 //! // Create a handler that matches greetings requests
 //! let greetings_handler = network
@@ -88,7 +88,7 @@
 //! The fluent API supports various pattern matching approaches:
 //!
 //! ```no_run
-//! # use hypha_network::{request_response::RequestResponseInterfaceExt};
+//! # use hypha_network::{request_response::RequestResponseInterfaceHandlerExt};
 //! # use libp2p::request_response::cbor::codec::Codec;
 //! # use serde::{Deserialize, Serialize};
 //! # #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -98,7 +98,7 @@
 //! # type MyCodec = Codec<Request, Response>;
 //! # async fn example<N>(network: N) -> Result<(), Box<dyn std::error::Error>>
 //! # where
-//! #     N: RequestResponseInterfaceExt<MyCodec>,
+//! #     N: RequestResponseInterfaceHandlerExt<MyCodec>,
 //! # {
 //! // Simple closure pattern
 //! let handler1 = network
@@ -123,7 +123,7 @@
 //! ## Concurrent Request Processing
 //!
 //! ```no_run
-//! # use hypha_network::{request_response::RequestResponseInterfaceExt};
+//! # use hypha_network::{request_response::RequestResponseInterfaceHandlerExt};
 //! # use libp2p::request_response::cbor::codec::Codec;
 //! # use serde::{Deserialize, Serialize};
 //! # #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -133,7 +133,7 @@
 //! # type MyCodec = Codec<Request, Response>;
 //! # async fn example<N>(network: N) -> Result<(), Box<dyn std::error::Error>>
 //! # where
-//! #     N: RequestResponseInterfaceExt<MyCodec>,
+//! #     N: RequestResponseInterfaceHandlerExt<MyCodec>,
 //! # {
 //! let handler = network
 //!     .on(|req: &Request| matches!(req, Request::Work(_)))
@@ -306,7 +306,7 @@ pub enum RequestResponseError {
 /// Builder for fluent request handler API
 ///
 /// This builder provides a fluent interface for registering request handlers.
-/// Start by calling [`RequestResponseInterfaceExt::on`] with a pattern,
+/// Start by calling [`RequestResponseInterfaceHandlerExt::on`] with a pattern,
 /// then chain methods to configure the handler.
 ///
 /// # Examples
@@ -319,7 +319,7 @@ pub enum RequestResponseError {
 /// # #[derive(Serialize, Deserialize, Clone)]
 /// # struct MyResponse { status: String }
 /// # type MyCodec = libp2p::request_response::cbor::codec::Codec<MyRequest, MyResponse>;
-/// # async fn example(interface: impl RequestResponseInterfaceExt<MyCodec>) -> Result<(), RequestResponseError> {
+/// # async fn example(interface: impl RequestResponseInterfaceHandlerExt<MyCodec>) -> Result<(), RequestResponseError> {
 /// let handler_stream = interface
 ///     .on(|req: &MyRequest| matches!(req, MyRequest::TypeA))
 ///     .buffer_size(64)
@@ -334,7 +334,7 @@ where
     TCodec: request_response::Codec + Clone + Send + 'static,
     <TCodec as request_response::Codec>::Request: Clone + Send + 'static,
     <TCodec as request_response::Codec>::Response: Send + 'static,
-    TInterface: RequestResponseInterfaceExt<TCodec>,
+    TInterface: RequestResponseInterfaceHandlerExt<TCodec>,
 {
     interface: &'a TInterface,
     matcher: RequestMatcher<TCodec>,
@@ -346,7 +346,7 @@ where
     TCodec: request_response::Codec + Clone + Send + 'static,
     <TCodec as request_response::Codec>::Request: Clone + Send + 'static,
     <TCodec as request_response::Codec>::Response: Send + 'static,
-    TInterface: RequestResponseInterfaceExt<TCodec>,
+    TInterface: RequestResponseInterfaceHandlerExt<TCodec>,
 {
     /// Set the buffer size for the handler stream
     ///
@@ -361,7 +361,7 @@ where
     /// # #[derive(Serialize, Deserialize, Clone)]
     /// # enum MyRequest { TypeA }
     /// # type MyCodec = libp2p::request_response::cbor::codec::Codec<MyRequest, String>;
-    /// # async fn example(network: impl RequestResponseInterfaceExt<MyCodec>) -> Result<(), RequestResponseError> {
+    /// # async fn example(network: impl RequestResponseInterfaceHandlerExt<MyCodec>) -> Result<(), RequestResponseError> {
     /// let handler = network
     ///     .on(|_: &MyRequest| true)
     ///     .buffer_size(128)  // Allow 128 pending requests
@@ -863,8 +863,8 @@ where
     }
 }
 
-/// Extension trait for sized RequestResponseInterface implementations
-pub trait RequestResponseInterfaceExt<TCodec>: RequestResponseInterface<TCodec>
+/// Extension trait for sized RequestResponseInterface implementations offering flueent handler api.
+pub trait RequestResponseInterfaceHandlerExt<TCodec>: RequestResponseInterface<TCodec>
 where
     TCodec: request_response::Codec + Clone + Send + 'static,
     <TCodec as request_response::Codec>::Request: Clone + Send + 'static,
@@ -884,7 +884,7 @@ where
     /// # #[derive(Serialize, Deserialize, Clone)]
     /// # enum MyRequest { TypeA, TypeB }
     /// # type MyCodec = libp2p::request_response::cbor::codec::Codec<MyRequest, String>;
-    /// # async fn example(network: impl RequestResponseInterfaceExt<MyCodec>) -> Result<(), RequestResponseError> {
+    /// # async fn example(network: impl RequestResponseInterfaceHandlerExt<MyCodec>) -> Result<(), RequestResponseError> {
     /// // Handle only TypeA requests
     /// let handler = network
     ///     .on(|req: &MyRequest| matches!(req, MyRequest::TypeA))
@@ -905,7 +905,7 @@ where
     }
 }
 
-impl<T, TCodec> RequestResponseInterfaceExt<TCodec> for T
+impl<T, TCodec> RequestResponseInterfaceHandlerExt<TCodec> for T
 where
     T: RequestResponseInterface<TCodec> + Sized + Clone + Send + Sync + 'static,
     TCodec: request_response::Codec + Clone + Send + 'static,
@@ -913,6 +913,38 @@ where
     <TCodec as request_response::Codec>::Response: Send + 'static,
 {
 }
+
+/// Convenience trait to call typed on()/request() without creating a ProtocolHandle.
+///
+/// This enables `network.on::<P>(...)` and `network.request::<P>(...)` where `P: Protocol`.
+pub trait RequestResponseInterfaceCodecExt: Clone + Sized + Send + Sync + 'static {
+    /// Create a handler builder for the protocol `P` using the given pattern.
+    fn on<TCodec, Pat>(&self, pattern: Pat) -> HandlerBuilder<'_, TCodec, Self>
+    where
+        TCodec: request_response::Codec + Clone + Send + Sync + 'static,
+        TCodec::Request: Clone + Send + 'static,
+        Self: RequestResponseInterfaceHandlerExt<TCodec>,
+        Pat: Pattern<TCodec>,
+    {
+        <Self as RequestResponseInterfaceHandlerExt<TCodec>>::on(self, pattern)
+    }
+
+    /// Send a typed request for protocol `P`.
+    fn request<TCodec>(
+        &self,
+        peer_id: PeerId,
+        request: TCodec::Request,
+    ) -> impl Future<Output = Result<TCodec::Response, RequestResponseError>> + Send
+    where
+        TCodec: request_response::Codec + Clone + Send + Sync + 'static,
+        TCodec::Request: Clone + Send + 'static,
+        Self: RequestResponseInterface<TCodec>,
+    {
+        <Self as RequestResponseInterface<TCodec>>::request(self, peer_id, request)
+    }
+}
+
+impl<T> RequestResponseInterfaceCodecExt for T where T: Clone + Sized + Send + Sync + 'static {}
 
 #[cfg(test)]
 mod tests {
@@ -1026,10 +1058,12 @@ mod tests {
                 .times(1);
 
             // NOTE: The stream is dropped here, which will unregister the handler.
-            let _ = mock
-                .on(|req: &TestRequest| matches!(req, TestRequest::TypeA { .. }))
-                .into_stream()
-                .await;
+            let _ = crate::request_response::RequestResponseInterfaceHandlerExt::on(
+                &mock,
+                |req: &TestRequest| matches!(req, TestRequest::TypeA { .. }),
+            )
+            .into_stream()
+            .await;
         }
     }
 
@@ -1061,10 +1095,12 @@ mod tests {
                 .times(1);
 
             // NOTE: The stream is dropped here, which will unregister the handler.
-            let _ = mock
-                .on(|req: &TestRequest| matches!(req, TestRequest::TypeA { .. }))
-                .into_stream()
-                .await;
+            let _ = crate::request_response::RequestResponseInterfaceHandlerExt::on(
+                &mock,
+                |req: &TestRequest| matches!(req, TestRequest::TypeA { .. }),
+            )
+            .into_stream()
+            .await;
         }
 
         #[tokio::test]
@@ -1092,10 +1128,12 @@ mod tests {
                 .times(1);
 
             // NOTE: The stream is dropped here, which will unregister the handler.
-            let _ = mock
-                .on(|req: &TestRequest| matches!(req, TestRequest::TypeA { .. }))
-                .into_stream()
-                .await;
+            let _ = crate::request_response::RequestResponseInterfaceHandlerExt::on(
+                &mock,
+                |req: &TestRequest| matches!(req, TestRequest::TypeA { .. }),
+            )
+            .into_stream()
+            .await;
         }
     }
 }

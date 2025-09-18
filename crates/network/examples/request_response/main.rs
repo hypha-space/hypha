@@ -9,7 +9,7 @@ use hypha_network::{
     request_response::{
         OutboundRequests, OutboundResponses, RequestHandler, RequestResponseAction,
         RequestResponseBehaviour, RequestResponseDriver, RequestResponseError,
-        RequestResponseInterface, RequestResponseInterfaceExt,
+        RequestResponseInterfaceCodecExt,
     },
     swarm::{SwarmDriver, SwarmError},
 };
@@ -80,7 +80,9 @@ async fn server(args: Args, listen_addr: &str) -> Result<(), Box<dyn Error>> {
     tracing::info!("Server listening and ready to handle requests");
 
     let handler = network
-        .on(|req: &ExampleRequest| matches!(req, ExampleRequest::Ping(_) | ExampleRequest::Echo(_)))
+        .on::<Codec<ExampleRequest, ExampleResponse>, _>(|req: &ExampleRequest| {
+            matches!(req, ExampleRequest::Ping(_) | ExampleRequest::Echo(_))
+        })
         .into_stream()
         .await?;
 
@@ -117,7 +119,7 @@ async fn client(args: Args, server_addr: &str) -> Result<(), Box<dyn Error>> {
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     let ping_response = network
-        .request(
+        .request::<Codec<ExampleRequest, ExampleResponse>>(
             peer_id,
             ExampleRequest::Ping("Hello from client".to_string()),
         )
@@ -125,7 +127,10 @@ async fn client(args: Args, server_addr: &str) -> Result<(), Box<dyn Error>> {
     tracing::info!("Ping response: {:?}", ping_response);
 
     let echo_response = network
-        .request(peer_id, ExampleRequest::Echo("Echo test".to_string()))
+        .request::<Codec<ExampleRequest, ExampleResponse>>(
+            peer_id,
+            ExampleRequest::Echo("Echo test".to_string()),
+        )
         .await?;
     tracing::info!("Echo response: {:?}", echo_response);
 
@@ -308,7 +313,7 @@ impl Network {
     }
 }
 
-impl RequestResponseInterface<ExampleCodec> for Network {
+impl hypha_network::request_response::RequestResponseInterface<ExampleCodec> for Network {
     async fn send(&self, action: RequestResponseAction<ExampleCodec>) {
         let _ = self.action_tx.send(Action::RequestResponse(action)).await;
     }
