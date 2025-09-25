@@ -4,6 +4,7 @@ members = [
     "crates/certutil",
     "crates/config",
     "crates/gateway",
+    "crates/leases",
     "crates/messages",
     "crates/network",
     "crates/scheduler",
@@ -23,8 +24,8 @@ publish = false
 edition = "2024"
 
 [workspace.dependencies]
-async-trait = "0.1.88"
 axum = { version = "0.8.4", features = ["http2"] }
+candle-core = "0.9.1"
 ciborium = "0.2.2"
 clap = { version = "4.5.31", features = ["derive"] }
 documented = "0.9.2"
@@ -33,6 +34,7 @@ futures-rustls = { version = "0.26.0", default-features = false }
 futures-util = "0.3"
 http-body-util = "0.1.3"
 hypha-config = { path = "crates/config" }
+hypha-leases = { path = "crates/leases" }
 hypha-messages = { path = "crates/messages" }
 hypha-network = { path = "crates/network" }
 libp2p = { version = "0.56.0", features = [
@@ -52,6 +54,7 @@ libp2p = { version = "0.56.0", features = [
     "yamux",
 ] }
 libp2p-stream = { version = "0.4.0-alpha" }
+libp2p-swarm-test = { version = "0.6.0", features = ["tokio"] }
 miette = { version = "7.6.0", features = ["fancy"] }
 mime = "0.3.17"
 mockall = "0.13.1"
@@ -61,6 +64,7 @@ proptest = "1.6.0"
 rcgen = { version = "0.13", features = ["pem", "x509-parser"] }
 rustls = { version = "0.23", features = ["std"] }
 rustls-pemfile = "2.1"
+safetensors = "0.4.5"
 serde = { version = "1.0.218", features = ["derive"] }
 serde_json = "1.0.140"
 sha2 = "0.10"
@@ -77,7 +81,7 @@ tokio = { version = "1.43.0", features = [
 ] }
 tokio-stream = { version = "0.1.17", features = ["sync"] }
 tokio-util = { version = "0.7.15", features = ["compat", "rt"] }
-toml = { version = "0.8.23" }
+toml = { version = "0.9.5" }
 tower = { version = "0.5.2", features = ["util"] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
@@ -92,10 +96,8 @@ debug = true
 
 [patch.crates-io]
 # Patch 'libp2p' to enable mTLS support
-libp2p = { git = "https://github.com/hypha-space/rust-libp2p", tag = "v0.56.0-mtls2" }
-libp2p-quic = { git = "https://github.com/hypha-space/rust-libp2p", tag = "v0.56.0-mtls2" }
-libp2p-tls = { git = "https://github.com/hypha-space/rust-libp2p", tag = "v0.56.0-mtls2" }
-# These crates don't have any mTLS-related changes, but need to be patched anyways
-# for 'libp2p-stream' to compile.
-libp2p-core = { git = "https://github.com/hypha-space/rust-libp2p", tag = "v0.56.0-mtls2" }
-libp2p-swarm = { git = "https://github.com/hypha-space/rust-libp2p", tag = "v0.56.0-mtls2" }
+libp2p = { git = "https://github.com/hypha-space/rust-libp2p", tag = "v0.56.0-mtls3" }
+libp2p-quic = { git = "https://github.com/hypha-space/rust-libp2p", tag = "v0.56.0-mtls3" }
+libp2p-stream = { git = "https://github.com/hypha-space/rust-libp2p", tag = "v0.56.0-mtls3" }
+libp2p-swarm-test = { git = "https://github.com/hypha-space/rust-libp2p", tag = "v0.56.0-mtls3" }
+libp2p-tls = { git = "https://github.com/hypha-space/rust-libp2p", tag = "v0.56.0-mtls3" }

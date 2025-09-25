@@ -10,6 +10,7 @@ use futures_util::stream::StreamExt;
 use hypha_network::{
     CertificateDer, CertificateRevocationListDer, PrivateKeyDer,
     dial::{DialAction, DialDriver, DialInterface, PendingDials},
+    external_address::{ExternalAddressAction, ExternalAddressDriver, ExternalAddressInterface},
     gossipsub::{
         GossipsubAction, GossipsubBehaviour, GossipsubDriver, GossipsubInterface, Subscriptions,
     },
@@ -66,12 +67,14 @@ pub struct NetworkDriver {
     request_handlers: HyphaRequestHandlers,
 }
 
+#[allow(clippy::large_enum_variant)]
 enum Action {
     Dial(DialAction),
     Listen(ListenAction),
     Kademlia(KademliaAction),
     Gossipsub(GossipsubAction),
     RequestResponse(RequestResponseAction<HyphaCodec>),
+    ExternalAddress(ExternalAddressAction),
 }
 
 impl Network {
@@ -160,18 +163,21 @@ impl SwarmDriver<Behaviour> for NetworkDriver {
             tokio::select! {
                 event = self.swarm.select_next_some() => {
                     match event {
-                        SwarmEvent::ConnectionEstablished { peer_id, connection_id, .. } => {
+                        SwarmEvent::ConnectionEstablished { peer_id, connection_id, endpoint, .. } => {
+                            tracing::debug!(peer_id = %peer_id, ?endpoint, "Established new connection");
                             self.process_connection_established(peer_id, &connection_id).await;
+                        }
+                        SwarmEvent::ConnectionClosed { peer_id, endpoint, .. } => {
+                            tracing::debug!(peer_id = %peer_id, ?endpoint, "Closed connection");
                         }
                         SwarmEvent::OutgoingConnectionError { connection_id, error, .. } => {
                             self.process_connection_error(&connection_id, error).await;
                         }
-                        SwarmEvent::NewListenAddr { listener_id, address } => {
-                            tracing::info!(address=%address, "New listen address");
+                        SwarmEvent::NewListenAddr { listener_id, .. } => {
                             self.process_new_listen_addr(&listener_id).await;
                         }
                         SwarmEvent::ExternalAddrConfirmed { address, .. } => {
-                            tracing::info!("External address confirmed: {:?}", address);
+                            self.process_confirmed_external_addr(address);
                         }
                         SwarmEvent::Behaviour(BehaviourEvent::Identify(event)) => {
                             self.process_identify_event(event);
@@ -184,6 +190,9 @@ impl SwarmDriver<Behaviour> for NetworkDriver {
                         }
                         SwarmEvent::Behaviour(BehaviourEvent::RequestResponse(event)) => {
                             self.process_request_response_event(event).await;
+                        }
+                        SwarmEvent::Behaviour(BehaviourEvent::Dcutr(event)) => {
+                            tracing::debug!("dcutr event: {:?}", event);
                         }
 
                         _ => {
@@ -200,6 +209,8 @@ impl SwarmDriver<Behaviour> for NetworkDriver {
                             self.process_gossipsub_action(action).await,
                         Action::RequestResponse(action) =>
                             self.process_request_response_action(action).await,
+                        Action::ExternalAddress(action) =>
+                            self.process_external_address_action(action).await,
                     }
                 }
                 else => break
@@ -241,6 +252,8 @@ impl ListenDriver<Behaviour> for NetworkDriver {
         &mut self.pending_listen_map
     }
 }
+
+impl ExternalAddressDriver<Behaviour> for NetworkDriver {}
 
 impl StreamInterface for Network {
     fn stream_control(&self) -> stream::Control {
@@ -331,5 +344,17 @@ impl RequestResponseInterface<HyphaCodec> for Network {
         self.action_sender
             .try_send(Action::RequestResponse(action))
             .map_err(|_| RequestResponseError::Other("Failed to send action".to_string()))
+    }
+}
+
+impl ExternalAddressInterface for Network {
+    async fn send(&self, action: ExternalAddressAction) {
+        if let Err(e) = self
+            .action_sender
+            .send(Action::ExternalAddress(action))
+            .await
+        {
+            tracing::error!(?e, "failed to send external address action");
+        }
     }
 }

@@ -111,6 +111,8 @@ exceptions = [
     # list
     { allow = ["ISC", "MIT", "OpenSSL"], name = "ring" },
     { allow = ["ISC", "MIT", "OpenSSL"], name = "aws-lc-sys" },
+    { allow = ["MPL-2.0"], name = "option-ext" },
+    { allow = ["CDLA-Permissive-2.0"], name = "webpki-roots" },
 ]
 
 # Some crates don't have (easily) machine readable licensing information,

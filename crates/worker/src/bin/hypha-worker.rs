@@ -4,19 +4,18 @@ use std::{fs, path::PathBuf};
 
 use clap::{Parser, Subcommand, ValueEnum};
 use figment::providers::{Env, Format, Serialized, Toml};
-use futures_util::{StreamExt, future::join_all};
+use futures_util::future::join_all;
 use hypha_config::{ConfigWithMetadata, ConfigWithMetadataTLSExt, builder, to_toml};
 use hypha_network::{
-    dial::DialInterface,
-    gossipsub::GossipsubInterface,
-    kad::KademliaInterface,
-    listen::ListenInterface,
-    request_response::{RequestResponseInterface, RequestResponseInterfaceExt},
-    stream::StreamReceiverInterface,
-    swarm::SwarmDriver,
+    dial::DialInterface, external_address::ExternalAddressInterface, kad::KademliaInterface,
+    listen::ListenInterface, swarm::SwarmDriver,
 };
-use hypha_worker::{config::Config, driver, file_transfer::receive_file, network::Network};
-use libp2p::Multiaddr;
+use hypha_worker::{
+    arbiter::Arbiter, config::Config, connector::Connector, job_manager::JobManager,
+    lease_manager::ResourceLeaseManager, network::Network,
+    request_evaluator::WeightedResourceRequestEvaluator, resources::StaticResourceManager,
+};
+use libp2p::{Multiaddr, multiaddr::Protocol};
 use miette::{IntoDiagnostic, Result};
 use serde::{Deserialize, Serialize};
 use tokio::signal::unix::{SignalKind, signal};
@@ -34,7 +33,7 @@ enum Role {
     name = "hypha-worker",
     version,
     about = "Hypha Worker Node",
-    long_about = "Runs a Hypha Worker which executes tasks.",
+    long_about = "Runs a Hypha Worker which executes jobs.",
     after_help = "For more information, see the project documentation."
 )]
 struct Cli {
@@ -66,20 +65,30 @@ enum Commands {
         #[serde(skip_serializing_if = "Option::is_none")]
         listen_addresses: Option<Vec<Multiaddr>>,
 
+        /// External addresses to advertise (can be specified multiple times).
+        #[clap(long("external"))]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        external_addresses: Option<Vec<Multiaddr>>,
+
+        /// Enable listening via relay P2pCircuit (via gateway). Defaults to true.
+        #[clap(long("relay-circuit"))]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        relay_circuit: Option<bool>,
+
         /// Socket to use for driver communication.
         #[clap(long("socket"))]
         #[serde(skip_serializing_if = "Option::is_none")]
         socket_address: Option<PathBuf>,
 
-        // NOTE: Defining the role via command-line argument is a workaround used to determine the worker's role in DiLoCo tasks. The role will be assigned by the scheduler in the future.
-        /// Role of the worker in DiLoCo tasks.
-        #[arg(value_enum)]
-        #[serde(skip)]
-        role: Role,
+        /// Base directory for per-job working directories (default: /tmp).
+        /// Example: --work-dir /mnt/tmp
+        #[clap(long("work-dir"))]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        work_dir: Option<PathBuf>,
     },
 }
 
-async fn run(config: ConfigWithMetadata<Config>, role: Role) -> Result<()> {
+async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
     // Load certificates and private key
     let (network, network_driver) = Network::create(
         config.load_cert_chain()?,
@@ -89,7 +98,7 @@ async fn run(config: ConfigWithMetadata<Config>, role: Role) -> Result<()> {
     )
     .into_diagnostic()?;
 
-    let driver_future = tokio::spawn(network_driver.run());
+    let network_handle = tokio::spawn(network_driver.run());
 
     join_all(
         config
@@ -105,17 +114,62 @@ async fn run(config: ConfigWithMetadata<Config>, role: Role) -> Result<()> {
 
     tracing::info!("Successfully listening on all addresses");
 
-    let gateway_peer_ids: Vec<_> = join_all(
+    // NOTE: Add configured external addresses (e.g., public IPs or DNS names)
+    // so peers can discover and connect to us.
+    join_all(
+        config
+            .external_addresses()
+            .iter()
+            .map(|address| network.add_external_address(address.clone()))
+            .collect::<Vec<_>>(),
+    )
+    .await;
+
+    // Dial each gateway and, optionally, set up a relay circuit listen via it.
+    let gateway_results = join_all(
         config
             .gateway_addresses()
             .iter()
-            .map(|address| network.dial(address.clone()))
+            .map(|address| {
+                let address = address.clone();
+                let network = network.clone();
+                let enable_circuit = config.relay_circuit();
+                async move {
+                    match network.dial(address.clone()).await {
+                        Ok(peer_id) => {
+                            if enable_circuit {
+                                // NOTE: When enabled, listen via the gateway relay circuit for inbound reachability.
+                                match address
+                                    .with_p2p(peer_id)
+                                    .map(|a| a.with(Protocol::P2pCircuit))
+                                {
+                                    Ok(relay_addr) => {
+                                        if let Err(e) = network.listen(relay_addr).await {
+                                            tracing::warn!(error=%e, "Failed to set up P2pCircuit listen via gateway");
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(error=%e, "Failed to construct relay listen address");
+                                    }
+                                }
+                            } else {
+                                tracing::info!("Relay circuit listening disabled; skipping P2pCircuit listen setup");
+                            }
+
+                            Ok(peer_id)
+                        }
+                        Err(e) => Err(e),
+                    }
+                }
+            })
             .collect::<Vec<_>>(),
     )
-    .await
-    .into_iter()
-    .filter_map(|result| result.ok())
-    .collect();
+    .await;
+
+    let gateway_peer_ids: Vec<_> = gateway_results
+        .into_iter()
+        .filter_map(|result| result.ok())
+        .collect();
 
     if gateway_peer_ids.is_empty() {
         return Err(miette::miette!("Failed to connect to any gateway"));
@@ -123,102 +177,28 @@ async fn run(config: ConfigWithMetadata<Config>, role: Role) -> Result<()> {
 
     tracing::info!(gateway_ids = ?gateway_peer_ids, "Connected to gateway(s)");
 
-    // Wait until DHT bootstrapping is done.
+    // NOTE: Wait until DHT bootstrapping is done.
     network.wait_for_bootstrap().await.into_diagnostic()?;
 
     let token = CancellationToken::new();
 
-    let work_dir = tempfile::tempdir().into_diagnostic()?;
-
-    let driver = driver::try_new_accelerate(
+    // NOTE: Create arbiter for resource allocation - this is the primary worker allocation mechanism
+    let arbiter = Arbiter::new(
+        ResourceLeaseManager::new(StaticResourceManager::new(
+            config.resources(),
+            config.driver(),
+        )),
+        WeightedResourceRequestEvaluator::default(),
         network.clone(),
-        config.socket_path(),
-        work_dir.path(),
-        token.clone(),
-    )
-    .await
-    .into_diagnostic()?;
+        JobManager::new(Connector::new(network.clone()), config.work_dir().clone()),
+    );
 
-    let handler = network
-        .on(|req: &hypha_messages::Request| matches!(req, hypha_messages::Request::Scheduler(_)))
-        .into_stream()
-        .await
-        .into_diagnostic()?;
-
-    let handler_future = {
-        let driver = driver.clone();
-        handler.respond_with_concurrent(None, move |(peer_id, req)| {
-            let mut driver = driver.clone();
-            async move {
-                match req {
-                    hypha_messages::Request::Scheduler(scheduler) => match scheduler {
-                        hypha_messages::SchedulerRequest::Work {
-                            task_id,
-                            parameter_server_peer_id,
-                        } => {
-                            tracing::info!(
-                                task_id = %task_id,
-                                peer_id = %peer_id,
-                                "Received work request"
-                            );
-
-                            driver
-                                .start_training(peer_id, parameter_server_peer_id, task_id)
-                                .await;
-
-                            hypha_messages::Response::Scheduler(
-                                hypha_messages::SchedulerResponse::Work {},
-                            )
-                        }
-                    },
-                    _ => panic!("Unexpected request received"),
-                }
+    let arbiter_handle = tokio::spawn({
+        let token = token.clone();
+        async move {
+            if let Err(e) = arbiter.run(token).await {
+                tracing::error!(error = %e, "Arbiter failed");
             }
-        })
-    };
-
-    let mut tensor_stream = network.streams().into_diagnostic()?;
-
-    let stream_future = tokio::spawn(async move {
-        while let Some((peer_id, mut stream)) = tensor_stream.next().await {
-            tracing::debug!(peer_id = %peer_id, "Received tensor stream");
-
-            if let Err(e) = receive_file(work_dir.path(), &mut stream).await {
-                tracing::error!(error = ?e, "Failed to receive file");
-            }
-        }
-    });
-
-    let mut announce_stream = network.subscribe("announce").await.into_diagnostic()?;
-
-    let announce_future = tokio::spawn(async move {
-        while let Some(Ok(message)) = announce_stream.next().await {
-            let announce: hypha_messages::RequestAnnounce =
-                match ciborium::from_reader(message.data.as_slice()) {
-                    Ok(announce) => announce,
-                    Err(e) => {
-                        tracing::error!(error = ?e, "Failed to deserialize announce message");
-                        continue;
-                    }
-                };
-
-            tracing::debug!(
-                peer_id = %announce.scheduler_peer_id,
-                "Sending availability to scheduler"
-            );
-            let role = match role {
-                Role::Worker => hypha_messages::WorkerRole::TaskExecutor,
-                Role::ParameterServer => hypha_messages::WorkerRole::ParameterExecutor,
-            };
-            let _ = network
-                .request(
-                    announce.scheduler_peer_id,
-                    hypha_messages::Request::Worker(hypha_messages::WorkerRequest::Available {
-                        task_id: announce.task_id,
-                        role,
-                    }),
-                )
-                .await;
         }
     });
 
@@ -235,22 +215,15 @@ async fn run(config: ConfigWithMetadata<Config>, role: Role) -> Result<()> {
         // If any of them terminate on their own, it must be due to an error.
         // We warn about that, then shut down gracefully.
         // TODO: Log errors if futures return one.
-        _ = driver_future => {
-            tracing::warn!("Network driver error, shutting down");
-        }
-        _ = handler_future => {
-            tracing::warn!("Network driver error, shutting down");
-        }
-        _ = announce_future => {
-            tracing::warn!("Network driver error, shutting down");
-        }
-        _ = stream_future => {
+        _ = network_handle => {
             tracing::warn!("Network driver error, shutting down");
         }
     }
 
     token.cancel();
-    driver.wait().await;
+
+    // Wait for the arbiter to shut down gracefully.
+    let _ = arbiter_handle.await;
 
     Ok(())
 }
@@ -269,16 +242,14 @@ async fn main() -> miette::Result<()> {
             println!("Configuration written to: {output:?}");
             Ok(())
         }
-        args @ Commands::Run {
-            config_file, role, ..
-        } => {
+        args @ Commands::Run { config_file, .. } => {
             let config: ConfigWithMetadata<Config> = builder()
                 .with_provider(Toml::file(config_file))
                 .with_provider(Env::prefixed("HYPHA_"))
                 .with_provider(Serialized::defaults(args))
                 .build()?;
 
-            run(config, role.clone()).await
+            run(config).await
         }
     }
 }

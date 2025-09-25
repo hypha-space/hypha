@@ -9,6 +9,7 @@ use futures_util::stream::StreamExt;
 use hypha_network::{
     CertificateDer, CertificateRevocationListDer, PrivateKeyDer,
     dial::{DialAction, DialDriver, DialInterface, PendingDials},
+    external_address::{ExternalAddressAction, ExternalAddressDriver, ExternalAddressInterface},
     gossipsub::{
         GossipsubAction, GossipsubBehaviour, GossipsubDriver, GossipsubInterface, Subscriptions,
     },
@@ -34,7 +35,7 @@ use libp2p::{
 use libp2p_stream as stream;
 use tokio::sync::{SetOnce, mpsc, oneshot};
 
-type HyphaCodec = Codec<hypha_messages::Request, hypha_messages::Response>;
+pub type HyphaCodec = Codec<hypha_messages::Request, hypha_messages::Response>;
 type HyphaRequestHandlers = Vec<RequestHandler<HyphaCodec>>;
 
 #[derive(Clone)]
@@ -68,12 +69,14 @@ pub struct NetworkDriver {
     request_handlers: HyphaRequestHandlers,
 }
 
+#[allow(clippy::large_enum_variant)]
 enum Action {
     Dial(DialAction),
     Listen(ListenAction),
     Kademlia(KademliaAction),
     Gossipsub(GossipsubAction),
     RequestResponse(RequestResponseAction<HyphaCodec>),
+    ExternalAddress(ExternalAddressAction),
 }
 
 impl Network {
@@ -96,6 +99,7 @@ impl Network {
             .map_err(|_| {
                 SwarmError::TransportConfig("Failed to create TCP transport with mTLS.".to_string())
             })?
+            .with_quic()
             .with_relay_client(tls::Config::new, yamux::Config::default)
             .map_err(|_| {
                 SwarmError::TransportConfig("Failed to create relay client with mTLS.".to_string())
@@ -115,7 +119,9 @@ impl Network {
                     )),
                     relay_client,
                     dcutr: dcutr::Behaviour::new(key.public().to_peer_id()),
-                    stream: stream::Behaviour::new(),
+                    stream: stream::Behaviour::with_relay_policy(
+                        libp2p_stream::ConnectionPolicy::IgnoreRelayed,
+                    ),
                     kademlia: kad::Behaviour::new(
                         key.public().to_peer_id(),
                         kad::store::MemoryStore::new(key.public().to_peer_id()),
@@ -162,18 +168,18 @@ impl SwarmDriver<Behaviour> for NetworkDriver {
             tokio::select! {
                 event = self.swarm.select_next_some() => {
                     match event {
-                        SwarmEvent::ConnectionEstablished { connection_id, peer_id, .. } => {
+                        SwarmEvent::ConnectionEstablished { connection_id, peer_id, endpoint, .. } => {
+                            tracing::debug!(peer_id = %peer_id, ?endpoint, "Established new connection");
                             self.process_connection_established(peer_id, &connection_id,).await;
                         }
                         SwarmEvent::OutgoingConnectionError { connection_id, error, .. } => {
                             self.process_connection_error(&connection_id, error).await;
                         }
-                        SwarmEvent::NewListenAddr { listener_id, address } => {
-                            tracing::info!(address=%address, "New listen address");
+                        SwarmEvent::NewListenAddr { listener_id, .. } => {
                             self.process_new_listen_addr(&listener_id).await;
                         }
                         SwarmEvent::ExternalAddrConfirmed { address, .. } => {
-                            tracing::info!("External address confirmed: {:?}", address);
+                            self.process_confirmed_external_addr(address);
                         }
                         SwarmEvent::Behaviour(BehaviourEvent::Identify(event)) => {
                             self.process_identify_event(event);
@@ -186,6 +192,9 @@ impl SwarmDriver<Behaviour> for NetworkDriver {
                         }
                         SwarmEvent::Behaviour(BehaviourEvent::RequestResponse(event)) => {
                             self.process_request_response_event(event).await;
+                        }
+                        SwarmEvent::Behaviour(BehaviourEvent::Dcutr(event)) => {
+                            tracing::debug!("dcutr event: {:?}", event);
                         }
 
                         _ => {
@@ -209,6 +218,8 @@ impl SwarmDriver<Behaviour> for NetworkDriver {
                         },
                         Action::RequestResponse(action) =>
                             self.process_request_response_action(action).await,
+                        Action::ExternalAddress(action) =>
+                            self.process_external_address_action(action).await,
                     }
                 },
                 else => break
@@ -252,6 +263,8 @@ impl ListenDriver<Behaviour> for NetworkDriver {
         &mut self.pending_listen_map
     }
 }
+
+impl ExternalAddressDriver<Behaviour> for NetworkDriver {}
 
 impl StreamInterface for Network {
     fn stream_control(&self) -> stream::Control {
@@ -341,5 +354,17 @@ impl RequestResponseInterface<HyphaCodec> for Network {
         self.action_sender
             .try_send(Action::RequestResponse(action))
             .map_err(|_| RequestResponseError::Other("Failed to send action".to_string()))
+    }
+}
+
+impl ExternalAddressInterface for Network {
+    async fn send(&self, action: ExternalAddressAction) {
+        if let Err(e) = self
+            .action_sender
+            .send(Action::ExternalAddress(action))
+            .await
+        {
+            tracing::error!(?e, "failed to send external address action");
+        }
     }
 }

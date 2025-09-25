@@ -22,8 +22,7 @@ tracing-subscriber.workspace = true
 
 [dev-dependencies]
 clap.workspace = true
-futures = "0.3.31"
-libp2p-swarm-test = { version = "0.6.0", features = ["tokio"] }
+libp2p-swarm-test.workspace = true
 mockall.workspace = true
 proptest.workspace = true
 rcgen.workspace = true
