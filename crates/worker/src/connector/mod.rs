@@ -7,7 +7,7 @@ use futures_util::{
     io::{AsyncRead, AsyncWrite},
 };
 use hf_hub::api::tokio::ApiBuilder;
-use hypha_messages::{Fetch, Receive, Reference, SelectionStrategy, Send as SendRef};
+use hypha_messages::{Fetch, HFRepoType, Receive, Reference, SelectionStrategy, Send as SendRef};
 use hypha_network::stream::{StreamInterface, StreamReceiverInterface, StreamSenderInterface};
 use libp2p::PeerId;
 use libp2p_stream::{AlreadyRegistered, OpenStreamError};
@@ -246,6 +246,8 @@ impl FetchConnector for HttpHfFetcher {
                     repository,
                     revision,
                     filenames,
+                    token,
+                    repo_type,
                 } => {
                     if filenames.is_empty() {
                         let s = futures_util::stream::empty::<Result<ReadItem, io::Error>>();
@@ -253,11 +255,14 @@ impl FetchConnector for HttpHfFetcher {
                     }
 
                     // Build HF API and compute urls
-                    let api = ApiBuilder::new().build()?;
+                    let api = ApiBuilder::new().with_token(token.clone()).build()?;
                     let rev = revision.as_deref().unwrap_or("main");
                     let repo = api.repo(hf_hub::Repo::with_revision(
                         repository.clone(),
-                        hf_hub::RepoType::Model,
+                        match repo_type {
+                            HFRepoType::Dataset => hf_hub::RepoType::Dataset,
+                            HFRepoType::Model => hf_hub::RepoType::Model,
+                        },
                         rev.to_string(),
                     ));
                     let repo = std::sync::Arc::new(repo);
