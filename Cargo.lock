@@ -4,9 +4,9 @@ version = 4
 
 [[package]]
 name = "addr2line"
-version = "0.24.2"
+version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dfbe277e56a376000877090da837660b4427aad530e3028d44e0bffe4f89a1c1"
+checksum = "1b5d307320b3181d6d7954e663bd7c774a838b8220fe0593c86d9fb09f498b4b"
 dependencies = [
  "gimli",
 ]
@@ -209,7 +209,7 @@ dependencies = [
  "polling",
  "rustix",
  "slab",
- "windows-sys 0.61.0",
+ "windows-sys 0.61.1",
 ]
 
 [[package]]
@@ -348,9 +348,9 @@ dependencies = [
 
 [[package]]
 name = "backtrace"
-version = "0.3.75"
+version = "0.3.76"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6806a6321ec58106fea15becdad98371e28d92ccbc7c8f1b3b6dd724fe8f1002"
+checksum = "bb531853791a215d7c62a30daf0dde835f381ab5de4589cfe7c649d2cbe92bd6"
 dependencies = [
  "addr2line",
  "cfg-if",
@@ -358,7 +358,7 @@ dependencies = [
  "miniz_oxide",
  "object",
  "rustc-demangle",
- "windows-targets 0.52.6",
+ "windows-link 0.2.0",
 ]
 
 [[package]]
@@ -928,7 +928,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.61.0",
+ "windows-sys 0.61.1",
 ]
 
 [[package]]
@@ -1075,7 +1075,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.0",
+ "windows-sys 0.61.1",
 ]
 
 [[package]]
@@ -1567,9 +1567,9 @@ dependencies = [
 
 [[package]]
 name = "gimli"
-version = "0.31.1"
+version = "0.32.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "07e28edb80900c19c28f1072f2e8aeca7fa06b23cd4169cefe1af5aa3260783f"
+checksum = "e629b9b98ef3dd8afe6ca2bd0f89306cec16d43d907889945bc5d6687f2f13c7"
 
 [[package]]
 name = "glob"
@@ -2338,7 +2338,7 @@ checksum = "f9fbbcab51052fe104eb5e5d351cf728d30a5be1fe14d9be8a3b097481fb97de"
 [[package]]
 name = "libp2p"
 version = "0.56.0"
-source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls3#51aea479fbb65416d0d79e815b862d9c02170a41"
+source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls4#57747ea02e1486fd775a55d92e53b8f07cf398eb"
 dependencies = [
  "bytes",
  "either",
@@ -2375,7 +2375,7 @@ dependencies = [
 [[package]]
 name = "libp2p-allow-block-list"
 version = "0.6.0"
-source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls3#51aea479fbb65416d0d79e815b862d9c02170a41"
+source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls4#57747ea02e1486fd775a55d92e53b8f07cf398eb"
 dependencies = [
  "libp2p-core",
  "libp2p-identity",
@@ -2385,7 +2385,7 @@ dependencies = [
 [[package]]
 name = "libp2p-connection-limits"
 version = "0.6.0"
-source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls3#51aea479fbb65416d0d79e815b862d9c02170a41"
+source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls4#57747ea02e1486fd775a55d92e53b8f07cf398eb"
 dependencies = [
  "libp2p-core",
  "libp2p-identity",
@@ -2395,7 +2395,7 @@ dependencies = [
 [[package]]
 name = "libp2p-core"
 version = "0.43.1"
-source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls3#51aea479fbb65416d0d79e815b862d9c02170a41"
+source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls4#57747ea02e1486fd775a55d92e53b8f07cf398eb"
 dependencies = [
  "either",
  "fnv",
@@ -2419,7 +2419,7 @@ dependencies = [
 [[package]]
 name = "libp2p-dcutr"
 version = "0.14.0"
-source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls3#51aea479fbb65416d0d79e815b862d9c02170a41"
+source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls4#57747ea02e1486fd775a55d92e53b8f07cf398eb"
 dependencies = [
  "asynchronous-codec",
  "either",
@@ -2440,7 +2440,7 @@ dependencies = [
 [[package]]
 name = "libp2p-dns"
 version = "0.44.0"
-source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls3#51aea479fbb65416d0d79e815b862d9c02170a41"
+source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls4#57747ea02e1486fd775a55d92e53b8f07cf398eb"
 dependencies = [
  "async-trait",
  "futures",
@@ -2455,7 +2455,7 @@ dependencies = [
 [[package]]
 name = "libp2p-gossipsub"
 version = "0.49.0"
-source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls3#51aea479fbb65416d0d79e815b862d9c02170a41"
+source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls4#57747ea02e1486fd775a55d92e53b8f07cf398eb"
 dependencies = [
  "async-channel",
  "asynchronous-codec",
@@ -2485,7 +2485,7 @@ dependencies = [
 [[package]]
 name = "libp2p-identify"
 version = "0.47.0"
-source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls3#51aea479fbb65416d0d79e815b862d9c02170a41"
+source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls4#57747ea02e1486fd775a55d92e53b8f07cf398eb"
 dependencies = [
  "asynchronous-codec",
  "either",
@@ -2524,7 +2524,7 @@ dependencies = [
 [[package]]
 name = "libp2p-kad"
 version = "0.48.0"
-source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls3#51aea479fbb65416d0d79e815b862d9c02170a41"
+source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls4#57747ea02e1486fd775a55d92e53b8f07cf398eb"
 dependencies = [
  "asynchronous-codec",
  "bytes",
@@ -2551,7 +2551,7 @@ dependencies = [
 [[package]]
 name = "libp2p-mdns"
 version = "0.48.0"
-source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls3#51aea479fbb65416d0d79e815b862d9c02170a41"
+source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls4#57747ea02e1486fd775a55d92e53b8f07cf398eb"
 dependencies = [
  "futures",
  "hickory-proto",
@@ -2569,7 +2569,7 @@ dependencies = [
 [[package]]
 name = "libp2p-metrics"
 version = "0.17.0"
-source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls3#51aea479fbb65416d0d79e815b862d9c02170a41"
+source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls4#57747ea02e1486fd775a55d92e53b8f07cf398eb"
 dependencies = [
  "futures",
  "libp2p-core",
@@ -2589,7 +2589,7 @@ dependencies = [
 [[package]]
 name = "libp2p-ping"
 version = "0.47.0"
-source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls3#51aea479fbb65416d0d79e815b862d9c02170a41"
+source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls4#57747ea02e1486fd775a55d92e53b8f07cf398eb"
 dependencies = [
  "futures",
  "futures-timer",
@@ -2604,7 +2604,7 @@ dependencies = [
 [[package]]
 name = "libp2p-plaintext"
 version = "0.43.0"
-source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls3#51aea479fbb65416d0d79e815b862d9c02170a41"
+source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls4#57747ea02e1486fd775a55d92e53b8f07cf398eb"
 dependencies = [
  "asynchronous-codec",
  "bytes",
@@ -2619,7 +2619,7 @@ dependencies = [
 [[package]]
 name = "libp2p-quic"
 version = "0.13.0"
-source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls3#51aea479fbb65416d0d79e815b862d9c02170a41"
+source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls4#57747ea02e1486fd775a55d92e53b8f07cf398eb"
 dependencies = [
  "ed25519-dalek",
  "futures",
@@ -2642,7 +2642,7 @@ dependencies = [
 [[package]]
 name = "libp2p-relay"
 version = "0.21.0"
-source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls3#51aea479fbb65416d0d79e815b862d9c02170a41"
+source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls4#57747ea02e1486fd775a55d92e53b8f07cf398eb"
 dependencies = [
  "asynchronous-codec",
  "bytes",
@@ -2665,7 +2665,7 @@ dependencies = [
 [[package]]
 name = "libp2p-request-response"
 version = "0.29.0"
-source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls3#51aea479fbb65416d0d79e815b862d9c02170a41"
+source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls4#57747ea02e1486fd775a55d92e53b8f07cf398eb"
 dependencies = [
  "async-trait",
  "cbor4ii",
@@ -2683,7 +2683,7 @@ dependencies = [
 [[package]]
 name = "libp2p-stream"
 version = "0.4.0-alpha"
-source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls3#51aea479fbb65416d0d79e815b862d9c02170a41"
+source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls4#57747ea02e1486fd775a55d92e53b8f07cf398eb"
 dependencies = [
  "futures",
  "libp2p-core",
@@ -2696,7 +2696,7 @@ dependencies = [
 [[package]]
 name = "libp2p-swarm"
 version = "0.47.0"
-source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls3#51aea479fbb65416d0d79e815b862d9c02170a41"
+source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls4#57747ea02e1486fd775a55d92e53b8f07cf398eb"
 dependencies = [
  "either",
  "fnv",
@@ -2717,7 +2717,7 @@ dependencies = [
 [[package]]
 name = "libp2p-swarm-derive"
 version = "0.35.1"
-source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls3#51aea479fbb65416d0d79e815b862d9c02170a41"
+source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls4#57747ea02e1486fd775a55d92e53b8f07cf398eb"
 dependencies = [
  "heck",
  "quote",
@@ -2727,7 +2727,7 @@ dependencies = [
 [[package]]
 name = "libp2p-swarm-test"
 version = "0.6.0"
-source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls3#51aea479fbb65416d0d79e815b862d9c02170a41"
+source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls4#57747ea02e1486fd775a55d92e53b8f07cf398eb"
 dependencies = [
  "async-trait",
  "futures",
@@ -2744,7 +2744,7 @@ dependencies = [
 [[package]]
 name = "libp2p-tcp"
 version = "0.44.0"
-source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls3#51aea479fbb65416d0d79e815b862d9c02170a41"
+source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls4#57747ea02e1486fd775a55d92e53b8f07cf398eb"
 dependencies = [
  "futures",
  "futures-timer",
@@ -2759,7 +2759,7 @@ dependencies = [
 [[package]]
 name = "libp2p-tls"
 version = "0.6.2"
-source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls3#51aea479fbb65416d0d79e815b862d9c02170a41"
+source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls4#57747ea02e1486fd775a55d92e53b8f07cf398eb"
 dependencies = [
  "ed25519-dalek",
  "futures",
@@ -2778,7 +2778,7 @@ dependencies = [
 [[package]]
 name = "libp2p-upnp"
 version = "0.5.0"
-source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls3#51aea479fbb65416d0d79e815b862d9c02170a41"
+source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls4#57747ea02e1486fd775a55d92e53b8f07cf398eb"
 dependencies = [
  "futures",
  "futures-timer",
@@ -2792,7 +2792,7 @@ dependencies = [
 [[package]]
 name = "libp2p-yamux"
 version = "0.47.0"
-source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls3#51aea479fbb65416d0d79e815b862d9c02170a41"
+source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls4#57747ea02e1486fd775a55d92e53b8f07cf398eb"
 dependencies = [
  "either",
  "futures",
@@ -3037,7 +3037,7 @@ dependencies = [
 [[package]]
 name = "multistream-select"
 version = "0.13.0"
-source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls3#51aea479fbb65416d0d79e815b862d9c02170a41"
+source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls4#57747ea02e1486fd775a55d92e53b8f07cf398eb"
 dependencies = [
  "bytes",
  "futures",
@@ -3280,9 +3280,9 @@ checksum = "830b246a0e5f20af87141b25c173cd1b609bd7779a4617d6ec582abaf90870f3"
 
 [[package]]
 name = "object"
-version = "0.36.7"
+version = "0.37.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "62948e14d923ea95ea2c7c86c71013138b66525b86bdc08d2dcc262bdb497b87"
+checksum = "ff76201f031d8863c38aa7f905eca4f53abbfa15f609db4277d44cd8938f33fe"
 dependencies = [
  "memchr",
 ]
@@ -3531,7 +3531,7 @@ dependencies = [
  "hermit-abi",
  "pin-project-lite",
  "rustix",
- "windows-sys 0.61.0",
+ "windows-sys 0.61.1",
 ]
 
 [[package]]
@@ -3718,7 +3718,7 @@ dependencies = [
 [[package]]
 name = "quick-protobuf-codec"
 version = "0.3.1"
-source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls3#51aea479fbb65416d0d79e815b862d9c02170a41"
+source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls4#57747ea02e1486fd775a55d92e53b8f07cf398eb"
 dependencies = [
  "asynchronous-codec",
  "bytes",
@@ -4105,7 +4105,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.0",
+ "windows-sys 0.61.1",
 ]
 
 [[package]]
@@ -4176,7 +4176,7 @@ dependencies = [
 [[package]]
 name = "rw-stream-sink"
 version = "0.4.0"
-source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls3#51aea479fbb65416d0d79e815b862d9c02170a41"
+source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls4#57747ea02e1486fd775a55d92e53b8f07cf398eb"
 dependencies = [
  "futures",
  "pin-project",
@@ -4228,9 +4228,9 @@ checksum = "1bc711410fbe7399f390ca1c3b60ad0f53f80e95c5eb935e52268a0e2cd49acc"
 
 [[package]]
 name = "serde"
-version = "1.0.226"
+version = "1.0.227"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0dca6411025b24b60bfa7ec1fe1f8e710ac09782dca409ee8237ba74b51295fd"
+checksum = "80ece43fc6fbed4eb5392ab50c07334d3e577cbf40997ee896fe7af40bba4245"
 dependencies = [
  "serde_core",
  "serde_derive",
@@ -4238,18 +4238,18 @@ dependencies = [
 
 [[package]]
 name = "serde_core"
-version = "1.0.226"
+version = "1.0.227"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba2ba63999edb9dac981fb34b3e5c0d111a69b0924e253ed29d83f7c99e966a4"
+checksum = "7a576275b607a2c86ea29e410193df32bc680303c82f31e275bbfcafe8b33be5"
 dependencies = [
  "serde_derive",
 ]
 
 [[package]]
 name = "serde_derive"
-version = "1.0.226"
+version = "1.0.227"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8db53ae22f34573731bafa1db20f04027b2d25e02d8205921b569171699cdb33"
+checksum = "51e694923b8824cf0e9b382adf0f60d4e05f348f357b38833a3fa5ed7c2ede04"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4564,7 +4564,7 @@ dependencies = [
  "getrandom 0.3.3",
  "once_cell",
  "rustix",
- "windows-sys 0.61.0",
+ "windows-sys 0.61.1",
 ]
 
 [[package]]
@@ -5319,7 +5319,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.0",
+ "windows-sys 0.61.1",
 ]
 
 [[package]]
@@ -5425,14 +5425,14 @@ version = "0.60.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2f500e4d28234f72040990ec9d39e3a6b950f9f22d3dba18416c35882612bcb"
 dependencies = [
- "windows-targets 0.53.3",
+ "windows-targets 0.53.4",
 ]
 
 [[package]]
 name = "windows-sys"
-version = "0.61.0"
+version = "0.61.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e201184e40b2ede64bc2ea34968b28e33622acdbbf37104f0e4a33f7abe657aa"
+checksum = "6f109e41dd4a3c848907eb83d5a42ea98b3769495597450cf6d153507b166f0f"
 dependencies = [
  "windows-link 0.2.0",
 ]
@@ -5470,11 +5470,11 @@ dependencies = [
 
 [[package]]
 name = "windows-targets"
-version = "0.53.3"
+version = "0.53.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d5fe6031c4041849d7c496a8ded650796e7b6ecc19df1a431c1a363342e5dc91"
+checksum = "2d42b7b7f66d2a06854650af09cfdf8713e427a439c97ad65a6375318033ac4b"
 dependencies = [
- "windows-link 0.1.3",
+ "windows-link 0.2.0",
  "windows_aarch64_gnullvm 0.53.0",
  "windows_aarch64_msvc 0.53.0",
  "windows_i686_gnu 0.53.0",

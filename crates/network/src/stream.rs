@@ -49,7 +49,8 @@ pub trait StreamReceiverInterface: StreamInterface {
     /// Returns [`AlreadyRegistered`] if the protocol has already been
     /// registered with the stream control.
     fn streams(&self) -> Result<IncomingStreams, AlreadyRegistered> {
-        self.stream_control().accept(TENSOR_STREAM_PROTOCOL)
+        self.stream_control()
+            .accept_with_limit(TENSOR_STREAM_PROTOCOL, Some(8))
     }
 }
 
