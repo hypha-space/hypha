@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     sync::Arc,
-    time::{Duration, Instant, SystemTime},
+    time::{Duration, SystemTime},
 };
 
 use thiserror::Error;
@@ -20,30 +20,18 @@ pub enum LedgerError {
 pub struct Lease<T> {
     pub id: Uuid,
     pub leasable: T,
-    timeout: Instant,
+    // NOTE: We intentionally use SystemTime (wall-clock) instead of Instant
+    // (monotonic) to allow leases to be serialized and compared across
+    // system/process boundaries. This makes the ledger interoperable at the
+    // expense of susceptibility to clock adjustments. Callers should be aware
+    // that backward clock jumps may cause a lease to appear expired sooner.
+    pub timeout: SystemTime,
 }
 
 impl<T> Lease<T> {
-    /// Get the timeout as SystemTime for network serialization
-    /// Note: This converts from Instant to SystemTime and may not be perfectly accurate
-    /// if significant time has passed since the lease was created
-    pub fn timeout_as_system_time(&self) -> SystemTime {
-        let now_instant = Instant::now();
-        let now_system = SystemTime::now();
-
-        if self.timeout > now_instant {
-            // Lease hasn't expired yet
-            let remaining = self.timeout - now_instant;
-            now_system + remaining
-        } else {
-            // Lease has already expired
-            now_system
-        }
-    }
-
     /// Check if this lease has expired
     pub fn is_expired(&self) -> bool {
-        Instant::now() >= self.timeout
+        SystemTime::now() >= self.timeout
     }
 }
 
@@ -81,7 +69,7 @@ where
         let mut leases = self.leases.write().await;
 
         let id = Uuid::new_v4();
-        let timeout = Instant::now() + duration;
+        let timeout = SystemTime::now() + duration;
 
         let lease = Lease {
             id,
@@ -120,7 +108,7 @@ where
         // NOTE: Renewing a lease updates the timeout to now + duration instead of extending the
         // original timeout to make it easier to reason about the lease's expiration time across
         // system boundaries.
-        lease.timeout = Instant::now() + duration;
+        lease.timeout = SystemTime::now() + duration;
 
         Ok(lease.clone())
     }
@@ -132,7 +120,7 @@ where
     /// Get all expired leases
     pub async fn list_expired(&self) -> Vec<Lease<T>> {
         let leases = self.leases.read().await;
-        let now = Instant::now();
+        let now = SystemTime::now();
 
         leases
             .values()
