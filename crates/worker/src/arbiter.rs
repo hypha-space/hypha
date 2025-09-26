@@ -94,7 +94,11 @@ where
                 if let Ok(expired) = lease_manager.proceed().await
                     && !expired.is_empty()
                 {
-                    tracing::debug!("Pruned {} expired leases", expired.len());
+                    tracing::info!(
+                        expired = ?expired,
+                        "Dropped {} expired leases",
+                        expired.len()
+                    );
                 }
             }
         });
@@ -121,7 +125,7 @@ where
                                                 return Response::RenewLease(
                                                     renew_lease::Response::Renewed {
                                                         id,
-                                                        timeout: lease.timeout_as_system_time(),
+                                                        timeout: lease.timeout,
                                                     },
                                                 );
                                             }
@@ -197,7 +201,7 @@ where
                                                     id,
                                                     // NOTE: We currently acknowledge with the existing lease timeout.
                                                     // TODO: Consider returning the renewed/expected timeout from JobManager::execute.
-                                                    timeout: lease.timeout_as_system_time(),
+                                                    timeout: lease.timeout,
                                                 },
                                             )
                                         }
@@ -311,7 +315,7 @@ where
                     // TODO: Implement price calculation based on resource requirements and
                     // current utilization.
                     price: request.bid,
-                    timeout: lease.timeout_as_system_time(),
+                    timeout: lease.timeout,
                 };
 
                 let mut lease_manager = self.lease_manager.clone();
