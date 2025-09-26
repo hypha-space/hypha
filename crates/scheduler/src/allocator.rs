@@ -39,13 +39,15 @@ pub enum AllocatorError {
 
 /// Trait for different worker allocation strategies
 pub trait Allocator: Send + Sync {
-    /// Request a worker matching the given specification offered for no more than the given price
+    /// Request `num` workers matching the given specification offered for no more than the given price
+    /// NOTE: API changed to support multi-worker allocation in one shot.
     fn request(
         &self,
         spec: WorkerSpec,
         price: f64,
         deadline: Option<Duration>,
-    ) -> impl Future<Output = Result<Worker, AllocatorError>> + Send;
+        num: usize,
+    ) -> impl Future<Output = Result<Vec<Worker>, AllocatorError>> + Send;
 }
 
 /// Greedy allocator that selects the first worker offering the lowest price
@@ -65,7 +67,8 @@ impl Allocator for GreedyWorkerAllocator {
         spec: WorkerSpec,
         bid: f64,
         deadline: Option<Duration>,
-    ) -> Result<Worker, AllocatorError> {
+        num: usize,
+    ) -> Result<Vec<Worker>, AllocatorError> {
         let id = Uuid::new_v4();
         let deadline = deadline.unwrap_or(DEFAULT_TIMEOUT);
 
@@ -122,30 +125,126 @@ impl Allocator for GreedyWorkerAllocator {
             .await
             .map_err(|e| AllocatorError::BroadcastFailed(Box::new(e)))?;
 
-        // NOTE: Aggregate offers and select the best one using the GreedyOfferAggregator
+        // NOTE: Aggregate offers and select the best `num` using the GreedyOfferAggregator
         let mut offer_aggregator = pin!(GreedyOfferAggregator::new(
             ReceiverStream::new(rx),
             id,
             deadline,
             None, // TODO: configure max offers
+            num,
+            true, // strive for diversity by default
+            bid,  // treat bid as max acceptable price for early return
         ));
 
-        let offer = offer_aggregator.next().await;
+        let offers = offer_aggregator.next().await;
 
         // NOTE: Always abort the response handler task to prevent resource leaks
         // The task should be cancelled regardless of whether we found an offer or not
         offer_handle.abort();
 
-        match offer {
-            Some((peer_id, offer)) => {
-                let worker =
-                    Worker::create(offer.id, peer_id, spec, offer.price, self.network.clone())
-                        .await;
+        match offers {
+            Some(offers) if !offers.is_empty() => {
+                // Create workers concurrently for selected offers
+                let futures =
+                    offers.into_iter().map(|(peer_id, offer)| {
+                        let spec = spec.clone();
+                        let network = self.network.clone();
+                        async move {
+                            Worker::create(offer.id, peer_id, spec, offer.price, network).await
+                        }
+                    });
 
-                Ok(worker)
+                let workers = futures_util::future::join_all(futures).await;
+                Ok(workers)
             }
-            None => Err(AllocatorError::NoOffersReceived),
+            _ => Err(AllocatorError::NoOffersReceived),
         }
+    }
+}
+
+#[derive(Debug, Error)]
+enum CandidatesError {
+    #[error("Already got a better offer from this peer")]
+    Rejected,
+    #[error("Already got enough and better offers")]
+    Full,
+}
+
+struct Candidates {
+    offers: Vec<(PeerId, WorkerOfferRequest)>,
+    capacity: usize,
+    diversity: bool,
+}
+
+impl Candidates {
+    fn new(capacity: usize, diversity: bool) -> Self {
+        Self {
+            offers: Vec::with_capacity(capacity),
+            capacity,
+            diversity,
+        }
+    }
+
+    fn try_insert(
+        &mut self,
+        peer_id: PeerId,
+        offer: WorkerOfferRequest,
+    ) -> Result<(), CandidatesError> {
+        if self.diversity {
+            // Find existing offer from this peer and reject if not better then old
+            if let Some(i) = self.offers.iter().position(|(p, _)| *p == peer_id) {
+                if offer.price < self.offers[i].1.price {
+                    self.offers[i] = (peer_id, offer);
+                    self.sort();
+
+                    return Ok(());
+                }
+
+                return Err(CandidatesError::Rejected);
+            }
+        }
+
+        // Add new offer if there's space
+        if self.offers.len() < self.capacity {
+            self.offers.push((peer_id, offer));
+            self.sort();
+
+            return Ok(());
+        }
+
+        // Replace worst offer if new one is better
+        if let Some(worst_price) = self.offers.last().map(|(_, o)| o.price)
+            && offer.price < worst_price
+            && let Some(last) = self.offers.last_mut()
+        {
+            *last = (peer_id, offer);
+
+            return Ok(());
+        }
+
+        Err(CandidatesError::Full)
+    }
+
+    fn sort(&mut self) {
+        self.offers.sort_by(|a, b| a.1.price.total_cmp(&b.1.price));
+    }
+
+    fn len(&self) -> usize {
+        self.offers.len()
+    }
+
+    fn worst_price(&self) -> Option<f64> {
+        self.offers.last().map(|(_, o)| o.price)
+    }
+
+    fn offers(&self) -> &[(PeerId, WorkerOfferRequest)] {
+        &self.offers
+    }
+}
+
+impl From<Candidates> for Vec<(PeerId, WorkerOfferRequest)> {
+    fn from(candidates: Candidates) -> Self {
+        candidates.offers
     }
 }
 
@@ -155,9 +254,12 @@ struct GreedyOfferAggregator<S> {
     stream: S,
     #[pin]
     deadline: Sleep,
-    best_offer: Option<(PeerId, WorkerOfferRequest)>,
+    candidates: Candidates,
     max_offers: Option<usize>,
     offers_received: usize,
+    returned: bool,
+    hard_deadline: tokio::time::Instant,
+    upper_price: f64,
 }
 
 impl<S> GreedyOfferAggregator<S> {
@@ -166,13 +268,20 @@ impl<S> GreedyOfferAggregator<S> {
         _request_id: Uuid,
         deadline: Duration,
         max_offers: Option<usize>,
+        desired: usize,
+        diversity: bool,
+        upper_price: f64,
     ) -> Self {
+        let hard_deadline = tokio::time::Instant::now() + deadline;
         GreedyOfferAggregator {
             stream,
             deadline: tokio::time::sleep(deadline),
-            best_offer: None,
+            candidates: Candidates::new(desired.max(1), diversity),
             max_offers,
             offers_received: 0,
+            returned: false,
+            hard_deadline,
+            upper_price,
         }
     }
 }
@@ -181,7 +290,7 @@ impl<S> Stream for GreedyOfferAggregator<S>
 where
     S: Stream<Item = (PeerId, WorkerOfferRequest)> + Unpin,
 {
-    type Item = (PeerId, WorkerOfferRequest);
+    type Item = Vec<(PeerId, WorkerOfferRequest)>;
 
     fn poll_next(
         self: Pin<&mut Self>,
@@ -189,18 +298,26 @@ where
     ) -> Poll<Option<Self::Item>> {
         let mut this = self.project();
 
+        if *this.returned {
+            return Poll::Ready(None);
+        }
+
         // First check if we've reached max offers limit
         if let Some(max) = this.max_offers
             && *this.offers_received >= *max
         {
             tracing::debug!("Reached maximum offer limit");
-            return Poll::Ready(this.best_offer.take());
+            let candidates = std::mem::replace(this.candidates, Candidates::new(0, false));
+            *this.returned = true;
+            return Poll::Ready(Some(candidates.into()));
         }
 
         // Poll the deadline timer
         if this.deadline.as_mut().poll(cx).is_ready() {
             tracing::debug!("Deadline reached");
-            return Poll::Ready(this.best_offer.take());
+            let candidates = std::mem::replace(this.candidates, Candidates::new(0, false));
+            *this.returned = true;
+            return Poll::Ready(Some(candidates.into()));
         }
 
         // Poll for new offers
@@ -209,41 +326,37 @@ where
                 Poll::Ready(Some((peer_id, offer))) => {
                     *this.offers_received += 1;
 
-                    // Update best offer if this one is better
-                    let should_update_timer = match this.best_offer {
-                        Some((_, current_best)) if current_best.price <= offer.price => {
-                            // Keep current best
-                            false
-                        }
-                        _ => {
-                            tracing::debug!(
-                                peer_id = %peer_id,
-                                price = offer.price,
-                                "New best offer"
-                            );
-                            let _offer_timeout = offer.timeout;
-                            *this.best_offer = Some((peer_id, offer));
-                            true
-                        }
-                    };
+                    let changed = this.candidates.try_insert(peer_id, offer.clone()).is_ok();
 
-                    // Update deadline timer if new best offer expires sooner
-                    if should_update_timer && let Some((_, offer)) = &this.best_offer {
+                    if changed {
+                        // Update deadline to earliest expiry among candidates and hard deadline
                         let now = SystemTime::now();
                         let expiry_buffer = Duration::from_millis(100);
+                        let mut new_deadline = *this.hard_deadline;
+                        for (_, off) in this.candidates.offers().iter() {
+                            if let Ok(time_until_expiry) = off.timeout.duration_since(now) {
+                                let duration_until_expiry = if time_until_expiry > expiry_buffer {
+                                    time_until_expiry - expiry_buffer
+                                } else {
+                                    Duration::from_millis(0)
+                                };
+                                let candidate = tokio::time::Instant::now() + duration_until_expiry;
+                                if candidate < new_deadline {
+                                    new_deadline = candidate;
+                                }
+                            }
+                        }
+                        this.deadline.as_mut().reset(new_deadline);
 
-                        // Calculate time until offer expires
-                        if let Ok(time_until_expiry) = offer.timeout.duration_since(now) {
-                            let duration_until_expiry = if time_until_expiry > expiry_buffer {
-                                time_until_expiry - expiry_buffer
-                            } else {
-                                Duration::from_millis(0)
-                            };
-
-                            // Reset the timer to the earlier of current deadline or offer expiry
-                            this.deadline
-                                .as_mut()
-                                .reset(tokio::time::Instant::now() + duration_until_expiry);
+                        // Early return if we've reached desired count and max price <= upper bound
+                        if this.candidates.len() >= this.candidates.capacity
+                            && let Some(worst_price) = this.candidates.worst_price()
+                            && worst_price <= *this.upper_price
+                        {
+                            let candidates =
+                                std::mem::replace(this.candidates, Candidates::new(0, false));
+                            *this.returned = true;
+                            return Poll::Ready(Some(candidates.into()));
                         }
                     }
 
@@ -252,7 +365,9 @@ where
                 }
                 Poll::Ready(None) => {
                     // Stream ended, return what we have
-                    return Poll::Ready(this.best_offer.take());
+                    let candidates = std::mem::replace(this.candidates, Candidates::new(0, false));
+                    *this.returned = true;
+                    return Poll::Ready(Some(candidates.into()));
                 }
                 Poll::Pending => {
                     // No more offers available right now

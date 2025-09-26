@@ -1,6 +1,6 @@
 //! Scheduler binary.
 
-use std::{fs, time::Duration};
+use std::fs;
 
 use clap::{Parser, Subcommand};
 use figment::providers::{Env, Format, Serialized, Toml};
@@ -21,7 +21,6 @@ use hypha_scheduler::{
 use libp2p::{Multiaddr, multiaddr::Protocol};
 use miette::{IntoDiagnostic, Result};
 use serde::Serialize;
-use tokio::time::sleep;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Debug, Parser, Serialize)]
@@ -179,25 +178,21 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
         ],
     };
 
-    // Request multiple workers to increase chances of two distinct peers
-    let mut allocated_workers = Vec::new();
-    for i in 0..2 {
-        tracing::info!(worker_index = i, "Requesting worker allocation");
-        match allocator.request(worker_spec.clone(), 100.0, None).await {
-            Ok(worker) => {
-                tracing::info!(
-                    peer_id = %worker.peer_id(),
-                    lease_id = %worker.lease_id(),
-                    "Successfully allocated worker"
-                );
-                allocated_workers.push(worker);
-            }
-            Err(e) => {
-                tracing::error!(error = %e, "Failed to allocate worker");
-            }
+    // Request two workers
+    let mut allocated_workers = match allocator.request(worker_spec.clone(), 100.0, None, 2).await {
+        Ok(allocated_workers) => {
+            tracing::info!(
+                num_workers = %allocated_workers.len(),
+                "Successfully allocated workers"
+            );
+            allocated_workers
         }
-        sleep(Duration::from_millis(100)).await;
-    }
+        Err(e) => {
+            tracing::error!(error = %e, "Failed to allocate worker");
+
+            Vec::new()
+        }
+    };
 
     let parameter_server_spec = WorkerSpec {
         requirements: vec![
@@ -210,27 +205,24 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
     };
 
     // Request multiple workers to increase chances of two distinct peers
-    let mut allocated_parameter_servers = Vec::new();
-    for i in 0..1 {
-        tracing::info!(worker_index = i, "Requesting worker allocation");
-        match allocator
-            .request(parameter_server_spec.clone(), 100.0, None)
-            .await
-        {
-            Ok(worker) => {
-                tracing::info!(
-                    peer_id = %worker.peer_id(),
-                    lease_id = %worker.lease_id(),
-                    "Successfully allocated worker"
-                );
-                allocated_parameter_servers.push(worker);
-            }
-            Err(e) => {
-                tracing::error!(error = %e, "Failed to allocate worker");
-            }
+    let mut allocated_parameter_servers = match allocator
+        .request(parameter_server_spec.clone(), 100.0, None, 1)
+        .await
+    {
+        Ok(allocated_parameter_servers) => {
+            tracing::info!(
+                num_parameter_servers = %allocated_parameter_servers.len(),
+                "Successfully allocated parameter servers"
+            );
+
+            allocated_parameter_servers
         }
-        sleep(Duration::from_millis(100)).await;
-    }
+        Err(e) => {
+            tracing::error!(error = %e, "Failed to allocate worker");
+
+            Vec::new()
+        }
+    };
 
     if allocated_workers.len() > 1 && allocated_parameter_servers.len() == 1 {
         let worker_ids = allocated_workers
