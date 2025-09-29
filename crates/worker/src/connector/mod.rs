@@ -2,20 +2,21 @@
 
 use std::{io, pin::Pin, sync::Arc};
 
-use futures_util::{
-    Stream, StreamExt, TryStreamExt,
-    io::{AsyncRead, AsyncWrite},
-};
+use futures_util::{Stream, StreamExt, TryStreamExt};
 use hf_hub::api::tokio::ApiBuilder;
-use hypha_messages::{Fetch, HFRepoType, Receive, Reference, SelectionStrategy, Send as SendRef};
-use hypha_network::stream_push::{
-    StreamPushInterface, StreamPushReceiverInterface, StreamPushSenderInterface,
+use hypha_messages::{
+    DataSlice, Fetch, HFRepoType, Receive, Reference, SelectionStrategy, Send as SendRef,
+};
+use hypha_network::{
+    stream_pull::{StreamPullInterface, StreamPullSenderInterface},
+    stream_push::{StreamPushInterface, StreamPushReceiverInterface, StreamPushSenderInterface},
 };
 use libp2p::PeerId;
 use libp2p_stream::{AlreadyRegistered, OpenStreamError};
 use reqwest;
 use thiserror::Error;
-use tokio_util::{compat::TokioAsyncReadCompatExt, io::StreamReader};
+use tokio::io::{AsyncRead, AsyncWrite};
+use tokio_util::{compat::FuturesAsyncReadCompatExt, io::StreamReader};
 
 pub type BoxAsyncRead = Pin<Box<dyn AsyncRead + Send>>;
 pub type BoxAsyncWrite = Pin<Box<dyn AsyncWrite + Send + Unpin>>;
@@ -108,6 +109,8 @@ where
         + StreamPushInterface
         + StreamPushReceiverInterface
         + StreamPushSenderInterface
+        + StreamPullInterface
+        + StreamPullSenderInterface<DataSlice>
         + Send
         + Sync
         + 'static,
@@ -122,7 +125,10 @@ where
         };
         // Register built-ins
         this.fetchers.push(Arc::new(HttpHfFetcher));
-        let peer = PeerStreamConnector {
+        this.fetchers.push(Arc::new(PeerStreamPullConnector {
+            network: network.clone(),
+        }));
+        let peer = PeerStreamPushConnector {
             network: network.clone(),
         };
         this.senders.push(Arc::new(peer.clone()));
@@ -234,12 +240,11 @@ impl FetchConnector for HttpHfFetcher {
                     }
                     let byte_stream = response.bytes_stream().map_err(io::Error::other);
                     let tokio_reader = StreamReader::new(byte_stream);
-                    let fut_reader = tokio_reader.compat();
 
                     let name = value.rsplit('/').next().unwrap_or("").to_string();
                     let item = ReadItem {
                         meta: ItemMeta { kind: "uri", name },
-                        reader: Box::pin(fut_reader),
+                        reader: Box::pin(tokio_reader),
                     };
                     let s = futures_util::stream::once(async move { Ok(item) });
                     Ok(Box::pin(s) as ReadItemStream)
@@ -279,13 +284,12 @@ impl FetchConnector for HttpHfFetcher {
                                 let file = tokio::fs::File::open(path)
                                     .await
                                     .map_err(io::Error::other)?;
-                                let reader = file.compat();
                                 Ok(ReadItem {
                                     meta: ItemMeta {
                                         kind: "huggingface",
                                         name: filename,
                                     },
-                                    reader: Box::pin(reader),
+                                    reader: Box::pin(file),
                                 })
                             }
                         });
@@ -298,7 +302,7 @@ impl FetchConnector for HttpHfFetcher {
 }
 
 #[derive(Clone)]
-struct PeerStreamConnector<T>
+struct PeerStreamPushConnector<T>
 where
     T: Clone
         + StreamPushInterface
@@ -311,7 +315,7 @@ where
     network: T,
 }
 
-impl<T> SendConnector for PeerStreamConnector<T>
+impl<T> SendConnector for PeerStreamPushConnector<T>
 where
     T: Clone
         + StreamPushInterface
@@ -331,7 +335,9 @@ where
     ) -> Pin<Box<dyn Future<Output = Result<WriteItemStream, ConnectorError>> + Send + 'a>> {
         Box::pin(async move {
             match send.as_ref() {
-                Reference::Peers { peers, strategy } => match strategy {
+                Reference::Peers {
+                    peers, strategy, ..
+                } => match strategy {
                     SelectionStrategy::All => {
                         let network = self.network.clone();
                         let it = futures_util::stream::iter(peers.clone()).then(move |peer| {
@@ -343,7 +349,7 @@ where
                                             kind: "peer",
                                             name: peer.to_string(),
                                         },
-                                        writer: Box::pin(stream),
+                                        writer: Box::pin(stream.compat()),
                                     }),
                                     Err(e) => Err(ConnectorError::OpenStream(e)),
                                 }
@@ -362,7 +368,7 @@ where
                                 kind: "peer",
                                 name: peer.to_string(),
                             },
-                            writer: Box::pin(stream),
+                            writer: Box::pin(stream.compat()),
                         };
                         let s = futures_util::stream::once(async move { Ok(item) });
                         Ok(Box::pin(s) as WriteItemStream)
@@ -374,7 +380,7 @@ where
     }
 }
 
-impl<T> ReceiveConnector for PeerStreamConnector<T>
+impl<T> ReceiveConnector for PeerStreamPushConnector<T>
 where
     T: Clone
         + StreamPushInterface
@@ -397,6 +403,7 @@ where
                 Reference::Peers {
                     peers,
                     strategy: SelectionStrategy::All,
+                    ..
                 } => {
                     let allow: Vec<PeerId> = peers.clone();
                     let incoming = self.network.streams_push()?;
@@ -409,7 +416,7 @@ where
                                         kind: "peer",
                                         name: peer.to_string(),
                                     },
-                                    reader: Box::pin(s),
+                                    reader: Box::pin(s.compat()),
                                 };
                                 Some(Ok(item))
                             } else {
@@ -425,4 +432,53 @@ where
     }
 }
 
-// (no dead utilities)
+#[derive(Clone)]
+struct PeerStreamPullConnector<T>
+where
+    T: Clone + StreamPullInterface + StreamPullSenderInterface<DataSlice> + Send + Sync + 'static,
+{
+    network: T,
+}
+
+impl<T> FetchConnector for PeerStreamPullConnector<T>
+where
+    T: Clone + StreamPullInterface + StreamPullSenderInterface<DataSlice> + Send + Sync + 'static,
+{
+    fn supports(&self, r: &Reference) -> bool {
+        matches!(r, Reference::Peers { .. })
+    }
+
+    fn fetch<'a>(
+        &'a self,
+        fetch: &'a Fetch,
+    ) -> Pin<Box<dyn Future<Output = Result<ReadItemStream, ConnectorError>> + Send + 'a>> {
+        Box::pin(async move {
+            match fetch.as_ref() {
+                Reference::Peers {
+                    peers,
+                    strategy: SelectionStrategy::One,
+                    resource,
+                } => {
+                    let peer = peers
+                        .first()
+                        .copied()
+                        .ok_or_else(|| io::Error::other("no peers provided"))?;
+                    let stream = self
+                        .network
+                        .stream_pull(peer, resource.as_ref().expect("resource"))
+                        .await?;
+                    let item = ReadItem {
+                        meta: ItemMeta {
+                            kind: "peer",
+                            name: peer.to_string(),
+                        },
+                        reader: Box::pin(stream),
+                    };
+                    let s = futures_util::stream::once(async move { Ok(item) });
+                    Ok(Box::pin(s) as ReadItemStream)
+                }
+                _ => Err(ConnectorError::UnsupportedFetch(fetch.as_ref().clone())),
+            }
+        })
+    }
+}

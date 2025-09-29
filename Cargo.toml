@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/certutil",
     "crates/config",
+    "crates/data",
     "crates/gateway",
     "crates/leases",
     "crates/messages",
@@ -14,6 +15,7 @@ members = [
 default-members = [
     "crates/certutil",
     "crates/config",
+    "crates/data",
     "crates/gateway",
     "crates/network",
     "crates/scheduler",
@@ -81,7 +83,7 @@ tokio = { version = "1.43.0", features = [
     "signal",
     "io-util",
 ] }
-tokio-stream = { version = "0.1.17", features = ["sync"] }
+tokio-stream = { version = "0.1.17", features = ["fs", "sync"] }
 tokio-util = { version = "0.7.15", features = ["compat", "rt"] }
 toml = { version = "0.9.5" }
 tower = { version = "0.5.2", features = ["util"] }

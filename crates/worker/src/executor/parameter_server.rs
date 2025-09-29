@@ -18,11 +18,7 @@ use tokio::{
     io::{self, AsyncWriteExt},
     sync::mpsc,
 };
-use tokio_util::{
-    compat::{FuturesAsyncReadCompatExt, FuturesAsyncWriteCompatExt},
-    sync::CancellationToken,
-    task::TaskTracker,
-};
+use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use uuid::Uuid;
 
 use crate::{
@@ -134,7 +130,7 @@ impl JobExecutor for ParameterServerExecutor {
                                 match item {
                                     Ok(item) => {
                                         let name = item.meta.name.clone();
-                                        let mut reader = item.reader.compat();
+                                        let mut reader = item.reader;
                                         // Don't use the name from the meta data as it could be an arbitrary path.
                                         let hex_digest = format!("{:X}",Sha256::digest(item.meta.name));
                                         tracing::info!(peer_id = ?name, file_name = ?hex_digest, "Received parameter server update (start)");
@@ -244,7 +240,7 @@ impl JobExecutor for ParameterServerExecutor {
 
                                                 match fs::File::open(gradient_file.as_path()).await {
                                                     Ok(mut file) => {
-                                                        let mut writer = item.writer.compat_write();
+                                                        let mut writer = item.writer;
 
                                                         if let Err(e) = io::copy(
                                                             &mut file,

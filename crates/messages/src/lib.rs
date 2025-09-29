@@ -221,6 +221,7 @@ pub enum Reference {
     Peers {
         peers: Vec<PeerId>,
         strategy: SelectionStrategy,
+        resource: Option<DataSlice>,
     },
 }
 
@@ -250,15 +251,20 @@ impl Fetch {
             repo_type,
         })
     }
+
+    pub fn data_peer(peer_id: PeerId, resource: DataSlice) -> Self {
+        Self(Reference::Peers {
+            peers: vec![peer_id],
+            strategy: SelectionStrategy::One,
+            resource: Some(resource),
+        })
+    }
 }
 
 impl TryFrom<Reference> for Fetch {
     type Error = &'static str;
     fn try_from(r: Reference) -> Result<Self, Self::Error> {
-        match r {
-            Reference::Uri { .. } | Reference::HuggingFace { .. } => Ok(Fetch(r)),
-            _ => Err("Fetch can only be created from Uri or HuggingFace"),
-        }
+        Ok(Fetch(r))
     }
 }
 
@@ -280,7 +286,11 @@ pub struct Send(Reference);
 
 impl Send {
     pub fn peers(peers: Vec<PeerId>, strategy: SelectionStrategy) -> Self {
-        Self(Reference::Peers { peers, strategy })
+        Self(Reference::Peers {
+            peers,
+            strategy,
+            resource: None,
+        })
     }
 }
 
@@ -315,6 +325,7 @@ impl Receive {
         Self(Reference::Peers {
             peers,
             strategy: SelectionStrategy::All,
+            resource: None,
         })
     }
 
@@ -548,4 +559,10 @@ pub mod parameter_push {
 pub struct ParameterStreamHeader {
     pub stream_id: Uuid,
     pub data_size: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DataSlice {
+    pub dataset: String,
+    pub index: u64,
 }
