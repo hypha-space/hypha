@@ -1,7 +1,6 @@
 import argparse
 import json
 import os
-import tarfile
 from collections.abc import Callable, Iterable, Iterator
 from typing import Any, cast
 
@@ -10,7 +9,7 @@ import torch
 import torch.utils.data
 from accelerate import Accelerator
 from safetensors import safe_open
-from safetensors.torch import load, load_file, save_file, save_model
+from safetensors.torch import save_file, save_model
 from torch.nn import Module
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
@@ -28,13 +27,17 @@ from api import Session
 FETCH_PATH = "artifacts"
 
 
-def prepare_files(config: dict[str, Any], session: Session) -> None:
+def prepare_files(config: dict[str, Any], session: Session, work_dir: str) -> str:
+    # Fetch dataset
+    tensor_data = session.fetch(config["data"])
+    tensor_data_path = os.path.join(work_dir, tensor_data[0]["path"])
+
     if "type" in config["model"] and config["model"]["type"] == "huggingface":
         session.fetch(config["model"])
-    if "type" in config["data"] and config["data"]["type"] == "huggingface":
-        session.fetch(config["data"])
     if "type" in config["config"]["preprocessor"] and config["config"]["preprocessor"]["type"] == "huggingface":
         session.fetch(config["config"]["preprocessor"])
+
+    return tensor_data_path
 
 
 def get_model(model_config: str, model_type: str) -> Module:
@@ -133,35 +136,31 @@ def get_optimizer(optimizer: dict[str, Any], parameters: Iterable[torch.Tensor])
 
 
 def get_data_loader(
-    work_dir: str, data_config: dict[str, Any], model_type: str, preprocessor_file: str, batch_size: int
+    data_set_path: str,
+    work_dir: str,
+    model_type: str,
+    preprocessor_file: str,
+    batch_size: int,
 ) -> torch.utils.data.DataLoader:  # type: ignore[type-arg]
     if model_type == "causal-lm":
-        ds = load_file(f"{work_dir}/{data_config['filenames'][0]}")
-        data_loader = torch.utils.data.DataLoader(
-            torch.utils.data.TensorDataset(ds["inputs"][:6]), batch_size=batch_size
-        )
-        return data_loader
+        with safe_open(data_set_path, framework="pt", device="cpu") as data:  # type: ignore
+            ds = data.get_tensor(data.keys()[0])
+            return torch.utils.data.DataLoader(ds, batch_size=batch_size)
     if model_type == "vision-classification":
 
         class VisionDs(torch.utils.data.IterableDataset):  # type: ignore[type-arg]
-            def __init__(self, work_dir: str, files: list[str]):
+            def __init__(self, data_set_path: str, work_dir: str):
                 super(VisionDs).__init__()  # type: ignore[misc]
-                self.files = [f"{work_dir}/{file}" for file in files]
+                self.data_set_path = data_set_path
                 self.processor = get_preprocessor(f"{work_dir}/{preprocessor_file}", model_type)
 
             def __iter__(self):  # type: ignore[no-untyped-def]
-                for file in self.files:
-                    with tarfile.open(file, "r:gz") as tar:
-                        for f in tar.getnames():
-                            extracted_file = tar.extractfile(f)
-                            if extracted_file:
-                                tensors = load(extracted_file.read())
-                                processed = self.processor(tensors["inputs"])
-                                for pixel, label in zip(iter(processed["pixel_values"]), iter(tensors["targets"])):
-                                    yield ({"pixel_values": pixel, "labels": label})
+                with safe_open(self.data_set_path, framework="pt", device="cpu") as data:  # type: ignore
+                    processed = self.processor(data.get_tensor("inputs"))
+                    for pixel, label in zip(iter(processed["pixel_values"]), iter(data.get_tensor("targets"))):
+                        yield ({"pixel_values": pixel, "labels": label})
 
-        return torch.utils.data.DataLoader(VisionDs(work_dir, data_config["filenames"]), batch_size=batch_size)
-
+        return torch.utils.data.DataLoader(VisionDs(data_set_path, work_dir), batch_size=batch_size)
     raise RuntimeError(f"Dataset for {model_type} not supported")
 
 
@@ -232,7 +231,7 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR09
         # Training loop
         accelerator = Accelerator(project_dir=work_dir)
 
-        prepare_files(job_spec, session)
+        tensor_data_path = prepare_files(job_spec, session, work_dir)
         local_fetch_path = f"{work_dir}/{FETCH_PATH}"
         print(os.listdir(local_fetch_path))
         model = get_model(local_fetch_path, job_spec["config"]["type"])
@@ -248,9 +247,10 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR09
             scheduler_type = scheduler_args["type"]
             del scheduler_args["type"]
             scheduler = get_scheduler(scheduler_type, scheduler_args, optimizer)
+
         data_loader = get_data_loader(
+            tensor_data_path,
             local_fetch_path,
-            job_spec["data"],
             job_spec["config"]["type"],
             job_spec["config"]["preprocessor"]["filenames"][0],
             job_spec["config"]["batch_size"],

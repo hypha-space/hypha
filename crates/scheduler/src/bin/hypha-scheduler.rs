@@ -7,7 +7,7 @@ use figment::providers::{Env, Format, Serialized, Toml};
 use futures_util::future::join_all;
 use hypha_config::{ConfigWithMetadata, ConfigWithMetadataTLSExt, builder, to_toml};
 use hypha_messages::{
-    DiLoCoConfig, Executor, Fetch, JobSpec, Optimizer, Receive, Requirement, Resources,
+    DataSlice, DiLoCoConfig, Executor, Fetch, JobSpec, Optimizer, Receive, Requirement, Resources,
     SelectionStrategy, Send, WorkerSpec, health,
 };
 use hypha_network::{
@@ -308,28 +308,28 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
 
         let model_files = vec!["config.json".to_string(), "model.safetensors".to_string()];
 
+        let dataset = "imagnet";
+        let data_provider = get_data_provider(&network, dataset).await?;
+
         allocated_workers[0]
             .dispatch(JobSpec {
                 executor: get_executor_with_dataset(
                     model_files.clone(),
-                    vec![
-                        "train_0_49.tar.gz".to_string(),
-                        // "train_50_99.tar.gz".to_string(),
-                    ],
+                    data_provider,
+                    dataset.to_string(),
                     parameter_server.peer_id(),
                 ),
             })
             .await
             .into_diagnostic()?;
 
+        // TODO: use a different dataset here.
         allocated_workers[1]
             .dispatch(JobSpec {
                 executor: get_executor_with_dataset(
                     model_files.clone(),
-                    vec![
-                        "train_100_149.tar.gz".to_string(),
-                        // "train_150_199.tar.gz".to_string(),
-                    ],
+                    data_provider,
+                    dataset.to_string(),
                     parameter_server.peer_id(),
                 ),
             })
@@ -381,7 +381,8 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
 
 fn get_executor_with_dataset(
     model_files: Vec<String>,
-    data_files: Vec<String>,
+    data_provider: PeerId,
+    dataset: String,
     parameter_server: PeerId,
 ) -> Executor {
     let token_string = "...".to_string();
@@ -393,12 +394,13 @@ fn get_executor_with_dataset(
             Some(token_string.clone()),
             hypha_messages::HFRepoType::Model,
         ),
-        data: Fetch::huggingface(
-            "l45k/imagnet",
-            None,
-            data_files,
-            Some(token_string.clone()),
-            hypha_messages::HFRepoType::Dataset,
+        data: Fetch::data_peer(
+            data_provider,
+            DataSlice {
+                dataset,
+                // TODO: determine slice offsets for data-parallel training with the available workers
+                index: 0,
+            },
         ),
         updates: Receive::peers(vec![parameter_server]),
         results: Send::peers(vec![parameter_server], SelectionStrategy::One),
@@ -421,6 +423,24 @@ fn get_executor_with_dataset(
             )),
             batches_per_local_epoch: 1,
         },
+    }
+}
+
+// Find the data provider for the requested dataset
+async fn get_data_provider(network: &Network, dataset: &str) -> miette::Result<PeerId> {
+    match network.find_provider(dataset).await {
+        Ok(peers) => match peers.into_iter().collect::<Vec<_>>().first() {
+            Some(peer) => Ok(*peer),
+            None => Err(miette::miette!(
+                "No data provider found for dataset \"{}\"",
+                dataset
+            )),
+        },
+        Err(e) => Err(miette::miette!(
+            "Failed to find data provider for dataset \"{}\": {}",
+            dataset,
+            e
+        )),
     }
 }
 
