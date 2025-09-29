@@ -83,7 +83,6 @@ impl Worker {
         jobs.spawn({
             let network = network.clone();
             async move {
-                // NOTE: Refresh at 75% of lease duration to ensure we renew before expiry
                 loop {
                     tracing::info!(lease_id =%lease_id, peer_id = %peer_id, "Refreshing lease");
                     match network
@@ -114,12 +113,12 @@ impl Worker {
                                 "Lease renewed, renewing in {}ms",
                                 safe_duration.as_millis()
                             );
-                            sleep(duration).await;
+
+                            sleep(safe_duration).await;
                         }
                         Ok(Response::RenewLease(renew_lease::Response::Failed)) => {
                             // Handle failed response
-                            // TODO: Handle Error
-                            tracing::error!("Failed to renew lease");
+                            tracing::error!(lease_id = %lease_id, peer_id=%peer_id, "Failed to renew lease");
                             break;
                         }
                         Err(error) => {
