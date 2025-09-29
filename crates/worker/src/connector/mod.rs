@@ -8,7 +8,9 @@ use futures_util::{
 };
 use hf_hub::api::tokio::ApiBuilder;
 use hypha_messages::{Fetch, HFRepoType, Receive, Reference, SelectionStrategy, Send as SendRef};
-use hypha_network::stream::{StreamInterface, StreamReceiverInterface, StreamSenderInterface};
+use hypha_network::stream_push::{
+    StreamPushInterface, StreamPushReceiverInterface, StreamPushSenderInterface,
+};
 use libp2p::PeerId;
 use libp2p_stream::{AlreadyRegistered, OpenStreamError};
 use reqwest;
@@ -86,9 +88,9 @@ pub trait ReceiveConnector: Send + Sync {
 pub struct Connector<T>
 where
     T: Clone
-        + StreamInterface
-        + StreamReceiverInterface
-        + StreamSenderInterface
+        + StreamPushInterface
+        + StreamPushReceiverInterface
+        + StreamPushSenderInterface
         + Send
         + Sync
         + 'static,
@@ -103,9 +105,9 @@ where
 impl<T> Connector<T>
 where
     T: Clone
-        + StreamInterface
-        + StreamReceiverInterface
-        + StreamSenderInterface
+        + StreamPushInterface
+        + StreamPushReceiverInterface
+        + StreamPushSenderInterface
         + Send
         + Sync
         + 'static,
@@ -186,9 +188,9 @@ where
 impl<T> Clone for Connector<T>
 where
     T: Clone
-        + StreamInterface
-        + StreamReceiverInterface
-        + StreamSenderInterface
+        + StreamPushInterface
+        + StreamPushReceiverInterface
+        + StreamPushSenderInterface
         + Send
         + Sync
         + 'static,
@@ -299,9 +301,9 @@ impl FetchConnector for HttpHfFetcher {
 struct PeerStreamConnector<T>
 where
     T: Clone
-        + StreamInterface
-        + StreamReceiverInterface
-        + StreamSenderInterface
+        + StreamPushInterface
+        + StreamPushReceiverInterface
+        + StreamPushSenderInterface
         + Send
         + Sync
         + 'static,
@@ -312,9 +314,9 @@ where
 impl<T> SendConnector for PeerStreamConnector<T>
 where
     T: Clone
-        + StreamInterface
-        + StreamReceiverInterface
-        + StreamSenderInterface
+        + StreamPushInterface
+        + StreamPushReceiverInterface
+        + StreamPushSenderInterface
         + Send
         + Sync
         + 'static,
@@ -335,7 +337,7 @@ where
                         let it = futures_util::stream::iter(peers.clone()).then(move |peer| {
                             let network = network.clone();
                             async move {
-                                match network.stream(peer).await {
+                                match network.stream_push(peer).await {
                                     Ok(stream) => Ok(WriteItem {
                                         meta: ItemMeta {
                                             kind: "peer",
@@ -354,7 +356,7 @@ where
                             .first()
                             .copied()
                             .ok_or_else(|| io::Error::other("no peers provided"))?;
-                        let stream = self.network.stream(peer).await?;
+                        let stream = self.network.stream_push(peer).await?;
                         let item = WriteItem {
                             meta: ItemMeta {
                                 kind: "peer",
@@ -375,9 +377,9 @@ where
 impl<T> ReceiveConnector for PeerStreamConnector<T>
 where
     T: Clone
-        + StreamInterface
-        + StreamReceiverInterface
-        + StreamSenderInterface
+        + StreamPushInterface
+        + StreamPushReceiverInterface
+        + StreamPushSenderInterface
         + Send
         + Sync
         + 'static,
@@ -397,7 +399,7 @@ where
                     strategy: SelectionStrategy::All,
                 } => {
                     let allow: Vec<PeerId> = peers.clone();
-                    let incoming = self.network.streams()?;
+                    let incoming = self.network.streams_push()?;
                     let stream = incoming.filter_map(move |(peer, s)| {
                         let allowed = allow.clone();
                         async move {

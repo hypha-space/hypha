@@ -24,7 +24,7 @@ use hypha_network::{
         RequestResponseBehaviour, RequestResponseDriver, RequestResponseError,
         RequestResponseInterface,
     },
-    stream::{StreamInterface, StreamSenderInterface},
+    stream_push::{StreamPushInterface, StreamPushSenderInterface},
     swarm::{SwarmDriver, SwarmError},
 };
 use hypha_telemetry::{bandwidth, metrics};
@@ -295,13 +295,13 @@ impl ListenDriver<Behaviour> for NetworkDriver {
 
 impl ExternalAddressDriver<Behaviour> for NetworkDriver {}
 
-impl StreamInterface for Network {
+impl StreamPushInterface for Network {
     fn stream_control(&self) -> stream::Control {
         self.stream_control.clone()
     }
 }
 
-impl StreamSenderInterface for Network {}
+impl StreamPushSenderInterface for Network {}
 
 impl KademliaBehavior for Behaviour {
     fn kademlia(&mut self) -> &mut kad::Behaviour<kad::store::MemoryStore> {
