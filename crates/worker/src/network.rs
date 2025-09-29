@@ -21,7 +21,7 @@ use hypha_network::{
         RequestResponseBehaviour, RequestResponseDriver, RequestResponseError,
         RequestResponseInterface,
     },
-    stream::{StreamInterface, StreamReceiverInterface, StreamSenderInterface},
+    stream_push::{StreamPushInterface, StreamPushReceiverInterface, StreamPushSenderInterface},
     swarm::{SwarmDriver, SwarmError},
 };
 use libp2p::{
@@ -255,15 +255,15 @@ impl ListenDriver<Behaviour> for NetworkDriver {
 
 impl ExternalAddressDriver<Behaviour> for NetworkDriver {}
 
-impl StreamInterface for Network {
+impl StreamPushInterface for Network {
     fn stream_control(&self) -> stream::Control {
         self.stream_control.clone()
     }
 }
 
-impl StreamSenderInterface for Network {}
+impl StreamPushSenderInterface for Network {}
 
-impl StreamReceiverInterface for Network {}
+impl StreamPushReceiverInterface for Network {}
 
 impl KademliaBehavior for Behaviour {
     fn kademlia(&mut self) -> &mut kad::Behaviour<kad::store::MemoryStore> {
