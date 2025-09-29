@@ -1907,6 +1907,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "hypha-data"
+version = "0.0.0"
+dependencies = [
+ "clap",
+ "documented",
+ "figment",
+ "futures-util",
+ "hypha-config",
+ "hypha-messages",
+ "hypha-network",
+ "libp2p",
+ "libp2p-stream",
+ "memmap2",
+ "miette",
+ "safetensors",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.17",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "hypha-gateway"
 version = "0.0.0"
 dependencies = [
