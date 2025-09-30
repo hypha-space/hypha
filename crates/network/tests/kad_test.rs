@@ -224,6 +224,15 @@ async fn test_provide_and_find_providers() {
         .await
         .expect("Dial should succeed");
 
+    interface1
+        .wait_for_bootstrap()
+        .await
+        .expect("bootstrap should complete on interface1");
+    interface2
+        .wait_for_bootstrap()
+        .await
+        .expect("bootstrap should complete on interface2");
+
     let provide_result = interface1.provide("test").await;
 
     assert!(
@@ -260,6 +269,15 @@ async fn test_no_provider_found() {
         .dial(swarm2_addr)
         .await
         .expect("Dial should succeed");
+
+    interface1
+        .wait_for_bootstrap()
+        .await
+        .expect("bootstrap should complete on interface1");
+    interface2
+        .wait_for_bootstrap()
+        .await
+        .expect("bootstrap should complete on interface2");
 
     let find_result = interface2.find_provider("non-existent-key").await.unwrap();
 
@@ -302,15 +320,6 @@ async fn test_multiple_providers() {
         .expect("Dial should succeed");
 
     interface1
-        .provide("shared-key")
-        .await
-        .expect("Provide should succeed");
-    interface2
-        .provide("shared-key")
-        .await
-        .expect("Provide should succeed");
-
-    interface1
         .wait_for_bootstrap()
         .await
         .expect("bootstrap should complete on interface1");
@@ -322,6 +331,15 @@ async fn test_multiple_providers() {
         .wait_for_bootstrap()
         .await
         .expect("bootstrap should complete on interface3");
+
+    interface1
+        .provide("shared-key")
+        .await
+        .expect("Provide should succeed");
+    interface2
+        .provide("shared-key")
+        .await
+        .expect("Provide should succeed");
 
     let find_result = interface3.find_provider("shared-key").await.unwrap();
 
@@ -379,6 +397,11 @@ async fn test_get_closest_peers() {
         .dial(swarm2_addr)
         .await
         .expect("Dial should succeed");
+
+    interface1
+        .wait_for_bootstrap()
+        .await
+        .expect("bootstrap should complete on interface1");
 
     let result = interface1.get_closest_peers(target_peer).await.unwrap();
 
@@ -474,15 +497,6 @@ async fn test_concurrent_record_operations() {
     assert!(result2.is_ok(), "Concurrent store 2 should succeed");
     assert!(result3.is_ok(), "Concurrent store 3 should succeed");
 
-    interface1
-        .wait_for_bootstrap()
-        .await
-        .expect("bootstrap should complete on interface1");
-    interface2
-        .wait_for_bootstrap()
-        .await
-        .expect("bootstrap should complete on interface2");
-
     let get_task1 = interface2.get("concurrent_key1");
     let get_task2 = interface2.get("concurrent_key2");
     let get_task3 = interface2.get("concurrent_key3");
@@ -519,12 +533,6 @@ async fn test_record_update_and_overwrite() {
         .await
         .expect("Dial should succeed");
 
-    let key = "updateable_key";
-
-    let initial_record = kad::Record::new(kad::RecordKey::new(&key), b"initial_value".to_vec());
-    let store_result = interface1.store(initial_record).await;
-    assert!(store_result.is_ok(), "Initial store should succeed ");
-
     interface1
         .wait_for_bootstrap()
         .await
@@ -533,6 +541,12 @@ async fn test_record_update_and_overwrite() {
         .wait_for_bootstrap()
         .await
         .expect("bootstrap should complete on interface2");
+
+    let key = "updateable_key";
+
+    let initial_record = kad::Record::new(kad::RecordKey::new(&key), b"initial_value".to_vec());
+    let store_result = interface1.store(initial_record).await;
+    assert!(store_result.is_ok(), "Initial store should succeed ");
 
     let get_result = interface2.get(key).await.unwrap();
     assert_eq!(get_result.value, b"initial_value");
