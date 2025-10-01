@@ -1,42 +1,22 @@
-//! Networking utilities for the worker component.
-//!
-//! Workers use this module to communicate with the scheduler and other peers.
-//! It ties together the networking primitives and drives the swarm. This
-//! documentation follows the [rustdoc guidelines](https://doc.rust-lang.org/rustdoc/how-to-write-documentation.html).
-
 use std::{collections::HashMap, sync::Arc};
 
-use futures_util::stream::StreamExt;
+use futures_util::StreamExt;
 use hypha_messages::DataSlice;
 use hypha_network::{
     CertificateDer, CertificateRevocationListDer, PrivateKeyDer,
     dial::{DialAction, DialDriver, DialInterface, PendingDials},
-    external_address::{ExternalAddressAction, ExternalAddressDriver, ExternalAddressInterface},
-    gossipsub::{
-        GossipsubAction, GossipsubBehaviour, GossipsubDriver, GossipsubInterface, Subscriptions,
-    },
     kad::{KademliaAction, KademliaBehavior, KademliaDriver, KademliaInterface, PendingQueries},
     listen::{ListenAction, ListenDriver, ListenInterface, PendingListens},
-    request_response::{
-        OutboundRequests, OutboundResponses, RequestHandler, RequestResponseAction,
-        RequestResponseBehaviour, RequestResponseDriver, RequestResponseError,
-        RequestResponseInterface,
-    },
-    stream_pull::{StreamPullInterface, StreamPullSenderInterface},
-    stream_push::{StreamPushInterface, StreamPushReceiverInterface, StreamPushSenderInterface},
+    stream_pull::{StreamPullInterface, StreamPullReceiverInterface},
     swarm::{SwarmDriver, SwarmError},
 };
 use libp2p::{
-    StreamProtocol, Swarm, SwarmBuilder, dcutr, gossipsub, identify, kad, ping, relay,
-    request_response::{self, cbor::codec::Codec},
+    Swarm, SwarmBuilder, dcutr, gossipsub, identify, kad, ping, relay,
     swarm::{NetworkBehaviour, SwarmEvent},
     tcp, tls, yamux,
 };
 use libp2p_stream as stream;
 use tokio::sync::{SetOnce, mpsc};
-
-type HyphaCodec = Codec<hypha_messages::Request, hypha_messages::Response>;
-type HyphaRequestHandlers = Vec<RequestHandler<HyphaCodec>>;
 
 #[derive(Clone)]
 pub struct Network {
@@ -53,7 +33,6 @@ pub struct Behaviour {
     stream: stream::Behaviour,
     kademlia: kad::Behaviour<kad::store::MemoryStore>,
     gossipsub: gossipsub::Behaviour,
-    request_response: request_response::Behaviour<HyphaCodec>,
 }
 
 pub struct NetworkDriver {
@@ -62,11 +41,7 @@ pub struct NetworkDriver {
     pending_listen_map: PendingListens,
     pending_queries_map: PendingQueries,
     pending_bootstrap: Arc<SetOnce<()>>,
-    subscriptions: Subscriptions,
     action_receiver: mpsc::Receiver<Action>,
-    outbound_requests_map: OutboundRequests<HyphaCodec>,
-    outbound_responses_map: OutboundResponses,
-    request_handlers: HyphaRequestHandlers,
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -74,9 +49,6 @@ enum Action {
     Dial(DialAction),
     Listen(ListenAction),
     Kademlia(KademliaAction),
-    Gossipsub(GossipsubAction),
-    RequestResponse(RequestResponseAction<HyphaCodec>),
-    ExternalAddress(ExternalAddressAction),
 }
 
 impl Network {
@@ -124,13 +96,6 @@ impl Network {
                         kad::store::MemoryStore::new(key.public().to_peer_id()),
                     ),
                     gossipsub,
-                    request_response: request_response::Behaviour::<HyphaCodec>::new(
-                        [(
-                            StreamProtocol::new("/hypha-api/0.0.1"),
-                            request_response::ProtocolSupport::Full,
-                        )],
-                        request_response::Config::default(),
-                    ),
                 }
             })
             .map_err(|_| {
@@ -149,10 +114,6 @@ impl Network {
                 pending_listen_map: HashMap::default(),
                 pending_queries_map: HashMap::default(),
                 pending_bootstrap: Arc::new(SetOnce::new()),
-                subscriptions: HashMap::default(),
-                outbound_requests_map: HashMap::default(),
-                outbound_responses_map: HashMap::default(),
-                request_handlers: Vec::new(),
                 action_receiver,
             },
         ))
@@ -187,12 +148,6 @@ impl SwarmDriver<Behaviour> for NetworkDriver {
                         SwarmEvent::Behaviour(BehaviourEvent::Kademlia(kad::Event::OutboundQueryProgressed {id,  result, step, ..})) => {
                              self.process_kademlia_query_result(id, result, step).await;
                         }
-                        SwarmEvent::Behaviour(BehaviourEvent::Gossipsub(event)) => {
-                            self.process_gossipsub_event(event).await;
-                        }
-                        SwarmEvent::Behaviour(BehaviourEvent::RequestResponse(event)) => {
-                            self.process_request_response_event(event).await;
-                        }
                         SwarmEvent::Behaviour(BehaviourEvent::Dcutr(event)) => {
                             tracing::debug!("dcutr event: {:?}", event);
                         }
@@ -207,12 +162,6 @@ impl SwarmDriver<Behaviour> for NetworkDriver {
                         Action::Dial(action) => self.process_dial_action(action).await,
                         Action::Listen(action) => self.process_listen_action(action).await,
                         Action::Kademlia(action) => self.process_kademlia_action(action).await,
-                        Action::Gossipsub(action) =>
-                            self.process_gossipsub_action(action).await,
-                        Action::RequestResponse(action) =>
-                            self.process_request_response_action(action).await,
-                        Action::ExternalAddress(action) =>
-                            self.process_external_address_action(action).await,
                     }
                 }
                 else => break
@@ -255,25 +204,13 @@ impl ListenDriver<Behaviour> for NetworkDriver {
     }
 }
 
-impl ExternalAddressDriver<Behaviour> for NetworkDriver {}
-
-impl StreamPushInterface for Network {
-    fn stream_control(&self) -> stream::Control {
-        self.stream_control.clone()
-    }
-}
-
-impl StreamPushSenderInterface for Network {}
-
-impl StreamPushReceiverInterface for Network {}
-
 impl StreamPullInterface for Network {
     fn stream_control(&self) -> stream::Control {
         self.stream_control.clone()
     }
 }
 
-impl StreamPullSenderInterface<DataSlice> for Network {}
+impl StreamPullReceiverInterface<DataSlice> for Network {}
 
 impl KademliaBehavior for Behaviour {
     fn kademlia(&mut self) -> &mut kad::Behaviour<kad::store::MemoryStore> {
@@ -295,76 +232,6 @@ impl KademliaInterface for Network {
     async fn send(&self, action: KademliaAction) {
         if let Err(e) = self.action_sender.send(Action::Kademlia(action)).await {
             tracing::error!(?e, "failed to send kademlia action");
-        }
-    }
-}
-
-impl GossipsubBehaviour for Behaviour {
-    fn gossipsub(&mut self) -> &mut gossipsub::Behaviour {
-        &mut self.gossipsub
-    }
-}
-
-impl GossipsubDriver<Behaviour> for NetworkDriver {
-    fn subscriptions(&mut self) -> &mut Subscriptions {
-        &mut self.subscriptions
-    }
-}
-
-impl GossipsubInterface for Network {
-    async fn send(&self, action: GossipsubAction) {
-        if let Err(e) = self.action_sender.send(Action::Gossipsub(action)).await {
-            tracing::error!(?e, "failed to send gossipsub action");
-        }
-    }
-}
-
-impl RequestResponseBehaviour<HyphaCodec> for Behaviour {
-    fn request_response(&mut self) -> &mut libp2p::request_response::Behaviour<HyphaCodec> {
-        &mut self.request_response
-    }
-}
-
-impl RequestResponseDriver<Behaviour, HyphaCodec> for NetworkDriver {
-    fn outbound_requests(&mut self) -> &mut OutboundRequests<HyphaCodec> {
-        &mut self.outbound_requests_map
-    }
-
-    fn outbound_responses(&mut self) -> &mut OutboundResponses {
-        &mut self.outbound_responses_map
-    }
-
-    fn request_handlers(&mut self) -> &mut HyphaRequestHandlers {
-        &mut self.request_handlers
-    }
-}
-
-impl RequestResponseInterface<HyphaCodec> for Network {
-    async fn send(&self, action: RequestResponseAction<HyphaCodec>) {
-        self.action_sender
-            .send(Action::RequestResponse(action))
-            .await
-            .expect("network driver is running");
-    }
-
-    fn try_send(
-        &self,
-        action: RequestResponseAction<HyphaCodec>,
-    ) -> Result<(), RequestResponseError> {
-        self.action_sender
-            .try_send(Action::RequestResponse(action))
-            .map_err(|_| RequestResponseError::Other("Failed to send action".to_string()))
-    }
-}
-
-impl ExternalAddressInterface for Network {
-    async fn send(&self, action: ExternalAddressAction) {
-        if let Err(e) = self
-            .action_sender
-            .send(Action::ExternalAddress(action))
-            .await
-        {
-            tracing::error!(?e, "failed to send external address action");
         }
     }
 }

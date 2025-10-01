@@ -13,11 +13,7 @@ use tokio::{
     io::{self, AsyncWriteExt},
     sync::mpsc,
 };
-use tokio_util::{
-    compat::{FuturesAsyncReadCompatExt, FuturesAsyncWriteCompatExt},
-    sync::CancellationToken,
-    task::TaskTracker,
-};
+use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use uuid::Uuid;
 
 use crate::{
@@ -106,7 +102,7 @@ impl JobExecutor for ParameterServerExecutor {
                                     Ok(item) => {
                                         let name = item.meta.name.clone();
                                         tracing::info!(peer_id = ?name, "Received parameter server update (start)");
-                                        let mut reader = item.reader.compat();
+                                        let mut reader = item.reader;
                                         let file_name = work_dir.join(name.clone());
 
                                         match fs::File::create(&file_name).await {
@@ -283,7 +279,7 @@ impl JobExecutor for ParameterServerExecutor {
 
                                                 match fs::File::open(final_tensor_file_name.as_path()).await {
                                                     Ok(mut file) => {
-                                                        let mut writer = item.writer.compat_write();
+                                                        let mut writer = item.writer;
 
                                                         if let Err(e) = io::copy(
                                                             &mut file,
