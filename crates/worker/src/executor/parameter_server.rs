@@ -1,13 +1,18 @@
 use std::{
-    collections::HashMap, fs::Permissions, os::unix::fs::PermissionsExt, path::PathBuf, pin::Pin,
+    collections::HashMap,
+    fs::Permissions,
+    os::unix::fs::PermissionsExt,
+    path::{Path, PathBuf},
+    pin::Pin,
 };
 
 use candle_core::{
-    Device,
+    Device, Tensor,
     safetensors::{Load, MmapedSafetensors},
 };
 use futures_util::StreamExt;
 use safetensors::serialize_to_file;
+use sha2::{Digest, Sha256};
 use tokio::{
     fs,
     io::{self, AsyncWriteExt},
@@ -25,6 +30,18 @@ use crate::{
     executor::{Error, Execution, JobExecutor},
     network::Network,
 };
+
+#[derive(Debug, thiserror::Error)]
+pub enum TensorOpError {
+    #[error("Candle core error: {0}")]
+    Candle(#[from] candle_core::Error),
+
+    #[error("Safetensors error: {0}")]
+    Safetensor(#[from] safetensors::SafeTensorError),
+
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
+}
 
 pub struct ParameterServerExecutor {
     connector: Connector<Network>,
@@ -67,9 +84,21 @@ impl JobExecutor for ParameterServerExecutor {
 
         let device = Device::Cpu;
 
-        let (updates, results) = match job.executor {
-            hypha_messages::Executor::ParameterServer { updates, results } => (updates, results),
+        let (updates, results, optimizer) = match job.executor {
+            hypha_messages::Executor::ParameterServer {
+                updates,
+                results,
+                optimizer,
+            } => (updates, results, optimizer),
             _ => return Err(Error::UnsupportedJobSpec()),
+        };
+
+        let (learning_rate, momentum) = match optimizer {
+            hypha_messages::Optimizer::Nesterov {
+                learning_rate,
+                momentum,
+            } => (learning_rate, momentum),
+            _ => return Err(Error::UnsupportedOptimizer()),
         };
 
         let connector = self.connector.clone();
@@ -105,9 +134,11 @@ impl JobExecutor for ParameterServerExecutor {
                                 match item {
                                     Ok(item) => {
                                         let name = item.meta.name.clone();
-                                        tracing::info!(peer_id = ?name, "Received parameter server update (start)");
                                         let mut reader = item.reader.compat();
-                                        let file_name = work_dir.join(name.clone());
+                                        // Don't use the name from the meta data as it could be an arbitrary path.
+                                        let hex_digest = format!("{:X}",Sha256::digest(item.meta.name));
+                                        tracing::info!(peer_id = ?name, file_name = ?hex_digest, "Received parameter server update (start)");
+                                        let file_name = work_dir.join(hex_digest);
 
                                         match fs::File::create(&file_name).await {
                                             Ok(mut file) => {
@@ -153,111 +184,39 @@ impl JobExecutor for ParameterServerExecutor {
                     // NOTE: Prefer continuing with the last good aggregation if averaging fails.
                     // Borrow current aggregation state to avoid moving out of `result_tensor`.
 
-                    let result_tensor_file_name = match current_result_tensor_file_name {
+                    tracing::info!("Received file {:?}", name);
+                    current_result_tensor_file_name = match current_result_tensor_file_name {
                         None => {
-                            // Create a copy of the initial parameters to avoid overwriting mmaped files.
-                            // In edge-cases we might receive updates while still sending out results.
-                            // If the name of the result file would be the same as one of incoming updates,
-                            // we would overwrite an mmapped file.
-                            let temporary_tensor_file_name = work_dir.join("avg-temporary");
-                            fs::copy(file_name.as_path(), temporary_tensor_file_name.as_path()).await.expect("file can be copied");
-                            temporary_tensor_file_name
+                            // Just use the first file as the current name, so no copy required.
+                            Some(file_name.to_path_buf())
                         },
                         Some(result_tensor_file_name) => {
-                            tokio::task::spawn_blocking({
-                                let device = device.clone();
                                 let work_dir = work_dir.clone();
-                                move || {
+                                let tmp_dir_name = work_dir.join("tmp_join");
+                                let resulting_tensor_file_name = work_dir.join(format!("joined_{:?}",  Uuid::new_v4()));
+
+                                // TODO: This isn't correct. We need a weighting with the number of samples processed by
+                                // the worker. Until we have this information lets assume we traing with two workers.
                                 // Average the new tensor with an existing one
-                                match unsafe { MmapedSafetensors::new(file_name) } {
-                                    Ok(new_tensor) => {
-                                        if let Err(e) = std::fs::create_dir_all(work_dir.join("avg").join(name.as_str())) {
-                                            tracing::warn!(error = ?e, "Failed to create avg directory; keeping previous aggregation");
-                                            result_tensor_file_name.clone()
-                                        } else {
-                                            let paths = {
-                                                let result_tensor = unsafe { MmapedSafetensors::new(result_tensor_file_name.as_path()) }.expect("tensor file is readable");
-
-                                                let mut paths = Vec::new();
-                                                for (tensor_name, tensor) in result_tensor.tensors() {
-                                                    // Load tensors; skip this tensor on failure
-                                                    let current_tensor = match tensor.load(&device) {
-                                                        Ok(t) => t,
-                                                        Err(e) => {
-                                                            tracing::warn!(error = ?e, tensor = %tensor_name, "Failed to load current tensor; skipping");
-                                                            continue;
-                                                        }
-                                                    };
-                                                    let other_tensor = match new_tensor.load(&tensor_name, &device) {
-                                                        Ok(t) => t,
-                                                        Err(e) => {
-                                                            tracing::warn!(error = ?e, tensor = %tensor_name, "Failed to load new tensor; skipping");
-                                                            continue;
-                                                        }
-                                                    };
-
-                                                    let avg_tensor = match (current_tensor + other_tensor).and_then(|t| t / 2.) {
-                                                        Ok(t) => t,
-                                                        Err(e) => {
-                                                            tracing::warn!(error = ?e, tensor = %tensor_name, "Failed to average tensors; skipping");
-                                                            continue;
-                                                        }
-                                                    };
-
-                                                    let avg_tensor_file_name = work_dir.join("avg").join(name.as_str()).join(&tensor_name);
-                                                    if let Err(e) = candle_core::safetensors::save(
-                                                        &HashMap::from([(tensor_name.clone(), avg_tensor)]),
-                                                        avg_tensor_file_name.as_path(),
-                                                    ) {
-                                                        tracing::warn!(error = ?e, tensor = %tensor_name, "Failed to save averaged tensor; skipping");
-                                                        continue;
-                                                    }
-                                                    paths.push(avg_tensor_file_name);
-                                                }
-
-                                                paths
-                                            };
-
-                                            if paths.is_empty() {
-                                                tracing::warn!("No tensors averaged; keeping previous aggregation");
-                                            } else if let Ok(all_tensors) = unsafe { MmapedSafetensors::multi(&paths) } {
-                                                // If at this point we're still mmapping 'result_tensor_file_name', we could have undefined behaviour!
-                                                // Make sure that we don't!
-                                                match serialize_to_file(
-                                                    all_tensors.tensors(),
-                                                    &None,
-                                                    result_tensor_file_name.as_path(),
-                                                ) {
-                                                    Ok(_) => {
-                                                        tracing::debug!("Updated averaged tensors");
-                                                    }
-                                                    Err(e) => {
-                                                        tracing::warn!(error = ?e, "Failed to serialize averaged tensors; keeping previous aggregation");
-                                                    }
-                                                }
-                                            } else {
-                                                tracing::warn!("Failed to mmap averaged tensors; keeping previous aggregation");
-                                            }
-
-                                            if let Err(e) = std::fs::remove_dir_all(work_dir.join("avg").join(name.as_str())) {
-                                                tracing::warn!(error = ?e, "Failed to cleanup avg directory");
-                                            }
-
-                                            result_tensor_file_name.clone()
-                                        }
-                                    }
-                                    Err(e) => {
-                                        tracing::warn!(error = ?e, "Failed to mmap new tensor; keeping previous aggregation");
-
-                                        // Keep previous aggregation file
-                                        result_tensor_file_name.clone()
-                                    }
+                                let average_op = |a: &Tensor, b: &Tensor|{
+                                    // Compute (a + b) / 2.
+                                    (a + b).and_then(|t| t / 2.)
+                                };
+                                if let Err(e) = apply_tensor_op(
+                                    &file_name,
+                                    &result_tensor_file_name,
+                                    &resulting_tensor_file_name,
+                                    &tmp_dir_name,
+                                    &device,
+                                    average_op,
+                                )
+                                .await{
+                                    tracing::warn!(error = ?e, "Failed to average results");
                                 }
-                            }}).await.expect("averaging tasks runs to completion")
+                                Some(resulting_tensor_file_name)
                         }
                     };
 
-                    current_result_tensor_file_name = Some(result_tensor_file_name);
                     current_worker += 1;
 
                     // We assume that each worker sends their parameters, then waits to receive updates.
@@ -270,6 +229,9 @@ impl JobExecutor for ParameterServerExecutor {
                         let final_tensor_file_name = work_dir.join("avg-final");
                         fs::rename(result_file_name.as_path(), final_tensor_file_name.as_path()).await.expect("tensor file can be renamed");
 
+                        // Do outer optimization
+                        let gradient_file =  nesterov(final_tensor_file_name.clone(),  work_dir.clone(), &device, momentum, learning_rate).await.expect("nesterov");
+
                         // These need to be reset before sending out the result!
                         current_result_tensor_file_name = None;
                         current_worker = 0;
@@ -281,7 +243,7 @@ impl JobExecutor for ParameterServerExecutor {
                                         Ok(item) => {
                                                 tracing::info!(peer_id = item.meta.name, "Sending parameter server update");
 
-                                                match fs::File::open(final_tensor_file_name.as_path()).await {
+                                                match fs::File::open(gradient_file.as_path()).await {
                                                     Ok(mut file) => {
                                                         let mut writer = item.writer.compat_write();
 
@@ -313,7 +275,8 @@ impl JobExecutor for ParameterServerExecutor {
                             }
                         }
 
-                        fs::remove_file(final_tensor_file_name.as_path()).await.expect("tensor file can be removed");
+                        fs::remove_file(gradient_file.as_path()).await.expect("gradient file can be removed");
+                        fs::remove_file(final_tensor_file_name.as_path()).await.expect("tensor file can be removed")
                     }
                 }
             };
@@ -334,5 +297,226 @@ impl JobExecutor for ParameterServerExecutor {
         task_tracker.close();
 
         Ok(ParameterServerExecution { task_tracker })
+    }
+}
+
+/// Applies a binary operation to corresponding tensors from two safetensor files.
+///
+/// This function memory-maps two input safetensor files, iterates through the tensors
+/// of the first file, finds the corresponding tensor by name in the second file,
+/// and applies the provided operation `op` to the pair. The resulting tensors
+/// are saved into a `temp_path` and combined into a single result file. Only
+/// two tensors will be held in memory at the same time.
+///
+/// # Arguments
+/// * `file_a_path` - Path to the first safetensor file.
+/// * `file_b_path` - Path to the second safetensor file.
+/// * `output_path` - Path where the resulting safetensor file will be saved.
+/// * `temp_path` - Path to a temporary directory where the intermediate safetensor file will be saved.
+/// * `device` - The Candle device to perform computations on (e.g., `Device::Cpu`).
+/// * `op` - A closure that takes two tensors and returns a new tensor.
+///
+/// # Returns
+/// A `Result` indicating success or a `TensorOpError` on failure.
+///
+/// # Note
+/// Tensors present in the second file but not the first are ignored. If a tensor
+/// from the first file is not found in the second, it is skipped with a warning.
+/// The `temp_path` will be created and delted by the function. Make sure it doesn't
+/// point to an existing directory that contains important data.
+/// Also make sure that the tensors in `op` are in the same order as they are passed to the function.
+async fn apply_tensor_op<F>(
+    file_a_path: &Path,
+    file_b_path: &Path,
+    output_path: &Path,
+    temp_path: &Path,
+    device: &Device,
+    op: F,
+) -> Result<(), TensorOpError>
+where
+    F: Fn(&Tensor, &Tensor) -> Result<Tensor, candle_core::Error>,
+{
+    // 1. Open both safetensor files in a memory-mapped way.
+    // SAFETY: The MmapedSafetensors::new function is unsafe because it assumes
+    // the underlying file will not be modified while the memory map is active.
+    let tensors_a = unsafe { candle_core::safetensors::MmapedSafetensors::new(file_a_path)? };
+    let tensors_b = unsafe { candle_core::safetensors::MmapedSafetensors::new(file_b_path)? };
+
+    let mut result_tensors = Vec::new();
+
+    // 2. Iterate through each tensor in the first file.
+    for (name, tensor_view) in tensors_a.tensors() {
+        // Try to load the corresponding tensor from the second file.
+        match tensors_b.load(&name, device) {
+            Ok(tensor_b) => {
+                // If found, load the tensor from the first file.
+                let tensor_a = tensor_view.load(device)?;
+
+                // 3. Apply the provided computation function and serialize the result to disk.
+                let result_tensor = op(&tensor_a, &tensor_b)?;
+                let result_path = temp_path.join(format!("{:X}", Sha256::digest(name.clone())));
+                candle_core::safetensors::save(
+                    &HashMap::from([(name, result_tensor)]),
+                    result_path.clone(),
+                )?;
+                result_tensors.push(result_path);
+            }
+            Err(_) => {
+                // If a tensor from file A doesn't exist in file B, skip it.
+                tracing::warn!("Tensor '{}' not found in second file, skipping.", name);
+                continue;
+            }
+        }
+    }
+
+    // 4. Write all result tensors to the new file.
+    if result_tensors.is_empty() {
+        tracing::warn!("Warning: No matching tensors found to process.");
+    } else {
+        let all_tensors = unsafe { MmapedSafetensors::multi(&result_tensors)? };
+        serialize_to_file(all_tensors.tensors(), &None, output_path)?;
+    }
+
+    Ok(())
+}
+
+async fn update_momentum(
+    work_dir: PathBuf,
+    gradient_file_name: &Path,
+    device: &Device,
+    momentum: f64,
+) -> Result<PathBuf, Error> {
+    // If we are in the first round, we need to initialize the momentum with the gradient
+    let momentum_file = work_dir.join("momentum");
+    if fs::metadata(momentum_file.clone()).await.is_err() {
+        fs::copy(gradient_file_name.to_path_buf(), momentum_file.clone())
+            .await
+            .expect("copy gradients to momentum");
+    } else {
+        let momentum_update_file = work_dir.join("momentum_update");
+        let momentum_op = |g: &Tensor, m: &Tensor| {
+            // Calculation: (mu * momentum) / 2.0
+            (momentum * m).and_then(|t| t + g)
+        };
+        apply_tensor_op(
+            gradient_file_name,
+            &momentum_file,
+            &momentum_update_file,
+            &work_dir,
+            device,
+            momentum_op,
+        )
+        .await?;
+        fs::copy(momentum_update_file, momentum_file.clone()).await?;
+    }
+    Ok(momentum_file)
+}
+
+async fn nesterov(
+    gradient_file: PathBuf,
+    work_dir: PathBuf,
+    device: &Device,
+    momentum: f64,
+    learning_rate: f64,
+) -> Result<PathBuf, Error> {
+    let momentum_file = update_momentum(work_dir.clone(), &gradient_file, device, momentum).await?;
+
+    let result_gradient_name = work_dir.join("gradient_update");
+
+    let nesterov_op = |g: &Tensor, m: &Tensor| {
+        // Compute: learning_rate * ((momentum * m) + g)
+        (momentum * m)
+            .and_then(|t| t + g)
+            .and_then(|t| learning_rate * t)
+    };
+    apply_tensor_op(
+        &gradient_file,
+        &momentum_file,
+        &result_gradient_name,
+        &work_dir,
+        device,
+        nesterov_op,
+    )
+    .await?;
+
+    Ok(result_gradient_name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Belows test is based on the following python code
+    // import torch
+    // param = [torch.Tensor([1,1,1,1,1])]
+    // optim = torch.optim.SGD(param, lr = 0.1, momentum=.7, nesterov=True)
+    // param[0].grad = torch.Tensor([.5, .5, .5, .5, .5])
+    // optim.step()
+    // print(1-param[0])
+    // optim.zero_grad()
+    // param[0].grad = torch.Tensor([.1, .2, .3, .4, .5])
+    // optim.step()
+    // print(0.915-param[0])
+    // tensor([0.0850, 0.0850, 0.0850, 0.0850, 0.0850])
+    // tensor([0.0415, 0.0585, 0.0755, 0.0925, 0.1095])
+    #[tokio::test]
+    async fn test_nesterov() {
+        use tempfile::TempDir;
+        // Create a tmp dir for the test
+        let tmp_dir = TempDir::new().unwrap();
+
+        let device = Device::Cpu;
+        let gradient_tensor =
+            candle_core::Tensor::from_vec(vec![0.5, 0.5, 0.5, 0.5, 0.5], 5, &device).unwrap();
+        let gradient_file_name = tmp_dir.path().join("gradient_file");
+        safetensors::serialize_to_file(
+            vec![("gradient", &gradient_tensor)],
+            &None,
+            &gradient_file_name.clone(),
+        )
+        .unwrap();
+
+        let result = nesterov(
+            gradient_file_name.clone(),
+            tmp_dir.path().to_path_buf(),
+            &device,
+            0.7,
+            0.1,
+        )
+        .await
+        .unwrap();
+        let update = candle_core::safetensors::load(result, &device).unwrap();
+        assert_eq!(
+            update.get("gradient").unwrap().to_vec1::<f64>().unwrap(),
+            vec![0.085, 0.085, 0.085, 0.085, 0.085]
+        );
+
+        let gradient_tensor =
+            candle_core::Tensor::from_vec(vec![0.1, 0.2, 0.3, 0.4, 0.5], 5, &device).unwrap();
+        safetensors::serialize_to_file(
+            vec![("gradient", &gradient_tensor)],
+            &None,
+            &gradient_file_name,
+        )
+        .unwrap();
+        let result = nesterov(
+            gradient_file_name,
+            tmp_dir.path().to_path_buf(),
+            &device,
+            0.7,
+            0.1,
+        )
+        .await
+        .unwrap();
+        let update = candle_core::safetensors::load(result, &device).unwrap();
+        let difference = update
+            .get("gradient")
+            .unwrap()
+            .to_vec1::<f64>()
+            .unwrap()
+            .into_iter()
+            .zip(vec![0.0415, 0.0585, 0.0755, 0.0925, 0.1095])
+            .fold(0f64, |acc, (a, b)| acc + (a - b).abs());
+        assert!(difference < 0.000001)
     }
 }
