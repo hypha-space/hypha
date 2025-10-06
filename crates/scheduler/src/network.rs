@@ -27,9 +27,11 @@ use hypha_network::{
     stream::{StreamInterface, StreamSenderInterface},
     swarm::{SwarmDriver, SwarmError},
 };
+use hypha_telemetry::{bandwidth, metrics};
 use libp2p::{
-    PeerId, StreamProtocol, Swarm, SwarmBuilder, dcutr, gossipsub, identify, kad, ping, relay,
-    request_response,
+    PeerId, StreamProtocol, Swarm, SwarmBuilder,
+    core::{muxing::StreamMuxerBox, transport::Transport},
+    dcutr, gossipsub, identify, kad, ping, relay, request_response,
     swarm::{ConnectionId, DialError, NetworkBehaviour, SwarmEvent},
     tcp, tls, yamux,
 };
@@ -93,6 +95,7 @@ impl Network {
         crls: Vec<CertificateRevocationListDer<'static>>,
     ) -> Result<(Self, NetworkDriver), SwarmError> {
         let (action_sender, action_receiver) = mpsc::channel(5);
+        let meter = metrics::global::meter();
 
         // Build libp2p Swarm using the derived identity and mTLS config
         let swarm = SwarmBuilder::with_existing_identity(cert_chain, private_key, ca_certs, crls)
@@ -110,6 +113,11 @@ impl Network {
             .map_err(|_| {
                 SwarmError::TransportConfig("Failed to create relay client with mTLS.".to_string())
             })?
+            .map_transport(|t| {
+                // NOTE: Instrument transport bandwidth for metrics collection.
+                bandwidth::Transport::new(t, &meter)
+                    .map(|(peer, muxer), _| (peer, StreamMuxerBox::new(muxer)))
+            })
             .with_behaviour(|key, relay_client| {
                 let gossipsub = gossipsub::Behaviour::new(
                     gossipsub::MessageAuthenticity::Signed(key.clone()),
