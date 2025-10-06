@@ -203,7 +203,7 @@ def merge_models(old_model: str, weight_path: str) -> dict[str, torch.Tensor]:
 
 def extract_gradients(state_dict: dict[str, torch.Tensor], previous_model_path: str) -> dict[str, torch.Tensor]:
     with safe_open(previous_model_path, framework="pt", device="cpu") as p:  # type: ignore[no-untyped-call]
-        for name in p:
+        for name in p.keys():  # noqa: SIM118
             state_dict[name] -= p.get_tensor(name).to(state_dict[name].dtype)
     return state_dict
 

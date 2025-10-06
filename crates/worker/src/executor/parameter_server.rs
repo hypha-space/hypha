@@ -12,6 +12,7 @@ use candle_core::{
 };
 use futures_util::StreamExt;
 use safetensors::serialize_to_file;
+use sha2::{Digest, Sha256};
 use tokio::{
     fs,
     io::{self, AsyncWriteExt},
@@ -133,9 +134,11 @@ impl JobExecutor for ParameterServerExecutor {
                                 match item {
                                     Ok(item) => {
                                         let name = item.meta.name.clone();
-                                        tracing::info!(peer_id = ?name, "Received parameter server update (start)");
                                         let mut reader = item.reader.compat();
-                                        let file_name = work_dir.join(name.clone());
+                                        // Don't use the name from the meta data as it could be an arbitrary path.
+                                        let hex_digest = format!("{:X}",Sha256::digest(item.meta.name));
+                                        tracing::info!(peer_id = ?name, file_name = ?hex_digest, "Received parameter server update (start)");
+                                        let file_name = work_dir.join(hex_digest);
 
                                         match fs::File::create(&file_name).await {
                                             Ok(mut file) => {
@@ -182,21 +185,18 @@ impl JobExecutor for ParameterServerExecutor {
                     // Borrow current aggregation state to avoid moving out of `result_tensor`.
 
                     tracing::info!("Received file {:?}", name);
-                    let result_tensor_file_name = match current_result_tensor_file_name {
+                    current_result_tensor_file_name = match current_result_tensor_file_name {
                         None => {
-                            // Create a copy of the initial parameters to avoid overwriting mmaped files.
-                            // In edge-cases we might receive updates while still sending out results.
-                            // If the name of the result file would be the same as one of incoming updates,
-                            // we would overwrite an mmapped file.
-                            let temporary_tensor_file_name = work_dir.join("avg-temporary");
-                            fs::copy(file_name.as_path(), temporary_tensor_file_name.as_path()).await.expect("file can be copied");
-                            temporary_tensor_file_name
+                            // Just use the first file as the current name, so no copy required.
+                            Some(file_name.to_path_buf())
                         },
                         Some(result_tensor_file_name) => {
                                 let work_dir = work_dir.clone();
                                 let tmp_dir_name = work_dir.join("tmp_join");
-                                let temporary_tensor_file_name = work_dir.join(format!("tmp_{:?}",  Uuid::new_v4()));
+                                let resulting_tensor_file_name = work_dir.join(format!("joined_{:?}",  Uuid::new_v4()));
 
+                                // TODO: This isn't correct. We need a weighting with the number of samples processed by
+                                // the worker. Until we have this information lets assume we traing with two workers.
                                 // Average the new tensor with an existing one
                                 let average_op = |a: &Tensor, b: &Tensor|{
                                     // Compute (a + b) / 2.
@@ -205,7 +205,7 @@ impl JobExecutor for ParameterServerExecutor {
                                 if let Err(e) = apply_tensor_op(
                                     &file_name,
                                     &result_tensor_file_name,
-                                    &temporary_tensor_file_name,
+                                    &resulting_tensor_file_name,
                                     &tmp_dir_name,
                                     &device,
                                     average_op,
@@ -213,14 +213,10 @@ impl JobExecutor for ParameterServerExecutor {
                                 .await{
                                     tracing::warn!(error = ?e, "Failed to average results");
                                 }
-                                fs::copy(temporary_tensor_file_name.clone(), result_tensor_file_name.clone()).await.expect("file can be copied");
-                                fs::remove_file(temporary_tensor_file_name).await.expect("Delete temporary average");
-
-                                result_tensor_file_name.clone()
+                                Some(resulting_tensor_file_name)
                         }
                     };
 
-                    current_result_tensor_file_name = Some(result_tensor_file_name);
                     current_worker += 1;
 
                     // We assume that each worker sends their parameters, then waits to receive updates.
@@ -345,7 +341,6 @@ where
     // the underlying file will not be modified while the memory map is active.
     let tensors_a = unsafe { candle_core::safetensors::MmapedSafetensors::new(file_a_path)? };
     let tensors_b = unsafe { candle_core::safetensors::MmapedSafetensors::new(file_b_path)? };
-    fs::create_dir_all(temp_path).await?;
 
     let mut result_tensors = Vec::new();
 
@@ -359,7 +354,7 @@ where
 
                 // 3. Apply the provided computation function and serialize the result to disk.
                 let result_tensor = op(&tensor_a, &tensor_b)?;
-                let result_path = temp_path.join(name.clone());
+                let result_path = temp_path.join(format!("{:X}", Sha256::digest(name.clone())));
                 candle_core::safetensors::save(
                     &HashMap::from([(name, result_tensor)]),
                     result_path.clone(),
@@ -382,8 +377,6 @@ where
         serialize_to_file(all_tensors.tensors(), &None, output_path)?;
     }
 
-    fs::remove_dir_all(temp_path).await?;
-
     Ok(())
 }
 
@@ -400,7 +393,6 @@ async fn update_momentum(
             .await
             .expect("copy gradients to momentum");
     } else {
-        let tmp_dir_name = work_dir.join("tmp_momentum");
         let momentum_update_file = work_dir.join("momentum_update");
         let momentum_op = |g: &Tensor, m: &Tensor| {
             // Calculation: (mu * momentum) / 2.0
@@ -410,7 +402,7 @@ async fn update_momentum(
             gradient_file_name,
             &momentum_file,
             &momentum_update_file,
-            &tmp_dir_name,
+            &work_dir,
             device,
             momentum_op,
         )
@@ -429,7 +421,6 @@ async fn nesterov(
 ) -> Result<PathBuf, Error> {
     let momentum_file = update_momentum(work_dir.clone(), &gradient_file, device, momentum).await?;
 
-    let tmp_dir_name = work_dir.join("tmp_nesterov");
     let result_gradient_name = work_dir.join("gradient_update");
 
     let nesterov_op = |g: &Tensor, m: &Tensor| {
@@ -442,11 +433,90 @@ async fn nesterov(
         &gradient_file,
         &momentum_file,
         &result_gradient_name,
-        &tmp_dir_name,
+        &work_dir,
         device,
         nesterov_op,
     )
     .await?;
 
     Ok(result_gradient_name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Belows test is based on the following python code
+    // import torch
+    // param = [torch.Tensor([1,1,1,1,1])]
+    // optim = torch.optim.SGD(param, lr = 0.1, momentum=.7, nesterov=True)
+    // param[0].grad = torch.Tensor([.5, .5, .5, .5, .5])
+    // optim.step()
+    // print(1-param[0])
+    // optim.zero_grad()
+    // param[0].grad = torch.Tensor([.1, .2, .3, .4, .5])
+    // optim.step()
+    // print(0.915-param[0])
+    // tensor([0.0850, 0.0850, 0.0850, 0.0850, 0.0850])
+    // tensor([0.0415, 0.0585, 0.0755, 0.0925, 0.1095])
+    #[tokio::test]
+    async fn test_nesterov() {
+        use tempfile::TempDir;
+        // Create a tmp dir for the test
+        let tmp_dir = TempDir::new().unwrap();
+
+        let device = Device::Cpu;
+        let gradient_tensor =
+            candle_core::Tensor::from_vec(vec![0.5, 0.5, 0.5, 0.5, 0.5], 5, &device).unwrap();
+        let gradient_file_name = tmp_dir.path().join("gradient_file");
+        safetensors::serialize_to_file(
+            vec![("gradient", &gradient_tensor)],
+            &None,
+            &gradient_file_name.clone(),
+        )
+        .unwrap();
+
+        let result = nesterov(
+            gradient_file_name.clone(),
+            tmp_dir.path().to_path_buf(),
+            &device,
+            0.7,
+            0.1,
+        )
+        .await
+        .unwrap();
+        let update = candle_core::safetensors::load(result, &device).unwrap();
+        assert_eq!(
+            update.get("gradient").unwrap().to_vec1::<f64>().unwrap(),
+            vec![0.085, 0.085, 0.085, 0.085, 0.085]
+        );
+
+        let gradient_tensor =
+            candle_core::Tensor::from_vec(vec![0.1, 0.2, 0.3, 0.4, 0.5], 5, &device).unwrap();
+        safetensors::serialize_to_file(
+            vec![("gradient", &gradient_tensor)],
+            &None,
+            &gradient_file_name,
+        )
+        .unwrap();
+        let result = nesterov(
+            gradient_file_name,
+            tmp_dir.path().to_path_buf(),
+            &device,
+            0.7,
+            0.1,
+        )
+        .await
+        .unwrap();
+        let update = candle_core::safetensors::load(result, &device).unwrap();
+        let difference = update
+            .get("gradient")
+            .unwrap()
+            .to_vec1::<f64>()
+            .unwrap()
+            .into_iter()
+            .zip(vec![0.0415, 0.0585, 0.0755, 0.0925, 0.1095])
+            .fold(0f64, |acc, (a, b)| acc + (a - b).abs());
+        assert!(difference < 0.000001)
+    }
 }
