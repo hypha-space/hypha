@@ -58,38 +58,50 @@ impl IntoResponse for Error {
             detail: String,
         }
         match self {
-            Error::Network(e) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiError {
-                    error: "network_error",
-                    detail: e.to_string(),
-                }),
-            )
-                .into_response(),
-            Error::InvalidStatus(msg) => (
-                StatusCode::BAD_REQUEST,
-                Json(ApiError {
-                    error: "invalid_request",
-                    detail: msg,
-                }),
-            )
-                .into_response(),
-            Error::Connector(e) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiError {
-                    error: "connector_error",
-                    detail: e.to_string(),
-                }),
-            )
-                .into_response(),
-            Error::Io(e) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiError {
-                    error: "io_error",
-                    detail: e.to_string(),
-                }),
-            )
-                .into_response(),
+            Error::Network(e) => {
+                tracing::error!(error = %e, "bridge error: network");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ApiError {
+                        error: "network_error",
+                        detail: e.to_string(),
+                    }),
+                )
+                    .into_response()
+            }
+            Error::InvalidStatus(msg) => {
+                tracing::warn!(detail = %msg, "bridge error: invalid_request");
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(ApiError {
+                        error: "invalid_request",
+                        detail: msg,
+                    }),
+                )
+                    .into_response()
+            }
+            Error::Connector(e) => {
+                tracing::error!(error = %e, "bridge error: connector");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ApiError {
+                        error: "connector_error",
+                        detail: e.to_string(),
+                    }),
+                )
+                    .into_response()
+            }
+            Error::Io(e) => {
+                tracing::error!(error = %e, "bridge error: io");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ApiError {
+                        error: "io_error",
+                        detail: e.to_string(),
+                    }),
+                )
+                    .into_response()
+            }
         }
     }
 }
@@ -224,7 +236,13 @@ async fn send_resource(
     Json(req): Json<SendRequest>,
 ) -> Result<(), Error> {
     let abs = safe_join(&state.work_dir, &req.path)?;
-    let mut writers = state.connector.send(req.resource).await?;
+    let mut writers = match state.connector.send(req.resource).await {
+        Ok(w) => w,
+        Err(e) => {
+            tracing::error!(error = %e, file = %abs.display(), "send_resource: failed to open writers");
+            return Err(Error::Connector(e));
+        }
+    };
 
     // Copy the resource in the background to avoid blocking.
     tokio::spawn(async move {
