@@ -192,7 +192,6 @@ impl JobExecutor for ParameterServerExecutor {
                         },
                         Some(result_tensor_file_name) => {
                                 let work_dir = work_dir.clone();
-                                let tmp_dir_name = work_dir.join("tmp_join");
                                 let resulting_tensor_file_name = work_dir.join(format!("joined_{:?}",  Uuid::new_v4()));
 
                                 // TODO: This isn't correct. We need a weighting with the number of samples processed by
@@ -206,7 +205,7 @@ impl JobExecutor for ParameterServerExecutor {
                                     &file_name,
                                     &result_tensor_file_name,
                                     &resulting_tensor_file_name,
-                                    &tmp_dir_name,
+                                    &work_dir,
                                     &device,
                                     average_op,
                                 )
