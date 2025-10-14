@@ -10,10 +10,80 @@ dependencies = [
     "pillow>=11.3.0",
     "requests>=2.32.3",
     "safetensors>=0.5.3",
-    "torch==2.8.0",
     "tqdm>=4.67.1",
     "transformers[torch]==4.56.2",
 ]
+
+[project.optional-dependencies]
+mps_cu128 = [
+  "torch>=2.8.0",
+  "torchvision>=0.23.0",
+]
+cpu = [
+  "torch>=2.8.0",
+  "torchvision>=0.23.0",
+]
+cu126 = [
+  "torch>=2.8.0",
+  "torchvision>=0.23.0",
+]
+cu129 = [
+  "torch>=2.8.0",
+  "torchvision>=0.23.0",
+]
+rocm64 = [
+  "torch>=2.8.0",
+  "torchvision>=0.23.0",
+  "pytorch-triton-rocm",
+]
+
+[tool.uv]
+conflicts = [
+  [
+    { extra = "mps_cu128" },
+    { extra = "cpu" },
+    { extra = "cu126" },
+    { extra = "cu129" },
+    { extra = "rocm64" },
+  ],
+]
+
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-cpu", extra = "cpu" },
+  { index = "pytorch-cu126", extra = "cu126" },
+  { index = "pytorch-cu129", extra = "cu129" },
+  { index = "pytorch-rocm64", extra = "rocm64"},
+]
+torchvision = [
+  { index = "pytorch-cpu", extra = "cpu" },
+  { index = "pytorch-cu126", extra = "cu126" },
+  { index = "pytorch-cu129", extra = "cu129" },
+  { index = "pytorch-rocm64", extra = "rocm64"},
+]
+pytorch-triton-rocm = [
+  { index = "pytorch-rocm64", extra = "rocm64"},
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu129"
+url = "https://download.pytorch.org/whl/cu129"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-rocm64"
+url = "https://download.pytorch.org/whl/rocm6.4"
+explicit = true
 
 [dependency-groups]
 dev = [
