@@ -11,7 +11,7 @@ use hypha_messages::{
     SelectionStrategy, Send, WorkerSpec, health,
 };
 use hypha_network::{
-    dial::DialInterface, external_address::ExternalAddressInterface, kad::KademliaInterface,
+    IpNet, dial::DialInterface, external_address::ExternalAddressInterface, kad::KademliaInterface,
     listen::ListenInterface, request_response::RequestResponseInterfaceExt, swarm::SwarmDriver,
 };
 use hypha_scheduler::{
@@ -108,6 +108,12 @@ enum Commands {
         #[clap(long("relay-circuit"))]
         #[serde(skip_serializing_if = "Option::is_none")]
         relay_circuit: Option<bool>,
+
+        /// CIDR exclusion (repeatable). Overrides config if provided.
+        /// Example: --exclude-cidr 10.0.0.0/8 --exclude-cidr fc00::/7
+        #[clap(long("exclude-cidr"))]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        exclude_cidr: Option<Vec<IpNet>>,
     },
 }
 
@@ -152,9 +158,10 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
     let ca_certs = config.load_trust_chain()?;
     let crls = config.load_crls()?;
 
+    let exclude_cidrs = config.exclude_cidr().clone();
     let (network, network_driver) =
-        Network::create(cert_chain, private_key, ca_certs, crls).into_diagnostic()?;
-    // NOTE: Spawn network driver and keep handle for graceful shutdown.
+        Network::create(cert_chain, private_key, ca_certs, crls, exclude_cidrs)
+            .into_diagnostic()?;
     let mut driver_task = tokio::spawn(network_driver.run());
 
     join_all(
@@ -446,11 +453,13 @@ async fn main() -> Result<()> {
                 .with_provider(Serialized::from(&args, figment::Profile::Default))
                 .build()?;
 
+            let exclude_cidrs = config.exclude_cidr().clone();
             let (network, driver) = Network::create(
                 config.load_cert_chain()?,
                 config.load_key()?,
                 config.load_trust_chain()?,
                 config.load_crls()?,
+                exclude_cidrs,
             )
             .into_diagnostic()?;
             tokio::spawn(driver.run());
