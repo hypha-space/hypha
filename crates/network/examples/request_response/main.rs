@@ -9,7 +9,7 @@ use hypha_network::{
     request_response::{
         OutboundRequests, OutboundResponses, RequestHandler, RequestResponseAction,
         RequestResponseBehaviour, RequestResponseDriver, RequestResponseError,
-        RequestResponseInterface, RequestResponseInterfaceExt,
+        RequestResponseInterfaceExt,
     },
     swarm::{SwarmDriver, SwarmError},
 };
@@ -308,7 +308,7 @@ impl Network {
     }
 }
 
-impl RequestResponseInterface<ExampleCodec> for Network {
+impl hypha_network::request_response::RequestResponseInterface<ExampleCodec> for Network {
     async fn send(&self, action: RequestResponseAction<ExampleCodec>) {
         let _ = self.action_tx.send(Action::RequestResponse(action)).await;
     }

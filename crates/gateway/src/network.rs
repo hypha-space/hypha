@@ -15,10 +15,15 @@ use hypha_network::{
     },
     kad::{KademliaAction, KademliaBehavior, KademliaDriver, KademliaInterface, PendingQueries},
     listen::{ListenAction, ListenDriver, ListenInterface, PendingListens},
+    request_response::{
+        OutboundRequests, OutboundResponses, RequestHandler, RequestResponseAction,
+        RequestResponseBehaviour, RequestResponseDriver, RequestResponseError,
+        RequestResponseInterface,
+    },
     swarm::{SwarmDriver, SwarmError},
 };
 use libp2p::{
-    Swarm, SwarmBuilder, gossipsub, identify, kad, ping, relay,
+    StreamProtocol, Swarm, SwarmBuilder, gossipsub, identify, kad, ping, relay, request_response,
     swarm::{NetworkBehaviour, SwarmEvent},
     tcp, tls, yamux,
 };
@@ -36,6 +41,8 @@ pub struct Behaviour {
     relay: relay::Behaviour,
     kademlia: kad::Behaviour<kad::store::MemoryStore>,
     gossipsub: gossipsub::Behaviour,
+    request_response: request_response::Behaviour<HyphaCodec>,
+    health_request_response: request_response::Behaviour<HealthCodec>,
 }
 
 pub struct NetworkDriver {
@@ -46,15 +53,27 @@ pub struct NetworkDriver {
     pending_bootstrap: Arc<SetOnce<()>>,
     subscriptions: Subscriptions,
     action_receiver: mpsc::Receiver<Action>,
+    outbound_requests_map: OutboundRequests<HyphaCodec>,
+    outbound_responses_map: OutboundResponses,
+    request_handlers: Vec<RequestHandler<HyphaCodec>>,
+    health_outbound_requests_map: OutboundRequests<HealthCodec>,
+    health_outbound_responses_map: OutboundResponses,
+    health_request_handlers: Vec<RequestHandler<HealthCodec>>,
 }
 
+#[allow(clippy::large_enum_variant)]
 enum Action {
     Dial(DialAction),
     Listen(ListenAction),
     Kademlia(KademliaAction),
     Gossipsub(GossipsubAction),
     ExternalAddress(ExternalAddressAction),
+    RequestResponse(RequestResponseAction<HyphaCodec>),
+    HealthRequestResponse(RequestResponseAction<HealthCodec>),
 }
+
+type HyphaCodec = hypha_messages::api::Codec;
+type HealthCodec = hypha_messages::health::Codec;
 
 impl Network {
     pub fn create(
@@ -93,6 +112,20 @@ impl Network {
                         gossipsub::Config::default(),
                     )
                     .expect("Failed to create gossipsub behaviour"),
+                    request_response: request_response::Behaviour::<HyphaCodec>::new(
+                        [(
+                            StreamProtocol::new("/hypha-api/0.0.1"),
+                            request_response::ProtocolSupport::Full,
+                        )],
+                        request_response::Config::default(),
+                    ),
+                    health_request_response: request_response::Behaviour::<HealthCodec>::new(
+                        [(
+                            StreamProtocol::new(hypha_messages::health::IDENTIFIER),
+                            request_response::ProtocolSupport::Full,
+                        )],
+                        request_response::Config::default(),
+                    ),
                 })
                 .map_err(|_| {
                     SwarmError::BehaviourCreation("Failed to create swarm behavior.".to_string())
@@ -115,6 +148,12 @@ impl Network {
                 pending_queries_map: HashMap::default(),
                 pending_bootstrap: Arc::new(SetOnce::new()),
                 subscriptions: HashMap::default(),
+                outbound_requests_map: HashMap::default(),
+                outbound_responses_map: HashMap::default(),
+                request_handlers: Vec::new(),
+                health_outbound_requests_map: HashMap::default(),
+                health_outbound_responses_map: HashMap::default(),
+                health_request_handlers: Vec::new(),
                 action_receiver,
             },
         ))
@@ -143,9 +182,15 @@ impl SwarmDriver<Behaviour> for NetworkDriver {
                         SwarmEvent::Behaviour(BehaviourEvent::Kademlia(kad::Event::OutboundQueryProgressed {id,  result, step, ..})) => {
                             self.process_kademlia_query_result(id, result, step).await;
                          }
-                         SwarmEvent::Behaviour(BehaviourEvent::Gossipsub(event)) => {
+                        SwarmEvent::Behaviour(BehaviourEvent::Gossipsub(event)) => {
                             self.process_gossipsub_event(event).await;
                          }
+                        SwarmEvent::Behaviour(BehaviourEvent::RequestResponse(event)) => {
+                            <NetworkDriver as RequestResponseDriver<Behaviour, HyphaCodec>>::process_request_response_event(&mut self, event).await;
+                        }
+                        SwarmEvent::Behaviour(BehaviourEvent::HealthRequestResponse(event)) => {
+                            <NetworkDriver as RequestResponseDriver<Behaviour, HealthCodec>>::process_request_response_event(&mut self, event).await;
+                        }
                         _ => {
                             tracing::debug!("Unhandled event: {:?}", event);
                         }
@@ -163,6 +208,12 @@ impl SwarmDriver<Behaviour> for NetworkDriver {
                         },
                         Action::ExternalAddress(action) => {
                             self.process_external_address_action(action).await;
+                        }
+                        Action::RequestResponse(action) => {
+                            <NetworkDriver as RequestResponseDriver<Behaviour, HyphaCodec>>::process_request_response_action(&mut self, action).await;
+                        }
+                        Action::HealthRequestResponse(action) => {
+                            <NetworkDriver as RequestResponseDriver<Behaviour, HealthCodec>>::process_request_response_action(&mut self, action).await;
                         }
                     }
                 }
@@ -216,6 +267,82 @@ impl ExternalAddressInterface for Network {
             .send(Action::ExternalAddress(action))
             .await
             .expect("network driver should be running and able to receive actions");
+    }
+}
+
+impl RequestResponseBehaviour<HyphaCodec> for Behaviour {
+    fn request_response(&mut self) -> &mut libp2p::request_response::Behaviour<HyphaCodec> {
+        &mut self.request_response
+    }
+}
+
+impl RequestResponseBehaviour<HealthCodec> for Behaviour {
+    fn request_response(&mut self) -> &mut libp2p::request_response::Behaviour<HealthCodec> {
+        &mut self.health_request_response
+    }
+}
+
+impl RequestResponseDriver<Behaviour, HyphaCodec> for NetworkDriver {
+    fn outbound_requests(&mut self) -> &mut OutboundRequests<HyphaCodec> {
+        &mut self.outbound_requests_map
+    }
+
+    fn outbound_responses(&mut self) -> &mut OutboundResponses {
+        &mut self.outbound_responses_map
+    }
+
+    fn request_handlers(&mut self) -> &mut Vec<RequestHandler<HyphaCodec>> {
+        &mut self.request_handlers
+    }
+}
+
+impl RequestResponseDriver<Behaviour, HealthCodec> for NetworkDriver {
+    fn outbound_requests(&mut self) -> &mut OutboundRequests<HealthCodec> {
+        &mut self.health_outbound_requests_map
+    }
+
+    fn outbound_responses(&mut self) -> &mut OutboundResponses {
+        &mut self.health_outbound_responses_map
+    }
+
+    fn request_handlers(&mut self) -> &mut Vec<RequestHandler<HealthCodec>> {
+        &mut self.health_request_handlers
+    }
+}
+
+impl RequestResponseInterface<HyphaCodec> for Network {
+    async fn send(&self, action: RequestResponseAction<HyphaCodec>) {
+        self.action_sender
+            .send(Action::RequestResponse(action))
+            .await
+            .expect("network driver should be running and able to receive actions");
+    }
+
+    fn try_send(
+        &self,
+        action: RequestResponseAction<HyphaCodec>,
+    ) -> Result<(), RequestResponseError> {
+        self.action_sender
+            .try_send(Action::RequestResponse(action))
+            .map_err(|_| RequestResponseError::Other("Failed to send action".to_string()))
+    }
+}
+
+impl RequestResponseInterface<HealthCodec> for Network {
+    async fn send(&self, action: RequestResponseAction<HealthCodec>) {
+        self.action_sender
+            .send(Action::HealthRequestResponse(action))
+            .await
+            .expect("network driver should be running and able to receive actions");
+    }
+
+    fn try_send(
+        &self,
+        action: RequestResponseAction<HealthCodec>,
+    ) -> Result<(), RequestResponseError> {
+        self.action_sender
+            .try_send(Action::HealthRequestResponse(action))
+            .map_err(|_| RequestResponseError::Other("Failed to send action".to_string()))
     }
 }
 
