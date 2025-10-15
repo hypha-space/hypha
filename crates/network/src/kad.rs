@@ -12,12 +12,14 @@ use std::{
     sync::Arc,
 };
 
+use ipnet::IpNet;
 use libp2p::{
     Multiaddr, PeerId, identify,
     kad::{
         self, PeerInfo, QueryId,
         store::{self, MemoryStore},
     },
+    multiaddr::Protocol,
     swarm::NetworkBehaviour,
 };
 use tokio::sync::{SetOnce, mpsc};
@@ -171,6 +173,11 @@ pub trait KademliaDriver<TBehavior>: SwarmDriver<TBehavior> + Send
 where
     TBehavior: NetworkBehaviour + KademliaBehavior,
 {
+    /// Returns the CIDR exclusion list for Identify -> Kademlia integration.
+    ///
+    /// Defaults to filtering both loopback and private addresses.
+    fn exclude_cidrs(&self) -> Vec<IpNet>;
+
     /// Returns a mutable reference to the pending queries tracker.
     ///
     /// This is used to manage result channels for ongoing Kademlia queries.
@@ -388,16 +395,22 @@ where
     fn process_identify_event(&mut self, event: identify::Event) {
         match event {
             identify::Event::Received { peer_id, info, .. } => {
-                // NOTE: Add known addresses of peers to the Kademlia routing table
-                tracing::debug!(peer_id=%peer_id, info=?info, "Adding address to Kademlia routing table");
+                tracing::debug!(peer_id=%peer_id, "Processing identify addresses");
+                // NOTE: Do not add observed_addr here; NewExternalAddrCandidate covers self-addrs.
 
-                for addr in info.listen_addrs {
+                // NOTE: Add known addresses of peers to the Kademlia routing table,
+                // filtering out addresses that match configured CIDR rules.
+                let cidrs = self.exclude_cidrs();
+                for addr in info
+                    .listen_addrs
+                    .into_iter()
+                    .filter(|a| !is_multiaddr_in_cidrs(a, &cidrs))
+                {
                     self.swarm()
                         .behaviour_mut()
                         .kademlia()
                         .add_address(&peer_id, addr);
                 }
-                // NOTE: Do not add observed_addr here; NewExternalAddrCandidate covers self-addrs.
             }
             identify::Event::Sent { peer_id, .. } => {
                 tracing::trace!(peer_id=%peer_id, "Sent identify info to peer");
@@ -723,6 +736,16 @@ pub trait KademliaInterface: Sync {
     }
 }
 
+fn is_multiaddr_in_cidrs(addr: &Multiaddr, cidrs: &[IpNet]) -> bool {
+    addr.iter()
+        .find_map(|protocol| match protocol {
+            Protocol::Ip4(ip) => Some(std::net::IpAddr::V4(ip)),
+            Protocol::Ip6(ip) => Some(std::net::IpAddr::V6(ip)),
+            _ => None,
+        })
+        .is_some_and(|ip| cidrs.iter().any(|net| net.contains(&ip)))
+}
+
 #[cfg(test)]
 mod tests {
     use mockall::mock;
@@ -734,6 +757,68 @@ mod tests {
 
         impl KademliaInterface for TestInterface {
             async fn send(&self, action: KademliaAction);
+        }
+    }
+
+    mod is_multiaddr_in_cidrs {
+        use super::*;
+
+        #[test]
+        fn ip4_in_cidrs() {
+            let cidrs = vec![
+                "10.0.0.0/8".parse().unwrap(),
+                "127.0.0.0/8".parse().unwrap(),
+                "192.168.0.0/16".parse().unwrap(),
+            ];
+
+            assert!(is_multiaddr_in_cidrs(
+                &"/ip4/10.1.2.3/tcp/1".parse().unwrap(),
+                &cidrs
+            ));
+            assert!(is_multiaddr_in_cidrs(
+                &"/ip4/127.0.0.1/udp/62001/quic-v1".parse().unwrap(),
+                &cidrs
+            ));
+        }
+
+        #[test]
+        fn ip4_not_in_cidrs() {
+            let cidrs = vec![
+                "10.0.0.0/8".parse().unwrap(),
+                "127.0.0.0/8".parse().unwrap(),
+                "192.168.0.0/16".parse().unwrap(),
+            ];
+
+            assert!(!is_multiaddr_in_cidrs(
+                &"/ip4/8.8.8.8/tcp/1".parse().unwrap(),
+                &cidrs
+            ));
+        }
+
+        #[test]
+        fn ip6_in_cidrs() {
+            let cidrs = vec![
+                "fc00::/7".parse().unwrap(),
+                "2001:4860::/32".parse().unwrap(),
+            ];
+
+            assert!(is_multiaddr_in_cidrs(
+                &"/ip6/fc00::1/tcp/1".parse().unwrap(),
+                &cidrs
+            ));
+        }
+
+        #[test]
+        fn ip6_not_in_cidrs() {
+            let cidrs = vec![
+                "fc00::/7".parse().unwrap(),
+                "2001:4860::/32".parse().unwrap(),
+            ];
+
+            assert!(!is_multiaddr_in_cidrs(
+                &"/ip6/2001:db8::1/tcp/1".parse().unwrap(),
+                &cidrs
+            ));
         }
     }
 
