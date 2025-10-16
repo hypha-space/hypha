@@ -85,7 +85,10 @@ where
     fn process_new_listen_addr(
         &mut self,
         listener_id: &ListenerId,
+        address: Multiaddr,
     ) -> impl Future<Output = ()> + Send {
+        tracing::info!(address=%address.clone(),"Listening");
+
         async move {
             if let Some(tx) = self.pending_listens().remove(listener_id) {
                 let _ = tx.send(Ok(()));
@@ -164,7 +167,6 @@ pub trait ListenInterface: Sync {
     ) -> impl Future<Output = Result<(), TransportError<IoError>>> + Send {
         async move {
             let (tx, rx) = oneshot::channel();
-            tracing::info!(address=%address.clone(),"Listening");
 
             self.send(ListenAction::Listen(address, tx)).await;
 
