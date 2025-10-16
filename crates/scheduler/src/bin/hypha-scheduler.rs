@@ -7,8 +7,8 @@ use figment::providers::{Env, Format, Serialized, Toml};
 use futures_util::future::join_all;
 use hypha_config::{ConfigWithMetadata, ConfigWithMetadataTLSExt, builder, to_toml};
 use hypha_messages::{
-    DataRecord, DiLoCoConfig, Executor, Fetch, JobSpec, Optimizer, Receive, Requirement, Resources,
-    SelectionStrategy, Send, WorkerSpec, health,
+    Adam, DataRecord, DiLoCoConfig, Executor, Fetch, JobSpec, Nesterov, Receive, Requirement,
+    Resources, SelectionStrategy, Send, WorkerSpec, health,
 };
 use hypha_network::{
     IpNet, cert::identity_from_private_key, dial::DialInterface,
@@ -365,7 +365,7 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
                 executor: Executor::ParameterServer {
                     updates: Receive::peers(worker_ids.clone()),
                     results: Send::peers(worker_ids.clone(), SelectionStrategy::All),
-                    optimizer: Optimizer::Nesterov {
+                    optimizer: Nesterov {
                         learning_rate: 0.7,
                         momentum: 0.9,
                     },
@@ -426,7 +426,7 @@ fn get_executor_with_dataset(
         updates: Receive::peers(vec![parameter_server]),
         results: Send::peers(vec![parameter_server], SelectionStrategy::One),
         config: DiLoCoConfig::VisionClassification {
-            optimizer: Optimizer::Adam {
+            optimizer: Adam {
                 learning_rate: 1e-3,
                 betas: None,
                 epsilon: None,

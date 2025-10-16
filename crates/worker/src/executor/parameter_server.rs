@@ -89,14 +89,6 @@ impl JobExecutor for ParameterServerExecutor {
             _ => return Err(Error::UnsupportedJobSpec()),
         };
 
-        let (learning_rate, momentum) = match optimizer {
-            hypha_messages::Optimizer::Nesterov {
-                learning_rate,
-                momentum,
-            } => (learning_rate, momentum),
-            _ => return Err(Error::UnsupportedOptimizer()),
-        };
-
         let connector = self.connector.clone();
 
         let task_tracker = TaskTracker::new();
@@ -225,7 +217,7 @@ impl JobExecutor for ParameterServerExecutor {
                         fs::rename(result_file_name.as_path(), final_tensor_file_name.as_path()).await.expect("tensor file can be renamed");
 
                         // Do outer optimization
-                        let gradient_file =  nesterov(final_tensor_file_name.clone(),  work_dir.clone(), &device, momentum, learning_rate).await.expect("nesterov");
+                        let gradient_file =  nesterov(final_tensor_file_name.clone(),  work_dir.clone(), &device, optimizer.momentum, optimizer.learning_rate).await.expect("nesterov");
 
                         // These need to be reset before sending out the result!
                         current_result_tensor_file_name = None;
