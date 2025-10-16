@@ -22,8 +22,11 @@ use hypha_network::{
     },
     swarm::{SwarmDriver, SwarmError},
 };
+use hypha_telemetry::{bandwidth, metrics};
 use libp2p::{
-    StreamProtocol, Swarm, SwarmBuilder, gossipsub, identify, kad, ping, relay, request_response,
+    StreamProtocol, Swarm, SwarmBuilder,
+    core::{muxing::StreamMuxerBox, transport::Transport},
+    gossipsub, identify, kad, ping, relay, request_response,
     swarm::{NetworkBehaviour, SwarmEvent},
     tcp, tls, yamux,
 };
@@ -83,6 +86,7 @@ impl Network {
         crls: Vec<CertificateRevocationListDer<'static>>,
     ) -> Result<(Self, NetworkDriver), SwarmError> {
         let (action_sender, action_receiver) = mpsc::channel(5);
+        let meter = metrics::global::meter();
 
         let mut swarm =
             SwarmBuilder::with_existing_identity(cert_chain, private_key, ca_certs, crls)
@@ -96,6 +100,10 @@ impl Network {
                     SwarmError::TransportConfig("Failed to create TCP transport.".to_string())
                 })?
                 .with_quic()
+                .map_transport(|t| {
+                    bandwidth::Transport::new(t, &meter)
+                        .map(|(peer, muxer), _| (peer, StreamMuxerBox::new(muxer)))
+                })
                 .with_behaviour(|key| Behaviour {
                     relay: relay::Behaviour::new(key.public().to_peer_id(), Default::default()),
                     ping: ping::Behaviour::new(ping::Config::new()),

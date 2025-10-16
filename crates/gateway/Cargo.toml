@@ -13,6 +13,7 @@ futures-util.workspace = true
 hypha-config.workspace = true
 hypha-network.workspace = true
 hypha-messages.workspace = true
+hypha-telemetry.workspace = true
 libp2p.workspace = true
 miette.workspace = true
 serde.workspace = true

@@ -18,6 +18,7 @@ use hypha_network::{
     dial::DialInterface, external_address::ExternalAddressInterface, kad::KademliaInterface,
     listen::ListenInterface, request_response::RequestResponseInterfaceExt, swarm::SwarmDriver,
 };
+use hypha_telemetry as telemetry;
 use hypha_worker::{
     arbiter::Arbiter, config::Config, connector::Connector, job_manager::JobManager,
     lease_manager::ResourceLeaseManager, network::Network,
@@ -28,7 +29,9 @@ use miette::{IntoDiagnostic, Result};
 use serde::{Deserialize, Serialize};
 use tokio::signal::unix::{SignalKind, signal};
 use tokio_util::sync::CancellationToken;
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::{
+    EnvFilter, Layer, Registry, layer::SubscriberExt, util::SubscriberInitExt,
+};
 
 #[derive(Clone, Debug, ValueEnum, Serialize, Deserialize)]
 enum Role {
@@ -133,10 +136,45 @@ enum Commands {
 }
 
 async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
+    let tracing = telemetry::tracing(
+        config.telemetry_endpoint(),
+        config.telemetry_headers(),
+        config.telemetry_protocol(),
+        config.telemetry_attributes(),
+        config.telemetry_sampler(),
+        config.telemetry_sample_ratio(),
+    )
+    .into_diagnostic()?;
+
+    let logging = telemetry::logging(
+        config.telemetry_endpoint(),
+        config.telemetry_headers(),
+        config.telemetry_protocol(),
+        config.telemetry_attributes(),
+    )
+    .into_diagnostic()?;
+
+    let metrics = telemetry::metrics(
+        config.telemetry_endpoint(),
+        config.telemetry_headers(),
+        config.telemetry_protocol(),
+        config.telemetry_attributes(),
+        std::time::Duration::from_secs(1),
+    )
+    .into_diagnostic()?;
+
+    telemetry::metrics::global::set_provider(metrics.provider());
+
+    Registry::default()
+        .with(tracing_subscriber::fmt::layer().with_filter(EnvFilter::from_default_env()))
+        .with(tracing.layer())
+        .with(logging.layer())
+        .init();
+
     // NOTE: Healthy (readiness) is defined as:
     // - listening on all addresses
     // - DHT bootstrap complete
-    let healthy = Arc::new(AtomicBool::new(false));
+    let ready = Arc::new(AtomicBool::new(false));
 
     // Load certificates and private key
     let (network, network_driver) = Network::create(
@@ -147,34 +185,23 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
     )
     .into_diagnostic()?;
 
-    let network_handle = tokio::spawn(network_driver.run());
+    // NOTE: Spawn network driver and keep handle for coordinated shutdown.
+    let mut driver_task = tokio::spawn(network_driver.run());
 
     // Register health handler responding with readiness (listen + DHT bootstrap)
-    {
-        let ready = healthy.clone();
-        let network_clone = network.clone();
-        tokio::spawn(async move {
-            let builder = network_clone.on::<health::Codec, _>(|_: &health::Request| true);
-            match builder.into_stream().await {
-                Ok(stream) => {
-                    stream
-                        .respond_with_concurrent(None, move |(_, _req)| {
-                            let ready = ready.clone();
-                            async move {
-                                let ready_flag = ready.load(Ordering::Relaxed);
-                                health::Response {
-                                    healthy: ready_flag,
-                                }
-                            }
-                        })
-                        .await;
-                }
-                Err(e) => {
-                    tracing::error!(error=%e, "failed to register health handler");
-                }
+    let ready_clone = ready.clone();
+    let health_handle = network
+        .on::<health::Codec, _>(|_: &health::Request| true)
+        .into_stream()
+        .await
+        .into_diagnostic()?
+        .respond_with_concurrent(None, move |(_, _)| {
+            let ready = ready_clone.clone();
+            async move {
+                let flag = ready.load(Ordering::Relaxed);
+                health::Response { healthy: flag }
             }
         });
-    }
 
     join_all(
         config
@@ -257,7 +284,7 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
     network.wait_for_bootstrap().await.into_diagnostic()?;
 
     // NOTE: Mark worker as ready only after listening + bootstrap complete.
-    healthy.store(true, Ordering::Relaxed);
+    ready.store(true, Ordering::Relaxed);
 
     let token = CancellationToken::new();
 
@@ -294,25 +321,36 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
         // If any of them terminate on their own, it must be due to an error.
         // We warn about that, then shut down gracefully.
         // TODO: Log errors if futures return one.
-        _ = network_handle => {
-            tracing::warn!("Network driver error, shutting down");
+        _ = &mut driver_task => {
+            tracing::warn!("Network driver terminated, shutting down");
         }
+        _ = health_handle => {
+            tracing::info!("Health handler terminated, shutting down");
+        }
+
     }
 
+    // NOTE: Graceful shutdown sequence:
+    //
+    // 1. Signal the shutdown and wait for the arbiter to complete.
     token.cancel();
-
-    // Wait for the arbiter to shut down gracefully.
     let _ = arbiter_handle.await;
+    // 2. Stop network interfaces and ensure the driver is completed before telemetry shutdown.
+    drop(network);
+    if !driver_task.is_finished() {
+        driver_task.abort();
+    }
+    let _ = driver_task.await;
+    // 3. Flush any remaining telemetry and shutdown providers, do not log anything after this point
+    metrics.shutdown().into_diagnostic()?;
+    tracing.shutdown().into_diagnostic()?;
+    logging.shutdown().into_diagnostic()?;
 
     Ok(())
 }
 
 #[tokio::main]
 async fn main() -> miette::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
-        .init();
-
     let cli = Cli::parse();
     match &cli.command {
         Commands::Init { output } => {
@@ -365,7 +403,8 @@ async fn main() -> miette::Result<()> {
             let config: ConfigWithMetadata<Config> = builder()
                 .with_provider(Toml::file(config_file))
                 .with_provider(Env::prefixed("HYPHA_"))
-                .with_provider(Serialized::defaults(&args))
+                .with_provider(Env::prefixed("OTEL_"))
+                .with_provider(Serialized::defaults(args))
                 .build()?;
 
             run(config).await

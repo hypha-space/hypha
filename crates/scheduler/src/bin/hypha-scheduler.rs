@@ -19,10 +19,13 @@ use hypha_scheduler::{
     config::Config,
     network::Network,
 };
+use hypha_telemetry as telemetry;
 use libp2p::{Multiaddr, PeerId, multiaddr::Protocol};
 use miette::{IntoDiagnostic, Result};
 use serde::Serialize;
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::{
+    EnvFilter, Layer, Registry, layer::SubscriberExt, util::SubscriberInitExt,
+};
 
 #[derive(Debug, Parser, Serialize)]
 #[command(
@@ -109,6 +112,41 @@ enum Commands {
 }
 
 async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
+    let tracing = telemetry::tracing(
+        config.telemetry_endpoint(),
+        config.telemetry_headers(),
+        config.telemetry_protocol(),
+        config.telemetry_attributes(),
+        config.telemetry_sampler(),
+        config.telemetry_sample_ratio(),
+    )
+    .into_diagnostic()?;
+
+    let logging = telemetry::logging(
+        config.telemetry_endpoint(),
+        config.telemetry_headers(),
+        config.telemetry_protocol(),
+        config.telemetry_attributes(),
+    )
+    .into_diagnostic()?;
+
+    let metrics = telemetry::metrics(
+        config.telemetry_endpoint(),
+        config.telemetry_headers(),
+        config.telemetry_protocol(),
+        config.telemetry_attributes(),
+        std::time::Duration::from_secs(1),
+    )
+    .into_diagnostic()?;
+
+    telemetry::metrics::global::set_provider(metrics.provider());
+
+    Registry::default()
+        .with(tracing_subscriber::fmt::layer().with_filter(EnvFilter::from_default_env()))
+        .with(tracing.layer())
+        .with(logging.layer())
+        .init();
+
     let cert_chain = config.load_cert_chain()?;
     let private_key = config.load_key()?;
     let ca_certs = config.load_trust_chain()?;
@@ -116,7 +154,8 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
 
     let (network, network_driver) =
         Network::create(cert_chain, private_key, ca_certs, crls).into_diagnostic()?;
-    tokio::spawn(network_driver.run());
+    // NOTE: Spawn network driver and keep handle for graceful shutdown.
+    let mut driver_task = tokio::spawn(network_driver.run());
 
     join_all(
         config
@@ -314,7 +353,29 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
         tracing::warn!("Insufficient workers allocated for diloco training");
     }
 
-    let _ = tokio::signal::ctrl_c().await;
+    // Wait for Ctrl-C or driver termination.
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {
+            tracing::info!("Received SIGINT, shutting down");
+        }
+        _ = &mut driver_task => {
+            tracing::warn!("Network driver terminated, shutting down");
+        }
+    }
+
+    // NOTE: Graceful shutdown sequence:
+    //
+    // 1. Stop network interfaces and ensure the driver is completed before telemetry shutdown.
+    drop(network);
+    if !driver_task.is_finished() {
+        driver_task.abort();
+    }
+    let _ = driver_task.await;
+    // 2. Flush any remaining telemetry and shutdown providers, do not log anything after this point
+    metrics.shutdown().into_diagnostic()?;
+    tracing.shutdown().into_diagnostic()?;
+    logging.shutdown().into_diagnostic()?;
+
     Ok(())
 }
 
@@ -365,10 +426,6 @@ fn get_executor_with_dataset(
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
-        .init();
-
     let cli = Cli::parse();
     match &cli.command {
         Commands::Init { output } => {
@@ -419,7 +476,8 @@ async fn main() -> Result<()> {
         args @ Commands::Run { config_file, .. } => {
             let config: ConfigWithMetadata<Config> = builder()
                 .with_provider(Toml::file(config_file))
-                .with_provider(Env::prefixed("HYPHA_SCHEDULER_"))
+                .with_provider(Env::prefixed("HYPHA_"))
+                .with_provider(Env::prefixed("OTEL_"))
                 .with_provider(Serialized::defaults(args))
                 .build()?;
 
