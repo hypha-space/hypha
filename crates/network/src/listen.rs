@@ -60,8 +60,6 @@ where
         async move {
             match action {
                 ListenAction::Listen(address, tx) => {
-                    tracing::info!(address=%address.clone(),"Listening");
-
                     match self.swarm().listen_on(address.clone()) {
                         Ok(listener_id) => {
                             self.pending_listens().insert(listener_id, tx);
