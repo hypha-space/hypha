@@ -87,9 +87,9 @@ enum Commands {
         #[serde(skip_serializing_if = "Option::is_none")]
         crls_pem: Option<PathBuf>,
 
-        /// Target multiaddr to probe (e.g., /ip4/127.0.0.1/tcp/18081)
-        #[clap(long)]
-        target: String,
+        /// Target multiaddr to probe (e.g., /ip4/127.0.0.1/tcp/8080)
+        #[clap(index = 1)]
+        address: String,
 
         /// Timeout in milliseconds
         #[clap(long, default_value_t = 2000)]
@@ -361,7 +361,7 @@ async fn main() -> miette::Result<()> {
         }
         args @ Commands::Probe {
             config_file,
-            target,
+            address,
             timeout,
             ..
         } => {
@@ -381,7 +381,7 @@ async fn main() -> miette::Result<()> {
 
             tokio::spawn(driver.run());
 
-            let addr: Multiaddr = target.parse().into_diagnostic()?;
+            let addr: Multiaddr = address.parse().into_diagnostic()?;
             let d = std::time::Duration::from_millis(*timeout);
             tokio::time::timeout(d, async move {
                 let peer = network.dial(addr).await.into_diagnostic()?;
