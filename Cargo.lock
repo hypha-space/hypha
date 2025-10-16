@@ -1949,6 +1949,7 @@ dependencies = [
  "hypha-config",
  "hypha-messages",
  "hypha-network",
+ "hypha-telemetry",
  "libp2p",
  "libp2p-stream",
  "miette",

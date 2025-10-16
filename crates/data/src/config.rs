@@ -2,6 +2,11 @@ use std::path::PathBuf;
 
 use documented::{Documented, DocumentedFieldsOpt};
 use hypha_config::TLSConfig;
+use hypha_telemetry::{
+    attributes::Attributes,
+    otlp::{Endpoint, Headers, Protocol},
+    tracing::SamplerKind,
+};
 use libp2p::Multiaddr;
 use serde::{Deserialize, Serialize};
 
@@ -22,6 +27,25 @@ pub struct Config {
     listen_addresses: Vec<Multiaddr>,
     /// Path or file providing a dataset.
     dataset_path: PathBuf,
+    #[serde(alias = "exporter_otlp_endpoint")]
+    /// OTLP Exporter endpoint for telemetry data. If unset, telemetry is disabled.
+    telemetry_endpoint: Option<Endpoint>,
+    #[serde(alias = "resource_attributes")]
+    /// Attributes to be included in telemetry.
+    telemetry_attributes: Option<Attributes>,
+    #[serde(alias = "exporter_otlp_headers")]
+    /// Headers for OTLP telemetry endpoint request used for authentication.
+    telemetry_headers: Option<Headers>,
+    #[serde(alias = "exporter_otlp_protocol")]
+    /// Protocol for OTLP telemetry endpoint request.
+    telemetry_protocol: Option<Protocol>,
+    #[serde(alias = "traces_sampler")]
+    /// Traces sampler: one of "always_on", "always_off", "traceidratio", or "parentbased_traceidratio".
+    telemetry_sampler: Option<SamplerKind>,
+    #[serde(alias = "traces_sampler_arg")]
+    /// For `traceidratio` and `parentbased_traceidratio` samplers: Sampling probability in [0..1],
+    /// e.g. "0.25". Default is 1.0.
+    telemetry_sample_ratio: Option<f64>,
 }
 
 impl Default for Config {
@@ -48,6 +72,12 @@ impl Default for Config {
                     .expect("default address parses into a Multiaddr"),
             ],
             dataset_path: PathBuf::new(),
+            telemetry_attributes: None,
+            telemetry_endpoint: None,
+            telemetry_headers: None,
+            telemetry_protocol: None,
+            telemetry_sampler: None,
+            telemetry_sample_ratio: None,
         }
     }
 }
@@ -64,6 +94,32 @@ impl Config {
     /// Base directory for per-job working directories.
     pub fn dataset_path(&self) -> &PathBuf {
         &self.dataset_path
+    }
+
+    pub fn telemetry_endpoint(&self) -> Option<Endpoint> {
+        self.telemetry_endpoint.clone()
+    }
+
+    pub fn telemetry_headers(&self) -> Option<Headers> {
+        self.telemetry_headers.clone()
+    }
+
+    pub fn telemetry_attributes(&self) -> Option<Attributes> {
+        self.telemetry_attributes.clone()
+    }
+
+    pub fn telemetry_protocol(&self) -> Option<Protocol> {
+        self.telemetry_protocol
+    }
+
+    /// Optional trace sampling ratio (0.0–1.0). If set, used to configure the tracer sampler.
+    pub fn telemetry_sample_ratio(&self) -> Option<f64> {
+        self.telemetry_sample_ratio
+    }
+
+    /// Optional traces sampler name.
+    pub fn telemetry_sampler(&self) -> Option<SamplerKind> {
+        self.telemetry_sampler.clone()
     }
 }
 
