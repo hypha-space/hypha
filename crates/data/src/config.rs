@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use documented::{Documented, DocumentedFieldsOpt};
 use hypha_config::TLSConfig;
+use hypha_network::{IpNet, reserved_cidrs};
 use hypha_telemetry::{
     attributes::Attributes,
     otlp::{Endpoint, Headers, Protocol},
@@ -27,6 +28,10 @@ pub struct Config {
     listen_addresses: Vec<Multiaddr>,
     /// Path or file providing a dataset.
     dataset_path: PathBuf,
+    /// CIDR address filters applied before adding Identify-reported listen addresses to Kademlia.
+    /// Use standard CIDR notation (e.g., "10.0.0.0/8", "fc00::/7").
+    #[serde(default = "reserved_cidrs")]
+    exclude_cidr: Vec<IpNet>,
     #[serde(alias = "exporter_otlp_endpoint")]
     /// OTLP Exporter endpoint for telemetry data. If unset, telemetry is disabled.
     telemetry_endpoint: Option<Endpoint>,
@@ -72,6 +77,7 @@ impl Default for Config {
                     .expect("default address parses into a Multiaddr"),
             ],
             dataset_path: PathBuf::new(),
+            exclude_cidr: reserved_cidrs(),
             telemetry_attributes: None,
             telemetry_endpoint: None,
             telemetry_headers: None,
@@ -94,6 +100,10 @@ impl Config {
     /// Base directory for per-job working directories.
     pub fn dataset_path(&self) -> &PathBuf {
         &self.dataset_path
+    }
+
+    pub fn exclude_cidr(&self) -> &Vec<IpNet> {
+        &self.exclude_cidr
     }
 
     pub fn telemetry_endpoint(&self) -> Option<Endpoint> {

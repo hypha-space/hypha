@@ -17,7 +17,7 @@ use axum::{
     routing::{get, post},
 };
 use futures_util::{StreamExt, stream};
-use hypha_messages::{Fetch, Receive, Reference, SelectionStrategy, Send};
+use hypha_messages::{Fetch, Receive, Reference, Send};
 use hypha_network::request_response::RequestResponseError;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -304,10 +304,8 @@ fn validate_fetch(resource: &Fetch) -> Result<(), Error> {
             }
             Ok(())
         }
-        Reference::Peers { strategy, .. } => match strategy {
-            SelectionStrategy::One => Ok(()),
-            _ => Err(Error::InvalidStatus("unsupported strategy".into())),
-        },
+        Reference::Scheduler { .. } => Ok(()),
+        _ => Err(Error::InvalidStatus("unsupported strategy".into())),
     }
 }
 

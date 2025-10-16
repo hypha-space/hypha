@@ -3,7 +3,7 @@ use std::{collections::HashMap, sync::Arc};
 use futures_util::StreamExt;
 use hypha_messages::{DataSlice, health};
 use hypha_network::{
-    CertificateDer, CertificateRevocationListDer, PrivateKeyDer,
+    CertificateDer, CertificateRevocationListDer, IpNet, PrivateKeyDer,
     dial::{DialAction, DialDriver, DialInterface, PendingDials},
     kad::{KademliaAction, KademliaBehavior, KademliaDriver, KademliaInterface, PendingQueries},
     listen::{ListenAction, ListenDriver, ListenInterface, PendingListens},
@@ -54,6 +54,7 @@ pub struct NetworkDriver {
     health_outbound_requests_map: OutboundRequests<health::Codec>,
     health_outbound_responses_map: OutboundResponses,
     health_request_handlers: HealthRequestHandlers,
+    exclude_cidrs: Vec<IpNet>,
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -70,6 +71,7 @@ impl Network {
         private_key: PrivateKeyDer<'static>,
         ca_certs: Vec<CertificateDer<'static>>,
         crls: Vec<CertificateRevocationListDer<'static>>,
+        exclude_cidrs: Vec<IpNet>,
     ) -> Result<(Self, NetworkDriver), SwarmError> {
         let (action_sender, action_receiver) = mpsc::channel(5);
 
@@ -138,6 +140,7 @@ impl Network {
                 health_outbound_responses_map: HashMap::default(),
                 health_request_handlers: Vec::new(),
                 action_receiver,
+                exclude_cidrs,
             },
         ))
     }
@@ -253,6 +256,10 @@ impl KademliaDriver<Behaviour> for NetworkDriver {
 
     fn pending_bootstrap(&mut self) -> &mut Arc<SetOnce<()>> {
         &mut self.pending_bootstrap
+    }
+
+    fn exclude_cidrs(&self) -> Vec<hypha_network::IpNet> {
+        self.exclude_cidrs.clone()
     }
 }
 

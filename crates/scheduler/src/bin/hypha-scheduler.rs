@@ -7,17 +7,19 @@ use figment::providers::{Env, Format, Serialized, Toml};
 use futures_util::future::join_all;
 use hypha_config::{ConfigWithMetadata, ConfigWithMetadataTLSExt, builder, to_toml};
 use hypha_messages::{
-    DataSlice, DiLoCoConfig, Executor, Fetch, JobSpec, Optimizer, Receive, Requirement, Resources,
+    DataRecord, DiLoCoConfig, Executor, Fetch, JobSpec, Optimizer, Receive, Requirement, Resources,
     SelectionStrategy, Send, WorkerSpec, health,
 };
 use hypha_network::{
-    IpNet, dial::DialInterface, external_address::ExternalAddressInterface, kad::KademliaInterface,
-    listen::ListenInterface, request_response::RequestResponseInterfaceExt, swarm::SwarmDriver,
+    IpNet, cert::identity_from_private_key, dial::DialInterface,
+    external_address::ExternalAddressInterface, kad::KademliaInterface, listen::ListenInterface,
+    request_response::RequestResponseInterfaceExt, swarm::SwarmDriver,
 };
 use hypha_scheduler::{
     allocator::{Allocator, GreedyWorkerAllocator},
     config::Config,
     network::Network,
+    slice_tracker::SliceTracker,
 };
 use hypha_telemetry as telemetry;
 use libp2p::{Multiaddr, PeerId, multiaddr::Protocol};
@@ -158,7 +160,13 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
     let ca_certs = config.load_trust_chain()?;
     let crls = config.load_crls()?;
 
+    let peer_id = identity_from_private_key(&private_key)
+        .expect("a valid private key")
+        .public()
+        .to_peer_id();
+
     let exclude_cidrs = config.exclude_cidr().clone();
+
     let (network, network_driver) =
         Network::create(cert_chain, private_key, ca_certs, crls, exclude_cidrs)
             .into_diagnostic()?;
@@ -306,6 +314,18 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
         }
     };
 
+    let dataset = "imagnet";
+    let (data_provider, dataset_record) = get_data_provider(&network, dataset).await?;
+
+    let slice_tracker = SliceTracker::new(
+        network.clone(),
+        data_provider,
+        dataset.to_string(),
+        dataset_record.num_slices,
+    );
+
+    let tracker_task = tokio::spawn(slice_tracker.run().await.expect("network ready"));
+
     if allocated_workers.len() > 1 && allocated_parameter_servers.len() == 1 {
         let worker_ids = allocated_workers
             .iter()
@@ -315,14 +335,11 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
 
         let model_files = vec!["config.json".to_string(), "model.safetensors".to_string()];
 
-        let dataset = "imagnet";
-        let data_provider = get_data_provider(&network, dataset).await?;
-
         allocated_workers[0]
             .dispatch(JobSpec {
                 executor: get_executor_with_dataset(
                     model_files.clone(),
-                    data_provider,
+                    peer_id,
                     dataset.to_string(),
                     parameter_server.peer_id(),
                 ),
@@ -335,7 +352,7 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
             .dispatch(JobSpec {
                 executor: get_executor_with_dataset(
                     model_files.clone(),
-                    data_provider,
+                    peer_id,
                     dataset.to_string(),
                     parameter_server.peer_id(),
                 ),
@@ -378,6 +395,10 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
         driver_task.abort();
     }
     let _ = driver_task.await;
+    if !tracker_task.is_finished() {
+        tracker_task.abort();
+    }
+    let _ = tracker_task.await;
     // 2. Flush any remaining telemetry and shutdown providers, do not log anything after this point
     metrics.shutdown().into_diagnostic()?;
     tracing.shutdown().into_diagnostic()?;
@@ -388,7 +409,7 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
 
 fn get_executor_with_dataset(
     model_files: Vec<String>,
-    data_provider: PeerId,
+    peer_id: PeerId,
     dataset: String,
     parameter_server: PeerId,
 ) -> Executor {
@@ -401,14 +422,7 @@ fn get_executor_with_dataset(
             Some(token_string.clone()),
             hypha_messages::HFRepoType::Model,
         ),
-        data: Fetch::data_peer(
-            data_provider,
-            DataSlice {
-                dataset,
-                // TODO: determine slice offsets for data-parallel training with the available workers
-                index: 0,
-            },
-        ),
+        data: Fetch::scheduler(peer_id, dataset),
         updates: Receive::peers(vec![parameter_server]),
         results: Send::peers(vec![parameter_server], SelectionStrategy::One),
         config: DiLoCoConfig::VisionClassification {
@@ -434,19 +448,26 @@ fn get_executor_with_dataset(
 }
 
 // Find the data provider for the requested dataset
-async fn get_data_provider(network: &Network, dataset: &str) -> miette::Result<PeerId> {
-    match network.find_provider(dataset).await {
-        Ok(peers) => match peers.into_iter().collect::<Vec<_>>().first() {
-            Some(peer) => Ok(*peer),
-            None => Err(miette::miette!(
-                "No data provider found for dataset \"{}\"",
-                dataset
+async fn get_data_provider(
+    network: &Network,
+    dataset: &str,
+) -> miette::Result<(PeerId, DataRecord)> {
+    let record = network.get(dataset).await.map_err(|e| {
+        miette::miette!("No data provider found for dataset \"{}\": {}", dataset, e)
+    })?;
+
+    match record.publisher {
+        Some(data_provider) => match serde_json::from_slice(&record.value) {
+            Ok(dataset_record) => Ok((data_provider, dataset_record)),
+            Err(e) => Err(miette::miette!(
+                "Failed to parse dataset record for dataset \"{}\": {}",
+                dataset,
+                e
             )),
         },
-        Err(e) => Err(miette::miette!(
-            "Failed to find data provider for dataset \"{}\": {}",
-            dataset,
-            e
+        None => Err(miette::miette!(
+            "No data provider found for dataset \"{}\"",
+            dataset
         )),
     }
 }
