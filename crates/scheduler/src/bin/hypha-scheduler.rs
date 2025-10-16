@@ -442,7 +442,7 @@ async fn main() -> Result<()> {
         } => {
             let config: ConfigWithMetadata<Config> = builder()
                 .with_provider(Toml::file(config_file))
-                .with_provider(Env::prefixed("HYPHA_SCHEDULER_"))
+                .with_provider(Env::prefixed("HYPHA_"))
                 .with_provider(Serialized::from(&args, figment::Profile::Default))
                 .build()?;
 
