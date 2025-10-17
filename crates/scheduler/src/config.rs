@@ -49,6 +49,8 @@ pub struct Config {
     /// For `traceidratio` and `parentbased_traceidratio` samplers: Sampling probability in [0..1],
     /// e.g. "0.25". Default is 1.0.
     telemetry_sample_ratio: Option<f64>,
+    // path to AIM relay server
+    status_bridge: Option<String>,
 }
 
 impl Default for Config {
@@ -84,6 +86,7 @@ impl Default for Config {
             telemetry_protocol: None,
             telemetry_sampler: None,
             telemetry_sample_ratio: None,
+            status_bridge: Some("0.0.0.0:61000".to_string()),
         }
     }
 }
@@ -130,6 +133,10 @@ impl Config {
     /// Optional traces sampler name.
     pub fn telemetry_sampler(&self) -> Option<SamplerKind> {
         self.telemetry_sampler.clone()
+    }
+
+    pub fn status_bridge(&self) -> Option<String> {
+        self.status_bridge.clone()
     }
 }
 

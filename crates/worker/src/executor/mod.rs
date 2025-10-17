@@ -1,5 +1,6 @@
 use std::{future::Future, pin::Pin};
 
+use libp2p::PeerId;
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 
@@ -9,6 +10,7 @@ mod process;
 
 pub use parameter_server::ParameterServerExecutor;
 pub use process::ProcessExecutor;
+use uuid::Uuid;
 
 use crate::executor::parameter_server::TensorOpError;
 
@@ -33,6 +35,8 @@ pub trait JobExecutor {
         &self,
         job: hypha_messages::JobSpec,
         cancel: CancellationToken,
+        job_id: Uuid,
+        scheduler: PeerId,
     ) -> impl Future<Output = Result<impl Execution, Error>> + Send;
 }
 

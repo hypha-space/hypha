@@ -54,14 +54,16 @@ impl Job {
 pub struct JobManager {
     active_jobs: Arc<Mutex<HashMap<Uuid, Job>>>,
     connector: Connector<Network>,
+    network: Network,
     work_dir_base: PathBuf,
 }
 
 impl JobManager {
-    pub fn new(connector: Connector<Network>, work_dir_base: PathBuf) -> Self {
+    pub fn new(connector: Connector<Network>, network: Network, work_dir_base: PathBuf) -> Self {
         Self {
             active_jobs: Arc::new(Mutex::new(HashMap::new())),
             connector,
+            network,
             work_dir_base,
         }
     }
@@ -83,9 +85,14 @@ impl JobManager {
         // NOTE: Spawn job execution based on executor type
         match &spec.executor {
             Executor::DiLoCoTransformer { .. } => {
-                let executor =
-                    ProcessExecutor::new(self.connector.clone(), self.work_dir_base.clone());
-                let execution = executor.execute(spec.clone(), cancel_token.clone()).await?;
+                let executor = ProcessExecutor::new(
+                    self.connector.clone(),
+                    self.network.clone(),
+                    self.work_dir_base.clone(),
+                );
+                let execution = executor
+                    .execute(spec.clone(), cancel_token.clone(), id, scheduler)
+                    .await?;
                 let job = Job {
                     id,
                     lease,
@@ -104,7 +111,9 @@ impl JobManager {
                     self.connector.clone(),
                     self.work_dir_base.clone(),
                 );
-                let execution = executor.execute(spec.clone(), cancel_token.clone()).await?;
+                let execution = executor
+                    .execute(spec.clone(), cancel_token.clone(), id, scheduler)
+                    .await?;
                 let job = Job {
                     id,
                     lease,

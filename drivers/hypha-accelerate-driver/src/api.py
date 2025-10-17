@@ -20,9 +20,13 @@ class Session(AbstractContextManager["Session", None]):
     ) -> None:
         self._client.close()
 
-    def send(self, resource: Any, path: str) -> None:
+    def send_resource(self, resource: Any, path: str) -> None:
         req = {"resource": resource, "path": path}
         resp = self._client.post("http://hypha/resources/send", json=req)
+        resp.raise_for_status()
+
+    def send_status(self, status: dict[str, Any]) -> None:
+        resp = self._client.post("http://hypha/status/send", json=status)
         resp.raise_for_status()
 
     def fetch(self, resource: Any) -> None:
