@@ -19,6 +19,7 @@ tokio.workspace = true
 tokio-stream.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+ipnet = { version = "2", features = ["serde"] }
 
 [dev-dependencies]
 clap.workspace = true

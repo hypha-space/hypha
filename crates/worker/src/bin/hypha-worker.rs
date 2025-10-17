@@ -15,7 +15,7 @@ use futures_util::future::join_all;
 use hypha_config::{ConfigWithMetadata, ConfigWithMetadataTLSExt, builder, to_toml};
 use hypha_messages::health;
 use hypha_network::{
-    dial::DialInterface, external_address::ExternalAddressInterface, kad::KademliaInterface,
+    IpNet, dial::DialInterface, external_address::ExternalAddressInterface, kad::KademliaInterface,
     listen::ListenInterface, request_response::RequestResponseInterfaceExt, swarm::SwarmDriver,
 };
 use hypha_telemetry as telemetry;
@@ -132,6 +132,12 @@ enum Commands {
         #[clap(long("work-dir"))]
         #[serde(skip_serializing_if = "Option::is_none")]
         work_dir: Option<PathBuf>,
+
+        /// CIDR exclusion (repeatable). Overrides config if provided.
+        /// Example: --exclude-cidr 10.0.0.0/8 --exclude-cidr fc00::/7
+        #[clap(long("exclude-cidr"))]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        exclude_cidr: Option<Vec<IpNet>>,
     },
 }
 
@@ -177,11 +183,13 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
     let ready = Arc::new(AtomicBool::new(false));
 
     // Load certificates and private key
+    let exclude_cidrs = config.exclude_cidr().clone();
     let (network, network_driver) = Network::create(
         config.load_cert_chain()?,
         config.load_key()?,
         config.load_trust_chain()?,
         config.load_crls()?,
+        exclude_cidrs,
     )
     .into_diagnostic()?;
 
@@ -371,11 +379,13 @@ async fn main() -> miette::Result<()> {
                 .with_provider(Serialized::defaults(&args))
                 .build()?;
 
+            let exclude_cidrs = config.exclude_cidr().clone();
             let (network, driver) = Network::create(
                 config.load_cert_chain()?,
                 config.load_key()?,
                 config.load_trust_chain()?,
                 config.load_crls()?,
+                exclude_cidrs,
             )
             .into_diagnostic()?;
 
