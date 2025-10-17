@@ -1,44 +1,29 @@
-//! Networking utilities for the scheduler component.
-//!
-//! The scheduler orchestrates workers via libp2p. This module brings together
-//! the networking primitives and drives the underlying swarm.
-
 use std::{collections::HashMap, sync::Arc};
 
-use futures_util::stream::StreamExt;
-use hypha_messages::{api, health};
+use futures_util::StreamExt;
+use hypha_messages::{DataSlice, health};
 use hypha_network::{
     CertificateDer, CertificateRevocationListDer, PrivateKeyDer,
     dial::{DialAction, DialDriver, DialInterface, PendingDials},
-    external_address::{ExternalAddressAction, ExternalAddressDriver, ExternalAddressInterface},
-    gossipsub::{
-        GossipsubAction, GossipsubBehaviour, GossipsubDriver, GossipsubInterface, Subscriptions,
-    },
-    kad::{
-        KademliaAction, KademliaBehavior, KademliaDriver, KademliaInterface, KademliaResult,
-        PendingQueries,
-    },
+    kad::{KademliaAction, KademliaBehavior, KademliaDriver, KademliaInterface, PendingQueries},
     listen::{ListenAction, ListenDriver, ListenInterface, PendingListens},
     request_response::{
         OutboundRequests, OutboundResponses, RequestHandler, RequestResponseAction,
         RequestResponseBehaviour, RequestResponseDriver, RequestResponseError,
         RequestResponseInterface,
     },
-    stream_push::{StreamPushInterface, StreamPushSenderInterface},
+    stream_pull::{StreamPullInterface, StreamPullReceiverInterface},
     swarm::{SwarmDriver, SwarmError},
 };
-use hypha_telemetry::{bandwidth, metrics};
 use libp2p::{
-    PeerId, StreamProtocol, Swarm, SwarmBuilder,
-    core::{muxing::StreamMuxerBox, transport::Transport},
-    dcutr, gossipsub, identify, kad, ping, relay, request_response,
-    swarm::{ConnectionId, DialError, NetworkBehaviour, SwarmEvent},
+    StreamProtocol, Swarm, SwarmBuilder, dcutr, gossipsub, identify, kad, ping, relay,
+    request_response,
+    swarm::{NetworkBehaviour, SwarmEvent},
     tcp, tls, yamux,
 };
 use libp2p_stream as stream;
-use tokio::sync::{SetOnce, mpsc, oneshot};
+use tokio::sync::{SetOnce, mpsc};
 
-type HyphaRequestHandlers = Vec<RequestHandler<api::Codec>>;
 type HealthRequestHandlers = Vec<RequestHandler<health::Codec>>;
 
 #[derive(Clone)]
@@ -56,7 +41,6 @@ pub struct Behaviour {
     stream: stream::Behaviour,
     kademlia: kad::Behaviour<kad::store::MemoryStore>,
     gossipsub: gossipsub::Behaviour,
-    request_response: request_response::Behaviour<api::Codec>,
     health_request_response: request_response::Behaviour<health::Codec>,
 }
 
@@ -66,11 +50,7 @@ pub struct NetworkDriver {
     pending_listen_map: PendingListens,
     pending_queries_map: PendingQueries,
     pending_bootstrap: Arc<SetOnce<()>>,
-    subscriptions: Subscriptions,
     action_receiver: mpsc::Receiver<Action>,
-    outbound_requests_map: OutboundRequests<api::Codec>,
-    outbound_responses_map: OutboundResponses,
-    request_handlers: HyphaRequestHandlers,
     health_outbound_requests_map: OutboundRequests<health::Codec>,
     health_outbound_responses_map: OutboundResponses,
     health_request_handlers: HealthRequestHandlers,
@@ -81,10 +61,7 @@ enum Action {
     Dial(DialAction),
     Listen(ListenAction),
     Kademlia(KademliaAction),
-    Gossipsub(GossipsubAction),
-    RequestResponse(RequestResponseAction<api::Codec>),
     HealthRequestResponse(RequestResponseAction<health::Codec>),
-    ExternalAddress(ExternalAddressAction),
 }
 
 impl Network {
@@ -95,9 +72,7 @@ impl Network {
         crls: Vec<CertificateRevocationListDer<'static>>,
     ) -> Result<(Self, NetworkDriver), SwarmError> {
         let (action_sender, action_receiver) = mpsc::channel(5);
-        let meter = metrics::global::meter();
 
-        // Build libp2p Swarm using the derived identity and mTLS config
         let swarm = SwarmBuilder::with_existing_identity(cert_chain, private_key, ca_certs, crls)
             .with_tokio()
             .with_tcp(
@@ -106,18 +81,13 @@ impl Network {
                 yamux::Config::default,
             )
             .map_err(|_| {
-                SwarmError::TransportConfig("Failed to create TCP transport with mTLS.".to_string())
+                SwarmError::TransportConfig("Failed to create TCP transport.".to_string())
             })?
             .with_quic()
             .with_relay_client(tls::Config::new, yamux::Config::default)
             .map_err(|_| {
                 SwarmError::TransportConfig("Failed to create relay client with mTLS.".to_string())
             })?
-            .map_transport(|t| {
-                // NOTE: Instrument transport bandwidth for metrics collection.
-                bandwidth::Transport::new(t, &meter)
-                    .map(|(peer, muxer), _| (peer, StreamMuxerBox::new(muxer)))
-            })
             .with_behaviour(|key, relay_client| {
                 let gossipsub = gossipsub::Behaviour::new(
                     gossipsub::MessageAuthenticity::Signed(key.clone()),
@@ -133,21 +103,12 @@ impl Network {
                     )),
                     relay_client,
                     dcutr: dcutr::Behaviour::new(key.public().to_peer_id()),
-                    stream: stream::Behaviour::with_relay_policy(
-                        libp2p_stream::ConnectionPolicy::IgnoreRelayed,
-                    ),
+                    stream: stream::Behaviour::new(),
                     kademlia: kad::Behaviour::new(
                         key.public().to_peer_id(),
                         kad::store::MemoryStore::new(key.public().to_peer_id()),
                     ),
                     gossipsub,
-                    request_response: request_response::Behaviour::<api::Codec>::new(
-                        [(
-                            StreamProtocol::new(api::IDENTIFIER),
-                            request_response::ProtocolSupport::Full,
-                        )],
-                        request_response::Config::default(),
-                    ),
                     health_request_response: request_response::Behaviour::<health::Codec>::new(
                         [(
                             StreamProtocol::new(health::IDENTIFIER),
@@ -173,10 +134,6 @@ impl Network {
                 pending_listen_map: HashMap::default(),
                 pending_queries_map: HashMap::default(),
                 pending_bootstrap: Arc::new(SetOnce::new()),
-                subscriptions: HashMap::default(),
-                outbound_requests_map: HashMap::default(),
-                outbound_responses_map: HashMap::default(),
-                request_handlers: Vec::new(),
                 health_outbound_requests_map: HashMap::default(),
                 health_outbound_responses_map: HashMap::default(),
                 health_request_handlers: Vec::new(),
@@ -192,9 +149,12 @@ impl SwarmDriver<Behaviour> for NetworkDriver {
             tokio::select! {
                 event = self.swarm.select_next_some() => {
                     match event {
-                        SwarmEvent::ConnectionEstablished { connection_id, peer_id, endpoint, .. } => {
+                        SwarmEvent::ConnectionEstablished { peer_id, connection_id, endpoint, .. } => {
                             tracing::debug!(peer_id = %peer_id, ?endpoint, "Established new connection");
-                            self.process_connection_established(peer_id, &connection_id,).await;
+                            self.process_connection_established(peer_id, &connection_id).await;
+                        }
+                        SwarmEvent::ConnectionClosed { peer_id, endpoint, .. } => {
+                            tracing::debug!(peer_id = %peer_id, ?endpoint, "Closed connection");
                         }
                         SwarmEvent::OutgoingConnectionError { connection_id, error, .. } => {
                             self.process_connection_error(&connection_id, error).await;
@@ -211,17 +171,11 @@ impl SwarmDriver<Behaviour> for NetworkDriver {
                         SwarmEvent::Behaviour(BehaviourEvent::Kademlia(kad::Event::OutboundQueryProgressed {id,  result, step, ..})) => {
                              self.process_kademlia_query_result(id, result, step).await;
                         }
-                        SwarmEvent::Behaviour(BehaviourEvent::Gossipsub(event)) => {
-                        self.process_gossipsub_event(event).await;
-                        }
-                        SwarmEvent::Behaviour(BehaviourEvent::RequestResponse(event)) => {
-                            <NetworkDriver as RequestResponseDriver<Behaviour, api::Codec>>::process_request_response_event(&mut self, event).await;
+                        SwarmEvent::Behaviour(BehaviourEvent::Dcutr(event)) => {
+                            tracing::debug!("dcutr event: {:?}", event);
                         }
                         SwarmEvent::Behaviour(BehaviourEvent::HealthRequestResponse(event)) => {
                             <NetworkDriver as RequestResponseDriver<Behaviour, health::Codec>>::process_request_response_event(&mut self, event).await;
-                        }
-                        SwarmEvent::Behaviour(BehaviourEvent::Dcutr(event)) => {
-                            tracing::debug!("dcutr event: {:?}", event);
                         }
 
                         _ => {
@@ -231,26 +185,13 @@ impl SwarmDriver<Behaviour> for NetworkDriver {
                 },
                 Some(action) = self.action_receiver.recv() => {
                     match action {
-                        Action::Dial(action) => {
-                            self.process_dial_action(action).await;
-                        }
-                        Action::Listen(action) => {
-                            self.process_listen_action(action).await;
-                        }
-                        Action::Kademlia(action) => {
-                            self.process_kademlia_action(action).await;
-                        }
-                        Action::Gossipsub(action) => {
-                            self.process_gossipsub_action(action).await;
-                        },
-                        Action::RequestResponse(action) =>
-                            <NetworkDriver as RequestResponseDriver<Behaviour, api::Codec>>::process_request_response_action(&mut self, action).await,
+                        Action::Dial(action) => self.process_dial_action(action).await,
+                        Action::Listen(action) => self.process_listen_action(action).await,
+                        Action::Kademlia(action) => self.process_kademlia_action(action).await,
                         Action::HealthRequestResponse(action) =>
                             <NetworkDriver as RequestResponseDriver<Behaviour, health::Codec>>::process_request_response_action(&mut self, action).await,
-                        Action::ExternalAddress(action) =>
-                            self.process_external_address_action(action).await,
                     }
-                },
+                }
                 else => break
             }
         }
@@ -272,9 +213,7 @@ impl DialInterface for Network {
 }
 
 impl DialDriver<Behaviour> for NetworkDriver {
-    fn pending_dials(
-        &mut self,
-    ) -> &mut HashMap<ConnectionId, oneshot::Sender<Result<PeerId, DialError>>> {
+    fn pending_dials(&mut self) -> &mut PendingDials {
         &mut self.pending_dials_map
     }
 }
@@ -293,15 +232,13 @@ impl ListenDriver<Behaviour> for NetworkDriver {
     }
 }
 
-impl ExternalAddressDriver<Behaviour> for NetworkDriver {}
-
-impl StreamPushInterface for Network {
+impl StreamPullInterface for Network {
     fn stream_control(&self) -> stream::Control {
         self.stream_control.clone()
     }
 }
 
-impl StreamPushSenderInterface for Network {}
+impl StreamPullReceiverInterface<DataSlice> for Network {}
 
 impl KademliaBehavior for Behaviour {
     fn kademlia(&mut self) -> &mut kad::Behaviour<kad::store::MemoryStore> {
@@ -310,9 +247,7 @@ impl KademliaBehavior for Behaviour {
 }
 
 impl KademliaDriver<Behaviour> for NetworkDriver {
-    fn pending_queries(
-        &mut self,
-    ) -> &mut HashMap<libp2p::kad::QueryId, mpsc::Sender<KademliaResult>> {
+    fn pending_queries(&mut self) -> &mut PendingQueries {
         &mut self.pending_queries_map
     }
 
@@ -320,69 +255,12 @@ impl KademliaDriver<Behaviour> for NetworkDriver {
         &mut self.pending_bootstrap
     }
 }
+
 impl KademliaInterface for Network {
     async fn send(&self, action: KademliaAction) {
         if let Err(e) = self.action_sender.send(Action::Kademlia(action)).await {
             tracing::error!(?e, "failed to send kademlia action");
         }
-    }
-}
-
-impl GossipsubBehaviour for Behaviour {
-    fn gossipsub(&mut self) -> &mut gossipsub::Behaviour {
-        &mut self.gossipsub
-    }
-}
-
-impl GossipsubDriver<Behaviour> for NetworkDriver {
-    fn subscriptions(&mut self) -> &mut Subscriptions {
-        &mut self.subscriptions
-    }
-}
-
-impl GossipsubInterface for Network {
-    async fn send(&self, action: GossipsubAction) {
-        if let Err(e) = self.action_sender.send(Action::Gossipsub(action)).await {
-            tracing::error!(?e, "failed to send gossipsub action");
-        }
-    }
-}
-
-impl RequestResponseBehaviour<api::Codec> for Behaviour {
-    fn request_response(&mut self) -> &mut libp2p::request_response::Behaviour<api::Codec> {
-        &mut self.request_response
-    }
-}
-
-impl RequestResponseDriver<Behaviour, api::Codec> for NetworkDriver {
-    fn outbound_requests(&mut self) -> &mut OutboundRequests<api::Codec> {
-        &mut self.outbound_requests_map
-    }
-
-    fn outbound_responses(&mut self) -> &mut OutboundResponses {
-        &mut self.outbound_responses_map
-    }
-
-    fn request_handlers(&mut self) -> &mut HyphaRequestHandlers {
-        &mut self.request_handlers
-    }
-}
-
-impl RequestResponseInterface<api::Codec> for Network {
-    async fn send(&self, action: RequestResponseAction<api::Codec>) {
-        self.action_sender
-            .send(Action::RequestResponse(action))
-            .await
-            .expect("network driver is running");
-    }
-
-    fn try_send(
-        &self,
-        action: RequestResponseAction<api::Codec>,
-    ) -> Result<(), RequestResponseError> {
-        self.action_sender
-            .try_send(Action::RequestResponse(action))
-            .map_err(|_| RequestResponseError::Other("Failed to send action".to_string()))
     }
 }
 
@@ -421,17 +299,5 @@ impl RequestResponseInterface<health::Codec> for Network {
         self.action_sender
             .try_send(Action::HealthRequestResponse(action))
             .map_err(|_| RequestResponseError::Other("Failed to send action".to_string()))
-    }
-}
-
-impl ExternalAddressInterface for Network {
-    async fn send(&self, action: ExternalAddressAction) {
-        if let Err(e) = self
-            .action_sender
-            .send(Action::ExternalAddress(action))
-            .await
-        {
-            tracing::error!(?e, "failed to send external address action");
-        }
     }
 }

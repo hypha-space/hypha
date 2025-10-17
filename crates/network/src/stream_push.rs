@@ -13,14 +13,17 @@ use libp2p_stream::{AlreadyRegistered, Control, IncomingStreams, OpenStreamError
 ///
 /// This constant defines the libp2p protocol string used for tensor data streaming
 /// between peers. It follows the libp2p convention of using a path-like identifier.
-const TENSOR_STREAM_PROTOCOL: StreamProtocol = StreamProtocol::new("/hypha-tensor-stream");
+const TENSOR_STREAM_PROTOCOL: StreamProtocol = StreamProtocol::new("/hypha-tensor-stream/push");
 
 /// Base trait for accessing libp2p stream control functionality.
+/// Meant for pushing data from one peer to another.
+/// The sending peer is expected to implement StreamPushSenderInterface,
+/// the receiving peer is expected to implement StreamPushReceiverInterface.
 ///
 /// This trait provides access to the libp2p-stream `Control` object, which
 /// is used to manage custom streaming protocols. It serves as the foundation
 /// for both sending and receiving stream interfaces.
-pub trait StreamInterface {
+pub trait StreamPushInterface {
     /// Returns the stream control handle.
     ///
     /// This provides access to the libp2p-stream control interface for
@@ -33,7 +36,7 @@ pub trait StreamInterface {
 /// This trait extends [`StreamInterface`] to provide functionality for
 /// accepting incoming streams from other peers. It handles the protocol
 /// registration and provides access to the stream of incoming connections.
-pub trait StreamReceiverInterface: StreamInterface {
+pub trait StreamPushReceiverInterface: StreamPushInterface {
     /// Accept incoming streams.
     ///
     /// This method registers the streaming protocol and returns a stream
@@ -48,7 +51,7 @@ pub trait StreamReceiverInterface: StreamInterface {
     ///
     /// Returns [`AlreadyRegistered`] if the protocol has already been
     /// registered with the stream control.
-    fn streams(&self) -> Result<IncomingStreams, AlreadyRegistered> {
+    fn streams_push(&self) -> Result<IncomingStreams, AlreadyRegistered> {
         self.stream_control()
             .accept_with_limit(TENSOR_STREAM_PROTOCOL, Some(8))
     }
@@ -59,7 +62,7 @@ pub trait StreamReceiverInterface: StreamInterface {
 /// This trait extends [`StreamInterface`] to provide functionality for opening
 /// outgoing tensor streams to other peers. It handles the protocol negotiation
 /// and stream establishment.
-pub trait StreamSenderInterface: StreamInterface + Sync {
+pub trait StreamPushSenderInterface: StreamPushInterface + Sync {
     /// Open a tensor stream to a specific peer.
     ///
     /// This method establishes a direct streaming connection to the specified
@@ -74,7 +77,7 @@ pub trait StreamSenderInterface: StreamInterface + Sync {
     ///
     /// * `Ok(Stream)` - A successfully opened stream to the peer
     /// * `Err(OpenStreamError)` - An error occurred during stream establishment
-    fn stream(
+    fn stream_push(
         &self,
         peer_id: PeerId,
     ) -> impl Future<Output = Result<Stream, OpenStreamError>> + Send {
@@ -96,12 +99,12 @@ mod stream_interface_tests {
     mock! {
         Network {}
 
-        impl StreamInterface for Network {
+        impl StreamPushInterface for Network {
             fn stream_control(&self) -> Control;
         }
 
-        impl StreamReceiverInterface for Network {}
-        impl StreamSenderInterface for Network {}
+        impl StreamPushReceiverInterface for Network {}
+        impl StreamPushSenderInterface for Network {}
 
     }
 
@@ -113,10 +116,10 @@ mod stream_interface_tests {
         let mut mock = MockNetwork::new();
         mock.expect_stream_control().return_const(control.clone());
 
-        let stream1 = mock.streams();
+        let stream1 = mock.streams_push();
         assert!(stream1.is_ok());
 
-        let stream2 = mock.streams();
+        let stream2 = mock.streams_push();
         assert!(matches!(stream2, Err(AlreadyRegistered)));
     }
 }
