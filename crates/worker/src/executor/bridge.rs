@@ -17,7 +17,7 @@ use axum::{
     routing::{get, post},
 };
 use futures_util::{StreamExt, stream};
-use hypha_messages::{Fetch, Receive, Reference, Send};
+use hypha_messages::{Fetch, Receive, Reference, SelectionStrategy, Send};
 use hypha_network::request_response::RequestResponseError;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -26,11 +26,7 @@ use tokio::{
     io::{self, AsyncWriteExt},
     net::UnixListener,
 };
-use tokio_util::{
-    compat::{FuturesAsyncReadCompatExt, FuturesAsyncWriteCompatExt},
-    sync::CancellationToken,
-    task::TaskTracker,
-};
+use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use utoipa::OpenApi;
 
 use crate::{
@@ -197,6 +193,8 @@ async fn fetch_resource(
 ) -> Result<Json<Vec<FileResponse>>, Error> {
     validate_fetch(&resource)?;
 
+    tracing::info!("Fetching resource: {:?}", resource);
+
     let dir_rel = "artifacts".to_string();
     let dir_abs = safe_join(&state.work_dir, &dir_rel)?;
     fs::create_dir_all(&dir_abs).await?;
@@ -205,7 +203,7 @@ async fn fetch_resource(
     let mut items = state.connector.fetch(resource).await?;
     let mut idx: usize = 0;
     while let Some(item) = items.next().await.transpose().map_err(Error::Io)? {
-        let (file_name, reader) = derive_name_and_reader(item, idx);
+        let (file_name, mut reader) = derive_name_and_reader(item, idx);
         let rel = format!("{}/{}", dir_rel, file_name);
         let abs = safe_join(&state.work_dir, &rel)?;
         if let Some(parent) = abs.parent() {
@@ -213,7 +211,7 @@ async fn fetch_resource(
         }
 
         let mut file = fs::File::create(&abs).await?;
-        let size = tokio::io::copy(&mut reader.compat(), &mut file).await?;
+        let size = tokio::io::copy(&mut reader, &mut file).await?;
         file.sync_all().await?;
         tracing::info!(size, file = %abs.display(), "Copied resource");
         set_permissions(&abs, Permissions::from_mode(0o600)).await?;
@@ -251,7 +249,7 @@ async fn send_resource(
             let file = fs::File::open(&abs).await.expect("file exists");
             tracing::info!(peer_id = %peer_id, file = %abs.display(), "Sending resource");
             let mut reader = file;
-            let mut writer = item.writer.compat_write();
+            let mut writer = item.writer;
             let sent_bytes = io::copy(&mut reader, &mut writer).await.expect("copy");
             writer.shutdown().await.expect("shutdown");
             tracing::info!(size = sent_bytes, file = %abs.display(), "Sent resource");
@@ -306,7 +304,10 @@ fn validate_fetch(resource: &Fetch) -> Result<(), Error> {
             }
             Ok(())
         }
-        _ => Ok(()),
+        Reference::Peers { strategy, .. } => match strategy {
+            SelectionStrategy::One => Ok(()),
+            _ => Err(Error::InvalidStatus("unsupported strategy".into())),
+        },
     }
 }
 
@@ -345,7 +346,7 @@ async fn receive_subscribe(
         };
         let mut index = 0usize;
         while let Some(item) = incoming.next().await.transpose().ok().flatten() {
-            let (file_name, reader) = derive_name_and_reader(item, index);
+            let (file_name, mut reader) = derive_name_and_reader(item, index);
             let file_rel = format!("{}/{}", dir_rel, file_name);
             let file_abs = match safe_join(&work_dir, &file_rel) {
                 Ok(p) => p,
@@ -360,7 +361,7 @@ async fn receive_subscribe(
                 Ok(f) => f,
                 Err(_) => break,
             };
-            let size = match tokio::io::copy(&mut reader.compat(), &mut file).await {
+            let size = match tokio::io::copy(&mut reader, &mut file).await {
                 Ok(n) => n,
                 Err(_) => break,
             };

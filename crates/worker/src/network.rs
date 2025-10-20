@@ -7,7 +7,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use futures_util::stream::StreamExt;
-use hypha_messages::{api, health};
+use hypha_messages::{DataSlice, api, health};
 use hypha_network::{
     CertificateDer, CertificateRevocationListDer, PrivateKeyDer,
     dial::{DialAction, DialDriver, DialInterface, PendingDials},
@@ -22,7 +22,8 @@ use hypha_network::{
         RequestResponseBehaviour, RequestResponseDriver, RequestResponseError,
         RequestResponseInterface,
     },
-    stream::{StreamInterface, StreamReceiverInterface, StreamSenderInterface},
+    stream_pull::{StreamPullInterface, StreamPullSenderInterface},
+    stream_push::{StreamPushInterface, StreamPushReceiverInterface, StreamPushSenderInterface},
     swarm::{SwarmDriver, SwarmError},
 };
 use hypha_telemetry::{bandwidth, metrics};
@@ -284,15 +285,23 @@ impl ListenDriver<Behaviour> for NetworkDriver {
 
 impl ExternalAddressDriver<Behaviour> for NetworkDriver {}
 
-impl StreamInterface for Network {
+impl StreamPushInterface for Network {
     fn stream_control(&self) -> stream::Control {
         self.stream_control.clone()
     }
 }
 
-impl StreamSenderInterface for Network {}
+impl StreamPushSenderInterface for Network {}
 
-impl StreamReceiverInterface for Network {}
+impl StreamPushReceiverInterface for Network {}
+
+impl StreamPullInterface for Network {
+    fn stream_control(&self) -> stream::Control {
+        self.stream_control.clone()
+    }
+}
+
+impl StreamPullSenderInterface<DataSlice> for Network {}
 
 impl KademliaBehavior for Behaviour {
     fn kademlia(&mut self) -> &mut kad::Behaviour<kad::store::MemoryStore> {
