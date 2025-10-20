@@ -124,12 +124,38 @@ impl JobManager {
 
     /// Cancel a running job
     pub async fn cancel(&mut self, job_id: &Uuid) -> Result<(), JobManagerError> {
-        if let Some(job) = self.active_jobs.lock().await.get(job_id) {
-            let _ = job.cancel().await;
-            Ok(())
-        } else {
-            Err(JobManagerError::TaskNotFound(*job_id))
+        let job = {
+            let mut guard = self.active_jobs.lock().await;
+            guard.remove(job_id)
+        };
+
+        match job {
+            Some(job) => {
+                job.cancel().await?;
+                Ok(())
+            }
+            None => Err(JobManagerError::TaskNotFound(*job_id)),
         }
+    }
+
+    /// List all active job IDs that were dispatched under the provided lease
+    pub async fn find_jobs_by_lease(&self, lease_id: &Uuid) -> Vec<Uuid> {
+        self.active_jobs
+            .lock()
+            .await
+            .values()
+            .filter_map(|job| (job.lease == *lease_id).then_some(job.id))
+            .collect()
+    }
+
+    /// List all active job IDs that were dispatched by the provided scheduler
+    pub async fn find_jobs_by_scheduler(&self, scheduler: &PeerId) -> Vec<Uuid> {
+        self.active_jobs
+            .lock()
+            .await
+            .values()
+            .filter_map(|job| (job.scheduler == *scheduler).then_some(job.id))
+            .collect()
     }
 
     /// Get the status of a job
@@ -147,8 +173,12 @@ impl JobManager {
 
     /// Shutdown the job manager and all executors
     pub async fn shutdown(&mut self) {
-        // Cancel all active jobs
-        for (_, job) in self.active_jobs.lock().await.iter() {
+        let jobs: Vec<Job> = {
+            let mut guard = self.active_jobs.lock().await;
+            guard.drain().map(|(_, job)| job).collect()
+        };
+
+        for job in jobs.iter() {
             let _ = job.cancel().await;
         }
     }

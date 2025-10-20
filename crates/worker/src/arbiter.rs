@@ -84,19 +84,48 @@ where
 
         // Spawn lease pruning job
         let mut lease_manager = self.lease_manager.clone();
+        let mut job_manager = self.job_manager.clone();
         self.tasks.spawn(async move {
             let mut interval = tokio::time::interval(PRUNE_INTERVAL);
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 interval.tick().await;
-                if let Ok(expired) = lease_manager.proceed().await
-                    && !expired.is_empty()
-                {
+                if let Ok(expired) = lease_manager.proceed().await {
+                    if expired.is_empty() {
+                        continue;
+                    }
+
                     tracing::info!(
                         expired = ?expired,
                         "Dropped {} expired leases",
                         expired.len()
                     );
+
+                    for lease in expired {
+                        let lease_id = lease.id;
+                        let job_ids = job_manager.find_jobs_by_lease(&lease_id).await;
+
+                        if job_ids.is_empty() {
+                            continue;
+                        }
+
+                        tracing::info!(
+                            lease_id = %lease_id,
+                            jobs = ?job_ids,
+                            "Cancelling jobs linked to expired lease"
+                        );
+
+                        for job_id in job_ids {
+                            if let Err(error) = job_manager.cancel(&job_id).await {
+                                tracing::error!(
+                                    lease_id = %lease_id,
+                                    job_id = %job_id,
+                                    error = ?error,
+                                    "Failed to cancel job after lease expiry"
+                                );
+                            }
+                        }
+                    }
                 }
             }
         });
