@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use documented::{Documented, DocumentedFieldsOpt};
 use hypha_config::TLSConfig;
+use hypha_network::{IpNet, reserved_cidrs};
 use hypha_telemetry::{
     attributes::Attributes,
     otlp::{Endpoint, Headers, Protocol},
@@ -43,6 +44,10 @@ pub struct Config {
     listen_addresses: Vec<Multiaddr>,
     /// External addresses to advertise. Only list addresses that are guaranteed to be reachable from the internet.
     external_addresses: Vec<Multiaddr>,
+    /// CIDR address filters applied before adding Identify-reported listen addresses to Kademlia.
+    /// Use standard CIDR notation (e.g., "10.0.0.0/8", "fc00::/7"). Defaults to reserved ranges.
+    #[serde(default = "reserved_cidrs")]
+    exclude_cidr: Vec<IpNet>,
     /// Enable listening via relay P2pCircuit through the gateway.
     /// Default is true to ensure inbound connectivity via relays.
     relay_circuit: bool,
@@ -97,6 +102,7 @@ impl Default for Config {
                     .expect("default address parses into a Multiaddr"),
             ],
             external_addresses: vec![],
+            exclude_cidr: reserved_cidrs(),
             // NOTE: Enabled by default to support inbound connectivity via relays
             // when behind NAT or firewall.
             relay_circuit: true,
@@ -136,6 +142,10 @@ impl Config {
 
     pub fn external_addresses(&self) -> &Vec<Multiaddr> {
         &self.external_addresses
+    }
+
+    pub fn exclude_cidr(&self) -> &Vec<IpNet> {
+        &self.exclude_cidr
     }
 
     /// Whether to listen via a relay P2pCircuit through the gateway.

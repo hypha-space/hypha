@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use documented::{Documented, DocumentedFieldsOpt};
 use hypha_config::TLSConfig;
+use hypha_network::{IpNet, reserved_cidrs};
 use hypha_telemetry::{
     attributes::Attributes,
     otlp::{Endpoint, Headers, Protocol},
@@ -44,6 +45,11 @@ pub struct Config {
     /// For `traceidratio` and `parentbased_traceidratio` samplers: Sampling probability in [0..1],
     /// e.g. "0.25". Default is 1.0.
     telemetry_sample_ratio: Option<f64>,
+    /// CIDR address filters applied before adding Identify-reported listen addresses to Kademlia.
+    ///
+    /// Use standard CIDR notation (e.g., "10.0.0.0/8", "fc00::/7"). Defaults to loopback addresses.
+    #[serde(default = "reserved_cidrs")]
+    exclude_cidr: Vec<IpNet>,
 }
 
 impl Default for Config {
@@ -75,6 +81,7 @@ impl Default for Config {
             telemetry_protocol: None,
             telemetry_sampler: None,
             telemetry_sample_ratio: None,
+            exclude_cidr: reserved_cidrs(),
         }
     }
 }
@@ -112,6 +119,10 @@ impl Config {
     /// Optional traces sampler name.
     pub fn telemetry_sampler(&self) -> Option<SamplerKind> {
         self.telemetry_sampler.clone()
+    }
+
+    pub fn exclude_cidr(&self) -> &Vec<IpNet> {
+        &self.exclude_cidr
     }
 }
 

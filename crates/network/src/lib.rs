@@ -46,5 +46,52 @@ pub mod stream_push;
 pub mod swarm;
 pub mod utils;
 
+use std::str::FromStr;
+
+// Re-export CIDR net types
+pub use ipnet::{IpNet, Ipv4Net, Ipv6Net};
 // Re-export commonly used certificate types
 pub use rustls::pki_types::{CertificateDer, CertificateRevocationListDer, PrivateKeyDer};
+
+/// Loopback CIDRs.
+pub fn loopback_cidrs() -> Vec<IpNet> {
+    vec![
+        IpNet::from_str("127.0.0.0/8").expect("valid CIDR"),
+        IpNet::from_str("::1/128").expect("valid CIDR"),
+    ]
+}
+
+/// Private IPv4 CIDRs (RFC1918).
+pub fn private_cidrs() -> Vec<IpNet> {
+    vec![
+        IpNet::from_str("10.0.0.0/8").expect("valid CIDR"),
+        IpNet::from_str("172.16.0.0/12").expect("valid CIDR"),
+        IpNet::from_str("192.168.0.0/16").expect("valid CIDR"),
+    ]
+}
+
+/// link-local CIDRs.
+pub fn link_local_cidrs() -> Vec<IpNet> {
+    vec![
+        IpNet::from_str("169.254.0.0/16").expect("valid CIDR"),
+        IpNet::from_str("fe80::/10").expect("valid CIDR"),
+    ]
+}
+
+/// IPv6 unique local address CIDRs.
+pub fn unique_local_ipv6_cidrs() -> Vec<IpNet> {
+    vec![IpNet::from_str("fc00::/7").expect("valid CIDR")]
+}
+
+/// Rreserved CIDRs that should be filtered in most deployments.
+pub fn reserved_cidrs() -> Vec<IpNet> {
+    [
+        loopback_cidrs(),
+        private_cidrs(),
+        link_local_cidrs(),
+        unique_local_ipv6_cidrs(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
+}

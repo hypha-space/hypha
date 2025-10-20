@@ -2,6 +2,7 @@ use std::{collections::HashMap, time::Duration};
 
 use futures_util::StreamExt;
 use hypha_network::{
+    IpNet,
     dial::*,
     kad::*,
     swarm::{SwarmDriver, SwarmError},
@@ -96,6 +97,10 @@ impl KademliaDriver<TestBehaviour> for TestDriver {
 
     fn pending_bootstrap(&mut self) -> &mut std::sync::Arc<tokio::sync::SetOnce<()>> {
         &mut self.pending_bootstrap
+    }
+
+    fn exclude_cidrs(&self) -> Vec<IpNet> {
+        Vec::new()
     }
 }
 
