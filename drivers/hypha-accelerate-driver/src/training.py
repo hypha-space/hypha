@@ -316,13 +316,14 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR09
                     model.to("cpu")
 
                     save_file(extract_gradients(model.state_dict(), previous_model_path), result_path)
-                    session.send(job_spec["results"], file_name)
+                    session.send_resource(job_spec["results"], file_name)
 
                     # Mark that before the next training epoch we must wait for an update
                     await_update = True
 
-                # session.send_status(job_spec["status"], {"local_epoch": epoch, "loss": loss})
+                session.send_status({"type": "Running", "status": {"round": epoch, "metrics": {"loss": loss}}})
 
+            session.send_status({"type": "Finished"})
             print(f"Finished training of {job_spec['config']['epochs']} epochs", flush=True)
 
 

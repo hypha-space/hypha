@@ -17,8 +17,12 @@ use axum::{
     routing::{get, post},
 };
 use futures_util::{StreamExt, stream};
-use hypha_messages::{Fetch, Receive, Reference, Send};
+use hypha_messages::{
+    Fetch, Receive, Reference, Send,
+    api::{self, Request},
+};
 use hypha_network::request_response::RequestResponseError;
+use libp2p::PeerId;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::{
@@ -28,6 +32,7 @@ use tokio::{
 };
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use utoipa::OpenApi;
+use uuid::Uuid;
 
 use crate::{
     connector::{BoxAsyncRead, Connector, ConnectorError, ReadItem},
@@ -105,6 +110,9 @@ impl IntoResponse for Error {
 struct SockState {
     work_dir: PathBuf,
     connector: Connector<Network>,
+    network: Network,
+    job_id: Uuid,
+    scheduler: PeerId,
 }
 
 pub struct Bridge {
@@ -115,9 +123,12 @@ pub struct Bridge {
 impl Bridge {
     pub async fn try_new<P1, P2>(
         connector: Connector<Network>,
+        network: Network,
         work_dir: P1,
         socket_path: P2,
         cancel: CancellationToken,
+        job_id: Uuid,
+        scheduler: PeerId,
     ) -> std::io::Result<Bridge>
     where
         P1: AsRef<std::path::Path>,
@@ -126,6 +137,9 @@ impl Bridge {
         let state = Arc::new(SockState {
             work_dir: PathBuf::from(work_dir.as_ref()),
             connector,
+            network,
+            job_id,
+            scheduler,
         });
 
         let router = Router::new()
@@ -133,6 +147,7 @@ impl Bridge {
             .route("/resources/fetch", post(fetch_resource))
             .route("/resources/send", post(send_resource))
             .route("/resources/receive", post(receive_subscribe))
+            .route("/status/send", post(send_status))
             .with_state(state);
 
         // This will create a file that we later delete as part of 'wait'.
@@ -393,6 +408,24 @@ async fn receive_subscribe(
             .interval(Duration::from_secs(5))
             .text("keepalive"),
     ))
+}
+
+async fn send_status(
+    State(state): State<Arc<SockState>>,
+    Json(req): Json<hypha_messages::JobStatus>,
+) -> Result<(), Error> {
+    tracing::info!("{:?}", req);
+    let _ = hypha_network::request_response::RequestResponseInterface::<api::Codec>::request(
+        &state.network,
+        state.scheduler,
+        Request::JobStatus(hypha_messages::job_status::Request {
+            job_id: state.job_id,
+            status: req,
+        }),
+    )
+    .await?;
+
+    Ok(())
 }
 
 fn derive_name_and_reader(item: ReadItem, idx: usize) -> (String, BoxAsyncRead) {
