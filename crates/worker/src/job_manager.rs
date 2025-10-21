@@ -1,6 +1,6 @@
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
-use hypha_messages::{Executor, JobSpec, JobStatus};
+use hypha_messages::{Executor, JobSpec};
 use hypha_network::request_response::RequestResponseError;
 use libp2p::PeerId;
 use thiserror::Error;
@@ -146,29 +146,6 @@ impl JobManager {
             .values()
             .filter_map(|job| (job.lease == *lease_id).then_some(job.id))
             .collect()
-    }
-
-    /// List all active job IDs that were dispatched by the provided scheduler
-    pub async fn find_jobs_by_scheduler(&self, scheduler: &PeerId) -> Vec<Uuid> {
-        self.active_jobs
-            .lock()
-            .await
-            .values()
-            .filter_map(|job| (job.scheduler == *scheduler).then_some(job.id))
-            .collect()
-    }
-
-    /// Get the status of a job
-    pub async fn get_status(&self, job_id: &Uuid) -> Result<JobStatus, JobManagerError> {
-        // TODO: Status tracking is not implemented yet for type-erased executions.
-        // Consider extending `Execution` to expose status signals or storing status separately.
-        Err(JobManagerError::TaskNotFound(*job_id))
-    }
-
-    /// Clean up completed or failed jobs
-    pub async fn cleanup_finished_jobs(&mut self) -> Vec<Uuid> {
-        // TODO: Implement cleanup by tracking job completion; currently a no-op.
-        Vec::new()
     }
 
     /// Shutdown the job manager and all executors
