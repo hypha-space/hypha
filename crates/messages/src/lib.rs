@@ -380,14 +380,14 @@ impl AsRef<Reference> for Receive {
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum DiLoCoConfig {
     CausalLm {
-        optimizer: Optimizer,
+        optimizer: Adam,
         epochs: i32,
         batch_size: i32,
         checkpointing: i32,
         scheduler: Option<Scheduler>,
     },
     VisionClassification {
-        optimizer: Optimizer,
+        optimizer: Adam,
         epochs: i32,
         batch_size: i32,
         checkpointing: i32,
@@ -396,7 +396,7 @@ pub enum DiLoCoConfig {
         batches_per_local_epoch: i32,
     },
     Torch {
-        optimizer: Optimizer,
+        optimizer: Adam,
         loss_fn: Loss,
         epochs: i32,
         batch_size: i32,
@@ -423,22 +423,23 @@ pub enum Executor {
     ParameterServer {
         updates: Receive,
         results: Send,
-        optimizer: Optimizer,
+        optimizer: Nesterov,
     },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(tag = "type", rename_all = "kebab-case")]
-pub enum Optimizer {
-    Adam {
-        learning_rate: f64,
-        betas: Option<[f64; 2]>,
-        epsilon: Option<f64>,
-    },
-    Nesterov {
-        learning_rate: f64,
-        momentum: f64,
-    },
+#[serde(rename_all = "kebab-case")]
+pub struct Nesterov {
+    pub learning_rate: f64,
+    pub momentum: f64,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub struct Adam {
+    pub learning_rate: f64,
+    pub betas: Option<[f64; 2]>,
+    pub epsilon: Option<f64>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

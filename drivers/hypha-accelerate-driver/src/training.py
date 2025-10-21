@@ -120,19 +120,15 @@ def get_training_loop(
     raise RuntimeError(f"Model type {config} not supported for training.")
 
 
-def get_optimizer(optimizer: dict[str, Any], parameters: Iterable[torch.Tensor]) -> Optimizer:
-    optimizer_type = optimizer["type"]
-    if optimizer_type == "adam":
-        lr = optimizer["learning_rate"]
-        if optimizer.get("betas") and optimizer.get("epsilon"):
-            return torch.optim.AdamW(parameters, lr=lr, betas=optimizer["betas"], eps=optimizer["epsilon"])
-        if optimizer.get("betas"):
-            return torch.optim.AdamW(parameters, lr=lr, betas=optimizer["betas"])
-        if optimizer.get("epsilon"):
-            return torch.optim.AdamW(parameters, lr=lr, eps=optimizer["epsilon"])
-        return torch.optim.AdamW(parameters, lr=lr)
-    else:
-        raise RuntimeError(f"Optimizer {optimizer_type} doesn\bt exist.")
+def get_adam(optimizer: dict[str, Any], parameters: Iterable[torch.Tensor]) -> Optimizer:
+    lr = optimizer["learning-rate"]
+    if optimizer.get("betas") and optimizer.get("epsilon"):
+        return torch.optim.AdamW(parameters, lr=lr, betas=optimizer["betas"], eps=optimizer["epsilon"])
+    if optimizer.get("betas"):
+        return torch.optim.AdamW(parameters, lr=lr, betas=optimizer["betas"])
+    if optimizer.get("epsilon"):
+        return torch.optim.AdamW(parameters, lr=lr, eps=optimizer["epsilon"])
+    return torch.optim.AdamW(parameters, lr=lr)
 
 
 def get_data_loader(
@@ -235,7 +231,7 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR09
         local_fetch_path = f"{work_dir}/{FETCH_PATH}"
         print(os.listdir(local_fetch_path))
         model = get_model(local_fetch_path, job_spec["config"]["type"])
-        optimizer = get_optimizer(
+        optimizer = get_adam(
             job_spec["config"]["optimizer"],
             model.parameters(),
         )
