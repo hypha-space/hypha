@@ -236,7 +236,7 @@ impl SwarmDriver<Behaviour> for NetworkDriver {
                     match action {
                         Action::Dial(action) => {
                             self.process_dial_action(action).await;
-                        }
+                        },
                         Action::Listen(action) => {
                             self.process_listen_action(action).await;
                         }
@@ -279,6 +279,10 @@ impl DialDriver<Behaviour> for NetworkDriver {
         &mut self,
     ) -> &mut HashMap<ConnectionId, oneshot::Sender<Result<PeerId, DialError>>> {
         &mut self.pending_dials_map
+    }
+
+    fn exclude_cidrs(&self) -> &[IpNet] {
+        &self.exclude_cidrs
     }
 }
 
