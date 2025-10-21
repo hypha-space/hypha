@@ -27,6 +27,7 @@ pub mod api {
         DispatchJob(dispatch_job::Request),
         ParameterPull(parameter_pull::Request),
         ParameterPush(parameter_push::Request),
+        Data(data::Request),
     }
 
     #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -37,6 +38,7 @@ pub mod api {
         DispatchJob(dispatch_job::Response),
         ParameterPull(parameter_pull::Response),
         ParameterPush(parameter_push::Response),
+        Data(data::Response),
     }
 }
 
@@ -223,6 +225,9 @@ pub enum Reference {
         strategy: SelectionStrategy,
         resource: Option<DataSlice>,
     },
+
+    #[serde(rename = "scheduler")]
+    Scheduler { peer: PeerId, dataset: String },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -257,6 +262,13 @@ impl Fetch {
             peers: vec![peer_id],
             strategy: SelectionStrategy::One,
             resource: Some(resource),
+        })
+    }
+
+    pub fn scheduler(peer_id: PeerId, daset: String) -> Self {
+        Self(Reference::Scheduler {
+            peer: peer_id,
+            dataset: daset,
         })
     }
 }
@@ -554,11 +566,34 @@ pub mod parameter_push {
     }
 }
 
+pub mod data {
+    use super::*;
+
+    /// Worker requests data from data server
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct Request {
+        pub dataset: String,
+    }
+
+    /// Data server responds with data or error
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub enum Response {
+        Success { data_provider: PeerId, index: u64 },
+        NotFound,
+        Error(String),
+    }
+}
+
 /// Header for parameter data streams
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParameterStreamHeader {
     pub stream_id: Uuid,
     pub data_size: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DataRecord {
+    pub num_slices: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

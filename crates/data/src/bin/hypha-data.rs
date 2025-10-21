@@ -5,14 +5,14 @@ use figment::providers::{Env, Format, Serialized, Toml};
 use futures_util::{StreamExt, future::join_all};
 use hypha_config::{ConfigWithMetadata, ConfigWithMetadataTLSExt, builder, to_toml};
 use hypha_data::{config::Config, network::Network, tensor_data::serialize_file};
-use hypha_messages::health;
+use hypha_messages::{DataRecord, health};
 use hypha_network::{
     dial::DialInterface, kad::KademliaInterface, listen::ListenInterface,
     request_response::RequestResponseInterfaceExt, stream_pull::StreamPullReceiverInterface,
     swarm::SwarmDriver,
 };
 use hypha_telemetry as telemetry;
-use libp2p::{Multiaddr, multiaddr::Protocol};
+use libp2p::{Multiaddr, kad, multiaddr::Protocol};
 use miette::{IntoDiagnostic, Result};
 use serde::Serialize;
 use tokio::{
@@ -128,9 +128,12 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
     let ca_certs = config.load_trust_chain()?;
     let crls = config.load_crls()?;
 
+    let exclude_cidrs = config.exclude_cidr().clone();
+
     // Load certificates and private key
     let (network, network_driver) =
-        Network::create(cert_chain, private_key, ca_certs, crls).into_diagnostic()?;
+        Network::create(cert_chain, private_key, ca_certs, crls, exclude_cidrs)
+            .into_diagnostic()?;
 
     let network_handle = tokio::spawn(network_driver.run());
 
@@ -221,10 +224,16 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
     }
 
     // Announce our dataset
-    // TODO: We need to announce the number of subsets of this dataset as well.
-    // This is needed for schedulers to figure out which subsets to assign to workers in data-parallel training.
     tracing::info!(dataset_name, "Announcing");
-    let _ = network.provide(dataset_name).await;
+    let _ = network
+        .store(kad::Record::new(
+            kad::RecordKey::new(&dataset_name),
+            serde_json::to_vec(&DataRecord {
+                num_slices: dataset_files.len() as u64,
+            })
+            .map_err(|err| miette::miette!("Failed to serialize dataset record: {}", err))?,
+        ))
+        .await;
 
     let stream_pulls = network.streams_pull().expect("an unregistered pull stream").for_each_concurrent(None, {
         |(peer_id, resource, mut stream)| {
@@ -298,11 +307,13 @@ async fn main() -> miette::Result<()> {
                 .with_provider(Serialized::from(&args, figment::Profile::Default))
                 .build()?;
 
+            let exclude_cidrs = config.exclude_cidr().clone();
             let (network, driver) = Network::create(
                 config.load_cert_chain()?,
                 config.load_key()?,
                 config.load_trust_chain()?,
                 config.load_crls()?,
+                exclude_cidrs,
             )
             .into_diagnostic()?;
             tokio::spawn(driver.run());
