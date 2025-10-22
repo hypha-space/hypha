@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
 use documented::{Documented, DocumentedFieldsOpt};
-use hypha_config::TLSConfig;
-use hypha_network::{IpNet, reserved_cidrs};
+use hypha_config::{ConfigError, ConfigWithMetadata, TLSConfig, ValidatableConfig};
+use hypha_network::{IpNet, find_containing_cidr, reserved_cidrs};
 use hypha_telemetry::{
     attributes::Attributes,
     otlp::{Endpoint, Headers, Protocol},
@@ -85,11 +85,12 @@ impl Default for Config {
             key_pem: PathBuf::from("worker-key.pem"),
             trust_pem: PathBuf::from("worker-trust.pem"),
             crls_pem: None,
+            // NOTE: Placeholder gateway addresses so users must configure real endpoints.
             gateway_addresses: vec![
-                "/ip4/127.0.0.1/tcp/8080"
+                "/ip4/1.2.3.4/tcp/1234"
                     .parse()
                     .expect("default address parses into a Multiaddr"),
-                "/ip4/127.0.0.1/udp/8080/quic-v1"
+                "/ip4/1.2.3.4/udp/1234/quic-v1"
                     .parse()
                     .expect("default address parses into a Multiaddr"),
             ],
@@ -213,5 +214,24 @@ impl TLSConfig for Config {
 
     fn crls_pem_path(&self) -> Option<&std::path::Path> {
         self.crls_pem.as_deref()
+    }
+}
+
+impl ValidatableConfig for Config {
+    fn validate(cfg: &ConfigWithMetadata<Self>) -> std::result::Result<(), ConfigError> {
+        if let Some((address, cidr)) = cfg
+            .gateway_addresses()
+            .iter()
+            .find_map(|addr| find_containing_cidr(addr, cfg.exclude_cidr()).map(|c| (addr, c)))
+        {
+            let metadata = cfg.find_metadata("exclude_cidr");
+            let message = format!("Gateway address `{address}` overlaps excluded CIDR `{cidr}`.");
+
+            return Err(ConfigError::with_metadata(&metadata)(ConfigError::Invalid(
+                message,
+            )));
+        }
+
+        Ok(())
     }
 }

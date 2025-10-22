@@ -270,6 +270,10 @@ impl DialDriver<Behaviour> for NetworkDriver {
     fn pending_dials(&mut self) -> &mut PendingDials {
         &mut self.pending_dials_map
     }
+
+    fn exclude_cidrs(&self) -> &[IpNet] {
+        &self.exclude_cidrs
+    }
 }
 
 impl ListenInterface for Network {

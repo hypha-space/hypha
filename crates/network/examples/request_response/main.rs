@@ -3,6 +3,7 @@ use std::{collections::HashMap, error::Error, fs, path::PathBuf, time::Duration}
 use clap::{Parser, Subcommand};
 use futures_util::StreamExt;
 use hypha_network::{
+    IpNet,
     cert::{load_certs_from_pem, load_crls_from_pem, load_private_key_from_pem},
     dial::{DialAction, DialDriver, DialInterface, PendingDials},
     listen::{ListenAction, ListenDriver, ListenInterface, PendingListens},
@@ -273,6 +274,10 @@ impl RequestResponseDriver<Behaviour, ExampleCodec> for NetworkDriver {
 impl DialDriver<Behaviour> for NetworkDriver {
     fn pending_dials(&mut self) -> &mut PendingDials {
         &mut self.pending_dials
+    }
+
+    fn exclude_cidrs(&self) -> &[IpNet] {
+        &[]
     }
 }
 

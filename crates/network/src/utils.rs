@@ -12,6 +12,19 @@ use libp2p::multiaddr::{Error, Multiaddr, Protocol};
 use pin_project::pin_project;
 use tokio::time::{self, Sleep};
 
+use crate::IpNet;
+
+/// Returns the CIDR containing the first IP protocol in the multiaddr, if any.
+pub fn find_containing_cidr(addr: &Multiaddr, cidrs: &[IpNet]) -> Option<IpNet> {
+    addr.iter()
+        .find_map(|protocol| match protocol {
+            Protocol::Ip4(ip) => Some(std::net::IpAddr::V4(ip)),
+            Protocol::Ip6(ip) => Some(std::net::IpAddr::V6(ip)),
+            _ => None,
+        })
+        .and_then(|ip| cidrs.iter().find(|net| net.contains(&ip)).cloned())
+}
+
 /// Converts a `SocketAddr` to a libp2p `MultiAddr`.
 pub fn multiaddr_from_socketaddr(addr: &SocketAddr) -> Result<Multiaddr, Error> {
     let mut multiaddr = Multiaddr::from(addr.ip());
@@ -130,6 +143,7 @@ impl<S: Stream> Stream for Batched<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::IpNet;
 
     #[test]
     fn test_multiaddr_from_socketaddr_ipv4() {
@@ -157,5 +171,76 @@ mod tests {
         let addr = "[::1]:8080".parse().unwrap();
         let multiaddr = multiaddr_from_socketaddr_quic(&addr).unwrap();
         assert_eq!(multiaddr.to_string(), "/ip6/::1/udp/8080/quic-v1");
+    }
+
+    mod find_containing_cidr {
+        use std::str::FromStr;
+
+        use super::*;
+
+        #[test]
+        fn ip4_in_cidrs() {
+            let cidrs = vec![
+                IpNet::from_str("10.0.0.0/8").unwrap(),
+                IpNet::from_str("127.0.0.0/8").unwrap(),
+                IpNet::from_str("192.168.0.0/16").unwrap(),
+            ];
+
+            assert!(
+                find_containing_cidr(&"/ip4/10.1.2.3/tcp/1".parse().unwrap(), &cidrs).is_some()
+            );
+            assert!(
+                find_containing_cidr(&"/ip4/127.0.0.1/udp/62001/quic-v1".parse().unwrap(), &cidrs)
+                    .is_some()
+            );
+        }
+
+        #[test]
+        fn multiaddr_matches_cidrs_ip4_not() {
+            let cidrs = vec![
+                IpNet::from_str("10.0.0.0/8").unwrap(),
+                IpNet::from_str("127.0.0.0/8").unwrap(),
+                IpNet::from_str("192.168.0.0/16").unwrap(),
+            ];
+
+            assert!(
+                !find_containing_cidr(&"/ip4/8.8.8.8/tcp/1".parse().unwrap(), &cidrs).is_some()
+            );
+        }
+
+        #[test]
+        fn multiaddr_matches_cidrs_ip6() {
+            let cidrs = vec![
+                IpNet::from_str("fc00::/7").unwrap(),
+                IpNet::from_str("2001:4860::/32").unwrap(),
+            ];
+
+            assert!(find_containing_cidr(&"/ip6/fc00::1/tcp/1".parse().unwrap(), &cidrs).is_some());
+        }
+
+        #[test]
+        fn multiaddr_matches_cidrs_ip6_not() {
+            let cidrs = vec![
+                IpNet::from_str("fc00::/7").unwrap(),
+                IpNet::from_str("2001:4860::/32").unwrap(),
+            ];
+
+            assert!(
+                !find_containing_cidr(&"/ip6/2001:db8::1/tcp/1".parse().unwrap(), &cidrs).is_some()
+            );
+        }
+
+        #[test]
+        fn matching_cidr_returns_exact_range() {
+            let cidrs = vec![
+                IpNet::from_str("10.0.0.0/8").unwrap(),
+                IpNet::from_str("192.168.0.0/16").unwrap(),
+            ];
+
+            let matched = find_containing_cidr(&"/ip4/192.168.1.10/tcp/1".parse().unwrap(), &cidrs)
+                .expect("cidr should match");
+
+            assert_eq!(matched, IpNet::from_str("192.168.0.0/16").unwrap());
+        }
     }
 }

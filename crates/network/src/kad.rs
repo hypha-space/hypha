@@ -19,13 +19,12 @@ use libp2p::{
         self, PeerInfo, QueryId,
         store::{self, MemoryStore},
     },
-    multiaddr::Protocol,
     swarm::NetworkBehaviour,
 };
 use tokio::sync::{SetOnce, mpsc};
 use tokio_stream::{StreamExt, wrappers::ReceiverStream};
 
-use crate::swarm::SwarmDriver;
+use crate::{swarm::SwarmDriver, utils::find_containing_cidr};
 
 /// Type alias for tracking pending Kademlia queries.
 ///
@@ -404,7 +403,7 @@ where
                 for addr in info
                     .listen_addrs
                     .into_iter()
-                    .filter(|a| !is_multiaddr_in_cidrs(a, &cidrs))
+                    .filter(|a| find_containing_cidr(a, &cidrs).is_none())
                 {
                     self.swarm()
                         .behaviour_mut()
@@ -736,16 +735,6 @@ pub trait KademliaInterface: Sync {
     }
 }
 
-fn is_multiaddr_in_cidrs(addr: &Multiaddr, cidrs: &[IpNet]) -> bool {
-    addr.iter()
-        .find_map(|protocol| match protocol {
-            Protocol::Ip4(ip) => Some(std::net::IpAddr::V4(ip)),
-            Protocol::Ip6(ip) => Some(std::net::IpAddr::V6(ip)),
-            _ => None,
-        })
-        .is_some_and(|ip| cidrs.iter().any(|net| net.contains(&ip)))
-}
-
 #[cfg(test)]
 mod tests {
     use mockall::mock;
@@ -757,68 +746,6 @@ mod tests {
 
         impl KademliaInterface for TestInterface {
             async fn send(&self, action: KademliaAction);
-        }
-    }
-
-    mod is_multiaddr_in_cidrs {
-        use super::*;
-
-        #[test]
-        fn ip4_in_cidrs() {
-            let cidrs = vec![
-                "10.0.0.0/8".parse().unwrap(),
-                "127.0.0.0/8".parse().unwrap(),
-                "192.168.0.0/16".parse().unwrap(),
-            ];
-
-            assert!(is_multiaddr_in_cidrs(
-                &"/ip4/10.1.2.3/tcp/1".parse().unwrap(),
-                &cidrs
-            ));
-            assert!(is_multiaddr_in_cidrs(
-                &"/ip4/127.0.0.1/udp/62001/quic-v1".parse().unwrap(),
-                &cidrs
-            ));
-        }
-
-        #[test]
-        fn ip4_not_in_cidrs() {
-            let cidrs = vec![
-                "10.0.0.0/8".parse().unwrap(),
-                "127.0.0.0/8".parse().unwrap(),
-                "192.168.0.0/16".parse().unwrap(),
-            ];
-
-            assert!(!is_multiaddr_in_cidrs(
-                &"/ip4/8.8.8.8/tcp/1".parse().unwrap(),
-                &cidrs
-            ));
-        }
-
-        #[test]
-        fn ip6_in_cidrs() {
-            let cidrs = vec![
-                "fc00::/7".parse().unwrap(),
-                "2001:4860::/32".parse().unwrap(),
-            ];
-
-            assert!(is_multiaddr_in_cidrs(
-                &"/ip6/fc00::1/tcp/1".parse().unwrap(),
-                &cidrs
-            ));
-        }
-
-        #[test]
-        fn ip6_not_in_cidrs() {
-            let cidrs = vec![
-                "fc00::/7".parse().unwrap(),
-                "2001:4860::/32".parse().unwrap(),
-            ];
-
-            assert!(!is_multiaddr_in_cidrs(
-                &"/ip6/2001:db8::1/tcp/1".parse().unwrap(),
-                &cidrs
-            ));
         }
     }
 

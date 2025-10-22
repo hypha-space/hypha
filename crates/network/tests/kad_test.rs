@@ -108,6 +108,10 @@ impl DialDriver<TestBehaviour> for TestDriver {
     fn pending_dials(&mut self) -> &mut PendingDials {
         &mut self.pending_dials
     }
+
+    fn exclude_cidrs(&self) -> &[IpNet] {
+        &[]
+    }
 }
 
 #[derive(Clone)]

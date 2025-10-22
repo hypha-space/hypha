@@ -184,6 +184,7 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
 
     // Load certificates and private key
     let exclude_cidrs = config.exclude_cidr().clone();
+
     let (network, network_driver) = Network::create(
         config.load_cert_chain()?,
         config.load_key()?,
@@ -377,11 +378,12 @@ async fn main() -> miette::Result<()> {
             timeout,
             ..
         } => {
-            let config: ConfigWithMetadata<Config> = builder()
+            let config = builder::<Config>()
                 .with_provider(Toml::file(config_file))
                 .with_provider(Env::prefixed("HYPHA_"))
                 .with_provider(Serialized::defaults(&args))
-                .build()?;
+                .build()?
+                .validate()?;
 
             let exclude_cidrs = config.exclude_cidr().clone();
             let (network, driver) = Network::create(
@@ -414,12 +416,13 @@ async fn main() -> miette::Result<()> {
             Ok(())
         }
         args @ Commands::Run { config_file, .. } => {
-            let config: ConfigWithMetadata<Config> = builder()
+            let config = builder::<Config>()
                 .with_provider(Toml::file(config_file))
                 .with_provider(Env::prefixed("HYPHA_"))
                 .with_provider(Env::prefixed("OTEL_"))
                 .with_provider(Serialized::defaults(args))
-                .build()?;
+                .build()?
+                .validate()?;
 
             run(config).await
         }
