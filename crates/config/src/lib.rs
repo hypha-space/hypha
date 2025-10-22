@@ -518,6 +518,7 @@ where
     let mut header = format!("# Config\n# \n# {}\n# \n# Fields:\n", T::DOCS);
     for field in T::FIELD_NAMES {
         if let Ok(docs) = T::get_field_docs(field) {
+            let docs = docs.replace("\n", "\n#     ");
             header.push_str(&format!("# - {field}: {docs}\n"));
         }
     }
