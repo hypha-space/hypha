@@ -102,6 +102,8 @@ impl Network {
                     SwarmError::TransportConfig("Failed to create TCP transport.".to_string())
                 })?
                 .with_quic()
+                .with_dns()
+                .map_err(|_| SwarmError::TransportConfig("Failed to setup DNS".to_string()))?
                 .map_transport(|t| {
                     bandwidth::Transport::new(t, &meter)
                         .map(|(peer, muxer), _| (peer, StreamMuxerBox::new(muxer)))
