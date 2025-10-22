@@ -11,6 +11,8 @@ use hypha_telemetry::{
 use libp2p::Multiaddr;
 use serde::{Deserialize, Serialize};
 
+use crate::scheduler_config::SchedulerConfig;
+
 #[derive(Deserialize, Serialize, Documented, DocumentedFieldsOpt)]
 /// Configure scheduler network settings, security certificates, and runtime parameters.
 pub struct Config {
@@ -56,6 +58,8 @@ pub struct Config {
     telemetry_sample_ratio: Option<f64>,
     // path to AIM relay server
     status_bridge: Option<String>,
+    /// Scheduler configuration.
+    scheduler: SchedulerConfig,
 }
 
 impl Default for Config {
@@ -93,6 +97,7 @@ impl Default for Config {
             telemetry_sampler: None,
             telemetry_sample_ratio: None,
             status_bridge: Some("0.0.0.0:61000".to_string()),
+            scheduler: SchedulerConfig::default(),
         }
     }
 }
@@ -146,6 +151,10 @@ impl Config {
 
     pub fn status_bridge(&self) -> Option<String> {
         self.status_bridge.clone()
+    }
+
+    pub fn scheduler_config(&self) -> &SchedulerConfig {
+        &self.scheduler
     }
 }
 
