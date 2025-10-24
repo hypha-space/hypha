@@ -1,14 +1,14 @@
 use std::pin::Pin;
 
 use futures_util::{Stream, StreamExt, stream::SelectAll};
-use hypha_messages::Status;
+use hypha_messages::progress::Metrics;
 use libp2p::PeerId;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Error)]
-pub enum StatusError {
+pub enum MetricsError {
     #[error("Connection to status receiver lost")]
     ConnectionLost,
     #[error("Error when sending request: {0}")]
@@ -16,9 +16,9 @@ pub enum StatusError {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AimStatus {
+pub struct AimMetrics {
     pub worker_id: PeerId,
-    pub round: u32,
+    pub round: u64,
     pub metric_name: String,
     pub value: f32,
 }
@@ -27,22 +27,22 @@ pub fn with_id<S: Stream>(id: PeerId, stream: S) -> impl Stream<Item = (PeerId, 
     stream.map(move |item| (id, item))
 }
 
-type PeerJobStatus = (PeerId, hypha_messages::JobStatus);
+type PeerMetrics = (PeerId, Metrics);
 
-pub struct StatusBridge
+pub struct MetricsBridge
 where
     PeerId: Send + 'static,
 {
     pub connector: Box<dyn Connector>,
-    streams: SelectAll<Pin<Box<dyn Stream<Item = PeerJobStatus> + Send>>>,
+    streams: SelectAll<Pin<Box<dyn Stream<Item = PeerMetrics> + Send>>>,
 }
 
-impl StatusBridge
+impl MetricsBridge
 where
     PeerId: Send + 'static,
 {
     pub fn new(connector: Box<dyn Connector>) -> Self {
-        StatusBridge {
+        MetricsBridge {
             connector,
             streams: SelectAll::new(),
         }
@@ -50,34 +50,20 @@ where
 
     pub fn register_stream<St>(&mut self, stream: St)
     where
-        St: Stream<Item = PeerJobStatus> + Send + 'static,
+        St: Stream<Item = PeerMetrics> + Send + 'static,
     {
         self.streams.push(Box::pin(stream))
     }
 
-    pub async fn run(mut self, cancel: CancellationToken) -> Result<(), StatusError> {
+    pub async fn run(mut self, cancel: CancellationToken) -> Result<(), MetricsError> {
         while !cancel.is_cancelled() {
             match self.streams.next().await {
-                Some((per_id, job_status)) => {
-                    match job_status {
-                        // Handle messages
-                        hypha_messages::JobStatus::Running { status } => {
-                            tracing::debug!("Forwarding status");
-                            self.connector
-                                .forward_status(per_id, status)
-                                .await
-                                .expect("Status forwarded");
-                        }
-                        hypha_messages::JobStatus::Failed => {
-                            tracing::warn!("Job Failed")
-                        }
-                        hypha_messages::JobStatus::Finished => {
-                            tracing::info!("Job finished")
-                        }
-                        hypha_messages::JobStatus::Unknown => {
-                            tracing::debug!("Unknown status received")
-                        }
-                    }
+                Some((per_id, metrics)) => {
+                    tracing::debug!("Forwarding metric");
+                    self.connector
+                        .forward_metrics(per_id, metrics)
+                        .await
+                        .expect("Status forwarded");
                 }
                 None => {
                     tracing::debug!("None received")
@@ -89,11 +75,11 @@ where
 }
 
 pub trait Connector: Send + Sync {
-    fn forward_status<'a>(
+    fn forward_metrics<'a>(
         &'a self,
         peer_id: PeerId,
-        status: Status,
-    ) -> Pin<Box<dyn Future<Output = Result<(), StatusError>> + Send + 'a>>;
+        metrics: Metrics,
+    ) -> Pin<Box<dyn Future<Output = Result<(), MetricsError>> + Send + 'a>>;
 }
 
 #[derive(Clone)]
@@ -112,11 +98,11 @@ impl Default for NoOpConnector {
 }
 
 impl Connector for NoOpConnector {
-    fn forward_status<'a>(
+    fn forward_metrics<'a>(
         &'a self,
         _peer_id: PeerId,
-        _status: Status,
-    ) -> Pin<Box<dyn Future<Output = Result<(), StatusError>> + Send + 'a>> {
+        _metrics: Metrics,
+    ) -> Pin<Box<dyn Future<Output = Result<(), MetricsError>> + Send + 'a>> {
         Box::pin(async move { Ok(()) })
     }
 }
@@ -138,17 +124,17 @@ impl AimConnector {
 }
 
 impl Connector for AimConnector {
-    fn forward_status<'a>(
+    fn forward_metrics<'a>(
         &'a self,
         peer_id: PeerId,
-        status: Status,
-    ) -> Pin<Box<dyn Future<Output = Result<(), StatusError>> + Send + 'a>> {
+        metrics: Metrics,
+    ) -> Pin<Box<dyn Future<Output = Result<(), MetricsError>> + Send + 'a>> {
         Box::pin(async move {
             let url = format!("http://{}/status", self.connect_string);
-            for metric in status.metrics {
-                let aim_status = AimStatus {
+            for metric in metrics.metrics {
+                let aim_status = AimMetrics {
                     worker_id: peer_id,
-                    round: status.round,
+                    round: metrics.round,
                     metric_name: metric.0,
                     value: metric.1,
                 };

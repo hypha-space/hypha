@@ -1,8 +1,11 @@
 pub mod allocator;
+pub mod batch_scheduler;
 pub mod config;
+pub mod metrics_bridge;
 pub mod network;
 pub mod scheduler_config;
-pub mod slice_tracker;
-pub mod status_bridge;
+pub mod simulation;
+pub mod statistics;
 pub mod task;
+pub mod tracker;
 pub mod worker;

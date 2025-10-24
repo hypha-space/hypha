@@ -78,7 +78,7 @@ impl JobManager {
     ) -> Result<(), JobManagerError> {
         let cancel_token = CancellationToken::new();
         tracing::info!(
-            job_id = %id,
+            task_id = %id,
             "Job dispatched for execution"
         );
 
@@ -109,10 +109,11 @@ impl JobManager {
             Executor::ParameterServer { .. } => {
                 let executor = ParameterServerExecutor::new(
                     self.connector.clone(),
+                    self.network.clone(),
                     self.work_dir_base.clone(),
                 );
                 let execution = executor
-                    .execute(spec.clone(), cancel_token.clone(), id, scheduler)
+                    .execute(spec.clone(), cancel_token.clone(), spec.job_id, scheduler)
                     .await?;
                 let job = Job {
                     id,

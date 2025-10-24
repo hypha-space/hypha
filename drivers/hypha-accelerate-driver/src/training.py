@@ -1,7 +1,8 @@
 import argparse
+import datetime
 import json
 import os
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Iterable, Iterator
 from typing import Any, cast
 
 import numpy as np
@@ -12,8 +13,8 @@ from safetensors import safe_open
 from safetensors.torch import save_file, save_model
 from torch.nn import Module
 from torch.optim import Optimizer
-from torch.optim.lr_scheduler import LRScheduler
-from tqdm import tqdm
+
+# from torch.optim.lr_scheduler import LRScheduler
 from transformers import AutoImageProcessor, AutoModelForCausalLM, AutoModelForImageClassification
 from transformers.optimization import (
     get_constant_schedule,
@@ -55,69 +56,6 @@ def get_preprocessor(preprocessor_file: str, model_type: str) -> Any:
     if model_type == "vision-classification":
         return AutoImageProcessor.from_pretrained(preprocessor_file)  # type: ignore[no-untyped-call]
     raise RuntimeError(f"Pre-Processor for model type {model_type} not found")
-
-
-def get_training_loop(
-    config: dict[str, Any],
-    data_iter: Iterator[dict[str, torch.Tensor]],
-) -> Callable[  # type: ignore[type-arg]
-    [
-        Optimizer,
-        Module,
-        Accelerator,
-        LRScheduler,
-        tqdm,
-    ],
-    tuple[Optimizer, Module, Accelerator, LRScheduler, float],
-]:
-    if config["type"] == "causal-lm" or config["type"] == "vision-classification":
-
-        def transformer_loop(
-            optimizer: Optimizer,
-            model: Module,
-            accelerator: Accelerator,
-            scheduler: LRScheduler,
-            progress_bar: tqdm,  # type: ignore[type-arg]
-        ) -> tuple[Optimizer, Module, Accelerator, LRScheduler, float]:
-            losses = np.zeros(config["batches_per_local_epoch"])
-            for i in range(config["batches_per_local_epoch"]):
-                batch = next(data_iter)
-                optimizer.zero_grad()
-                outputs = model(**batch)
-                loss = outputs["loss"]
-                accelerator.backward(loss)
-                optimizer.step()
-                scheduler.step()
-                losses[i] = loss.detach().cpu().numpy()
-                if accelerator.is_main_process and progress_bar:
-                    progress_bar.update(1)
-            return optimizer, model, accelerator, scheduler, float(np.mean(losses))
-
-        return transformer_loop
-
-    if config["type"] == "torch":
-        loss_fn = get_loss_fn(config["loss_fn"])
-
-        def torch_loop(  # type: ignore[no-untyped-def]
-            optimizer: Optimizer, model: Module, accelerator: Accelerator, scheduler: LRScheduler, progress_bar
-        ) -> tuple[Optimizer, Module, Accelerator, LRScheduler, float]:
-            losses = np.zeros(config["batches_per_local_epoch"])
-            for i in range(config["batches_per_local_epoch"]):
-                inputs, targets = next(data_iter)
-                optimizer.zero_grad()
-                outputs = model(inputs, targets)
-                loss = loss_fn(outputs, targets)
-                accelerator.backward(loss)
-                optimizer.step()
-                scheduler.step()
-                losses[i] = loss.detach().cpu().numpy()
-                if accelerator.is_main_process and progress_bar:
-                    progress_bar.update(1)
-            return optimizer, model, accelerator, scheduler, float(np.mean(losses))
-
-        return torch_loop
-
-    raise RuntimeError(f"Model type {config} not supported for training.")
 
 
 def get_adam(optimizer: dict[str, Any], parameters: Iterable[torch.Tensor]) -> Optimizer:
@@ -211,7 +149,7 @@ def dataset_wrapper(dataset: torch.utils.data.DataLoader) -> Iterator[dict[str, 
     return iter(wrap())
 
 
-def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR0915
+def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR0915, PLR0912
     # Background receiver context that fills a queue with update pointers
     with Session(socket_path) as session:
         job_spec = json.loads(job_json)
@@ -235,6 +173,7 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR09
             job_spec["config"]["optimizer"],
             model.parameters(),
         )
+        epoch_counter = 0
 
         if not job_spec["config"]["scheduler"] or not job_spec["config"]["scheduler"]["type"]:
             scheduler = get_constant_schedule(optimizer)
@@ -258,18 +197,14 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR09
 
         model, optimizer, training_dataloader, scheduler = accelerator.prepare(model, optimizer, data_loader, scheduler)
         training_data_iter = dataset_wrapper(training_dataloader)
-        run_epoch = get_training_loop(job_spec["config"], training_data_iter)
 
         # Start receiver immediately, but do not consume until we've sent once
         with session.receive(job_spec["updates"], "incoming") as receiver:
             updates_iter = iter(receiver)
             await_update = False
 
-            for epoch in range(job_spec["config"]["epochs"]):
-                progress_bar = tqdm(
-                    range(job_spec["config"]["batches_per_local_epoch"]),
-                    disable=not accelerator.is_main_process,
-                )
+            while True:
+                start_time = datetime.datetime.now()
 
                 if await_update:
                     print("Waiting for model update", flush=True)
@@ -290,6 +225,10 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR09
                                     save_model(model, previous_model_path)
                                     model = accelerator.prepare(model)
                                     print("Weights updated from", rel_path, flush=True)
+                                    response = session.send_status("update-received")
+                                    if response["type"] == "Done":
+                                        print("Training finished")
+                                        break
                             except Exception as e:
                                 print(f"pointer handling error: {e}")
                     except StopIteration:
@@ -297,16 +236,39 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR09
                     finally:
                         await_update = False
 
-                optimizer, model, accelerator, scheduler, loss = run_epoch(
-                    optimizer, model, accelerator, scheduler, progress_bar
-                )
+                losses = []
+                counter = -1
+                while counter != 0:
+                    batch = next(training_data_iter)
+                    optimizer.zero_grad()
+                    outputs = model(**batch)
+                    loss = outputs if isinstance(outputs, torch.Tensor) else outputs["loss"]
+                    accelerator.backward(loss)
+                    optimizer.step()
+                    scheduler.step()
+                    losses.append(loss.detach().cpu().numpy())
+                    if accelerator.is_main_process:
+                        round_time = start_time - datetime.datetime.now()
+                        response = session.send_status(
+                            {
+                                "status": {
+                                    "batch_size": next(iter(batch.values())).shape[0],
+                                    "round_time": int(round_time.microseconds / 1000),
+                                }
+                            }
+                        )
+                        if response["type"] == "ScheduleUpdate":
+                            counter = response["counter"]
+                        else:
+                            counter -= 1
+                        start_time = datetime.datetime.now()
 
-                if accelerator.is_main_process and epoch % job_spec["config"]["checkpointing"] == 0:
+                if accelerator.is_main_process:
+                    session.send_status("update")
                     # For testing purposes set to global!
-                    file_name = f"{epoch}_local_gradients.pt"
+                    file_name = f"{epoch_counter}_local_gradients.pt"
                     result_path = os.path.join(work_dir, file_name)
                     # Save unwrapped model to avoid accelerator wrappers interfering
-                    #
                     model = accelerator.unwrap_model(model)
                     # All weights need to be on CPU
                     model.to("cpu")
@@ -317,10 +279,10 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR09
                     # Mark that before the next training epoch we must wait for an update
                     await_update = True
 
-                session.send_status({"type": "Running", "status": {"round": epoch, "metrics": {"loss": loss}}})
+                session.send_status({"metrics": {"round": epoch_counter, "metrics": {"loss": float(np.mean(losses))}}})
+                epoch_counter += 1
 
-            session.send_status({"type": "Finished"})
-            print(f"Finished training of {job_spec['config']['epochs']} epochs", flush=True)
+            print(f"Finished training of {epoch_counter - 1} epochs", flush=True)
 
 
 if __name__ == "__main__":
