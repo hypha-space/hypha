@@ -1,21 +1,18 @@
-use std::time::{Duration, SystemTime};
-
-use hypha_messages::{
-    JobSpec, WorkerSpec,
-    api::{self, Request, Response},
-    dispatch_job, job_status, renew_lease,
+use std::{
+    pin::Pin,
+    task::{Context, Poll},
+    time::{Duration, SystemTime},
 };
+
+use futures_util::FutureExt;
+use hypha_messages::{JobSpec, WorkerSpec, api, renew_lease};
 use hypha_network::request_response::{RequestResponseError, RequestResponseInterfaceExt};
 use libp2p::PeerId;
 use thiserror::Error;
-use tokio::{
-    sync::mpsc::{self, Receiver},
-    task::JoinSet,
-    time::sleep,
-};
+use tokio::{task::JoinHandle, time::sleep};
 use uuid::Uuid;
 
-use crate::network::Network;
+use crate::{allocator::AllocatedWorker, network::Network};
 
 #[derive(Debug, Clone)]
 pub struct WorkerInfo {
@@ -66,29 +63,23 @@ pub struct Worker {
     spec: WorkerSpec,
     #[allow(dead_code)]
     price: f64,
-    network: Network,
-    jobs: JoinSet<()>,
+
+    lease_handler: JoinHandle<Result<(), WorkerError>>,
 }
 
 impl Worker {
-    pub(crate) async fn create(
-        lease_id: Uuid,
-        peer_id: PeerId,
-        spec: WorkerSpec,
-        price: f64,
-        network: Network,
-    ) -> Self {
-        let mut jobs = JoinSet::new();
-
-        jobs.spawn({
+    pub async fn create(allocated_worker: AllocatedWorker, network: Network) -> Self {
+        let lease_handler: JoinHandle<Result<(), WorkerError>> = tokio::spawn({
             let network = network.clone();
             async move {
                 loop {
-                    tracing::info!(lease_id =%lease_id, peer_id = %peer_id, "Refreshing lease");
+                    tracing::info!(lease_id = %allocated_worker.lease_id, peer_id = %allocated_worker.peer_id, "Refreshing lease");
                     match network
                         .request::<api::Codec>(
-                            peer_id,
-                            api::Request::RenewLease(renew_lease::Request { id: lease_id }),
+                            allocated_worker.peer_id,
+                            api::Request::RenewLease(renew_lease::Request {
+                                id: allocated_worker.lease_id,
+                            }),
                         )
                         .await
                     {
@@ -98,7 +89,7 @@ impl Worker {
                         })) => {
                             // Handle successful response
 
-                            // TODO: Make the min refresg configurable
+                            // TODO: Make the min refresh configurable
 
                             let duration = timeout
                                 .duration_since(SystemTime::now())
@@ -109,7 +100,7 @@ impl Worker {
                             tracing::info!(
                                 duration = duration.as_millis(),
                                 safe_duration = safe_duration.as_millis(),
-                                lease_id = %lease_id,
+                                lease_id = %allocated_worker.lease_id,
                                 "Lease renewed, renewing in {}ms",
                                 safe_duration.as_millis()
                             );
@@ -118,20 +109,17 @@ impl Worker {
                         }
                         Ok(api::Response::RenewLease(renew_lease::Response::Failed)) => {
                             // Handle failed response
-                            tracing::error!(lease_id = %lease_id, peer_id=%peer_id, "Failed to renew lease");
-                            break;
+                            return Err(WorkerError::LeaseExpired);
                         }
                         Err(error) => {
                             // Handle error
-                            // TODO: Handle Error
-                            tracing::error!("Error renewing lease: {:?}", error);
-                            break;
+                            return Err(WorkerError::NetworkError(error));
                         }
                         _ => {
                             // Handle unexpected response
-                            // TODO: Handle Error
-                            tracing::error!("Unexpected response");
-                            break;
+                            return Err(WorkerError::DispatchFailed(
+                                "Unexpected response".to_string(),
+                            ));
                         }
                     }
                 }
@@ -139,12 +127,11 @@ impl Worker {
         });
 
         Self {
-            lease_id,
-            peer_id,
-            spec,
-            price,
-            network,
-            jobs,
+            lease_id: allocated_worker.lease_id,
+            peer_id: allocated_worker.peer_id,
+            spec: allocated_worker.spec,
+            price: allocated_worker.price,
+            lease_handler,
         }
     }
 
@@ -155,102 +142,20 @@ impl Worker {
     pub fn lease_id(&self) -> Uuid {
         self.lease_id
     }
+}
 
-    pub async fn dispatch(
-        &mut self,
-        job_spec: JobSpec,
-    ) -> Result<Receiver<hypha_messages::JobStatus>, WorkerError> {
-        // NOTE: We dispatch the job to the worker using the DispatchJob request
-        // The worker will acknowledge with success/failure and handle the job execution
-        let id = Uuid::new_v4();
-        let (tx, rx) = mpsc::channel(100);
-        // let bridge = status_bridge.clone();
+impl Future for Worker {
+    type Output = Result<(), WorkerError>;
 
-        // NOTE: Create job status handler for the job
-        self.jobs.spawn(
-            self.network
-                .on::<api::Codec, _>(move |req: &api::Request| {
-                    matches!(
-                        req,
-                        api::Request::JobStatus(
-                        job_status::Request { job_id, .. }
-                    ) if job_id == &id
-                    )
-                })
-                .into_stream()
-                .await
-                .map_err(WorkerError::from)?
-                .respond_with_concurrent(None, move |request| {
-                    let tx = tx.clone();
-                    async move {
-                        if let (peer_id, Request::JobStatus(job_status::Request { status, .. })) =
-                            request
-                        {
-                            // Send response
-                            let _ = tx.send(status.clone()).await;
-                            tracing::info!(
-                                %peer_id,
-                                ?status,
-                                "Received status",
-                            );
-                        }
-                        Response::JobStatus(job_status::Response {})
-                    }
-                }),
-        );
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        self.lease_handler
+            .poll_unpin(cx)
+            .map_err(|_| WorkerError::Disconnected)?
+    }
+}
 
-        // NOTE: Dispatch job status to the worker
-        match self
-            .network
-            .request::<api::Codec>(
-                self.peer_id,
-                api::Request::DispatchJob(dispatch_job::Request { id, spec: job_spec }),
-            )
-            .await
-        {
-            Ok(api::Response::DispatchJob(dispatch_job::Response::Dispatched { id, timeout })) => {
-                tracing::info!(
-                    job_id = %id,
-                    peer_id = %self.peer_id,
-                    timeout = ?timeout,
-                    "Job successfully dispatched to worker"
-                );
-                // TODO: Consider sending this also as a status event along with the updates from the worker
-            }
-            Ok(api::Response::DispatchJob(dispatch_job::Response::Failed)) => {
-                tracing::error!(
-                    job_id = %id,
-                    peer_id = %self.peer_id,
-                    "Worker failed to accept job"
-                );
-
-                return Err(WorkerError::DispatchFailed(
-                    "Worker rejected job".to_string(),
-                ));
-            }
-            Ok(_) => {
-                tracing::error!(
-                    job_id = %id,
-                    peer_id = %self.peer_id,
-                    "Unexpected response type from worker"
-                );
-
-                return Err(WorkerError::DispatchFailed(
-                    "Unexpected response type".to_string(),
-                ));
-            }
-            Err(e) => {
-                tracing::error!(
-                    job_id = %id,
-                    peer_id = %self.peer_id,
-                    error = ?e,
-                    "Network error while dispatching job"
-                );
-
-                return Err(WorkerError::DispatchFailed(format!("Network error: {}", e)));
-            }
-        };
-
-        Ok(rx)
+impl Drop for Worker {
+    fn drop(&mut self) {
+        self.lease_handler.abort();
     }
 }

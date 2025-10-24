@@ -18,7 +18,7 @@ use tokio::{sync::mpsc, time::Sleep};
 use tokio_stream::wrappers::ReceiverStream;
 use uuid::Uuid;
 
-use crate::{network::Network, worker::Worker};
+use crate::network::Network;
 
 const WORKER_TOPIC: &str = "hypha/worker";
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -37,6 +37,14 @@ pub enum AllocatorError {
     LeaseFailed(#[from] hypha_leases::LedgerError),
 }
 
+#[derive(Debug, Clone)]
+pub struct AllocatedWorker {
+    pub lease_id: Uuid,
+    pub peer_id: PeerId,
+    pub spec: WorkerSpec,
+    pub price: f64,
+}
+
 /// Trait for different worker allocation strategies
 pub trait Allocator: Send + Sync {
     /// Request `num` workers matching the given specification offered for no more than the given price
@@ -47,7 +55,7 @@ pub trait Allocator: Send + Sync {
         price: f64,
         deadline: Option<Duration>,
         num: usize,
-    ) -> impl Future<Output = Result<Vec<Worker>, AllocatorError>> + Send;
+    ) -> impl Future<Output = Result<Vec<AllocatedWorker>, AllocatorError>> + Send;
 }
 
 /// Greedy allocator that selects the first worker offering the lowest price
@@ -68,7 +76,7 @@ impl Allocator for GreedyWorkerAllocator {
         bid: f64,
         deadline: Option<Duration>,
         num: usize,
-    ) -> Result<Vec<Worker>, AllocatorError> {
+    ) -> Result<Vec<AllocatedWorker>, AllocatorError> {
         let id = Uuid::new_v4();
         let deadline = deadline.unwrap_or(DEFAULT_TIMEOUT);
 
@@ -137,17 +145,16 @@ impl Allocator for GreedyWorkerAllocator {
 
         match offers {
             Some(offers) if !offers.is_empty() => {
-                // Create workers concurrently for selected offers
-                let futures =
-                    offers.into_iter().map(|(peer_id, offer)| {
-                        let spec = spec.clone();
-                        let network = self.network.clone();
-                        async move {
-                            Worker::create(offer.id, peer_id, spec, offer.price, network).await
-                        }
-                    });
+                let workers = offers
+                    .into_iter()
+                    .map(|(peer_id, offer)| AllocatedWorker {
+                        lease_id: offer.id,
+                        peer_id,
+                        spec: spec.clone(),
+                        price: offer.price,
+                    })
+                    .collect::<Vec<_>>();
 
-                let workers = futures_util::future::join_all(futures).await;
                 Ok(workers)
             }
             _ => Err(AllocatorError::NoOffersReceived),
