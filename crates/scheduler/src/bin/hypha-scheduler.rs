@@ -7,8 +7,7 @@ use figment::providers::{Env, Format, Serialized, Toml};
 use futures_util::future::join_all;
 use hypha_config::{ConfigWithMetadata, ConfigWithMetadataTLSExt, builder, to_toml};
 use hypha_messages::{
-    Adam, DataRecord, DiLoCoConfig, Executor, Fetch, JobSpec, Nesterov, Receive, Requirement,
-    Resources, SelectionStrategy, Send, WorkerSpec, health,
+    DataRecord, Executor, Fetch, JobSpec, Receive, SelectionStrategy, Send, health,
 };
 use hypha_network::{
     IpNet, cert::identity_from_private_key, dial::DialInterface,
@@ -19,6 +18,7 @@ use hypha_scheduler::{
     allocator::{Allocator, GreedyWorkerAllocator},
     config::Config,
     network::Network,
+    scheduler_config::{DiLoCo, SchedulerConfig},
     slice_tracker::SliceTracker,
     status_bridge::{AimConnector, NoOpConnector, StatusBridge, with_id},
 };
@@ -255,6 +255,8 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
 
     let token = CancellationToken::new();
 
+    let SchedulerConfig::DiLoCo(diloco_config) = config.scheduler_config();
+
     // NOTE: Create allocator for resource allocation alongside existing job management
     let allocator = GreedyWorkerAllocator::new(network.clone());
 
@@ -262,19 +264,17 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
 
     // NOTE: Phase 1 - Allocate workers using the new allocator/arbiter protocol
     // First, request worker nodes for job execution
-    let worker_spec = WorkerSpec {
-        requirements: vec![
-            Requirement::Resource(Resources::Gpu { min: 10.0 }),
-            Requirement::Resource(Resources::Cpu { min: 1.0 }),
-            Requirement::Resource(Resources::Memory { min: 1.0 }),
-            Requirement::Driver {
-                kind: "diloco-transformer".into(),
+    let mut allocated_workers = match allocator
+        .request(
+            hypha_messages::WorkerSpec {
+                requirements: diloco_config.resources.worker.clone(),
             },
-        ],
-    };
-
-    // Request two workers
-    let mut allocated_workers = match allocator.request(worker_spec.clone(), 100.0, None, 2).await {
+            100.0,
+            None,
+            diloco_config.resources.num_workers as usize,
+        )
+        .await
+    {
         Ok(allocated_workers) => {
             tracing::info!(
                 num_workers = %allocated_workers.len(),
@@ -289,19 +289,16 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
         }
     };
 
-    let parameter_server_spec = WorkerSpec {
-        requirements: vec![
-            Requirement::Resource(Resources::Cpu { min: 1.0 }),
-            Requirement::Resource(Resources::Memory { min: 1.0 }),
-            Requirement::Driver {
-                kind: "parameter-server".into(),
-            },
-        ],
-    };
-
     // Request multiple workers to increase chances of two distinct peers
     let mut allocated_parameter_servers = match allocator
-        .request(parameter_server_spec.clone(), 100.0, None, 1)
+        .request(
+            hypha_messages::WorkerSpec {
+                requirements: diloco_config.resources.parameter_server.clone(),
+            },
+            100.0,
+            None,
+            1,
+        )
         .await
     {
         Ok(allocated_parameter_servers) => {
@@ -319,33 +316,33 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
         }
     };
 
-    let dataset = "imagnet";
-    let (data_provider, dataset_record) = get_data_provider(&network, dataset).await?;
+    let dataset = diloco_config.dataset.dataset.clone();
+    let (data_provider, dataset_record) = get_data_provider(&network, dataset.as_str()).await?;
 
     let slice_tracker = SliceTracker::new(
         network.clone(),
         data_provider,
-        dataset.to_string(),
+        dataset.clone(),
         dataset_record.num_slices,
     );
 
     let tracker_task = tokio::spawn(slice_tracker.run().await.expect("network ready"));
 
-    let status_handle = if allocated_workers.len() > 1 && allocated_parameter_servers.len() == 1 {
+    let status_handle = if allocated_workers.len() >= diloco_config.resources.num_workers as usize
+        && allocated_parameter_servers.len() == 1
+    {
         let worker_ids = allocated_workers
             .iter()
             .map(|w| w.peer_id())
             .collect::<Vec<_>>();
         let parameter_server = &mut allocated_parameter_servers[0];
 
-        let model_files = vec!["config.json".to_string(), "model.safetensors".to_string()];
-
         let w1_rx = allocated_workers[0]
             .dispatch(JobSpec {
                 executor: get_executor_with_dataset(
-                    model_files.clone(),
+                    diloco_config,
                     peer_id,
-                    dataset.to_string(),
+                    dataset.clone(),
                     parameter_server.peer_id(),
                 ),
             })
@@ -356,9 +353,9 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
         let w2_rx = allocated_workers[1]
             .dispatch(JobSpec {
                 executor: get_executor_with_dataset(
-                    model_files.clone(),
+                    diloco_config,
                     peer_id,
-                    dataset.to_string(),
+                    dataset,
                     parameter_server.peer_id(),
                 ),
             })
@@ -370,10 +367,7 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
                 executor: Executor::ParameterServer {
                     updates: Receive::peers(worker_ids.clone()),
                     results: Send::peers(worker_ids.clone(), SelectionStrategy::All),
-                    optimizer: Nesterov {
-                        learning_rate: 0.7,
-                        momentum: 0.9,
-                    },
+                    optimizer: diloco_config.parameter_server.optimizer.clone(),
                 },
             })
             .await
@@ -442,42 +436,17 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
 }
 
 fn get_executor_with_dataset(
-    model_files: Vec<String>,
+    config: &DiLoCo,
     peer_id: PeerId,
     dataset: String,
     parameter_server: PeerId,
 ) -> Executor {
-    let token_string = "...".to_string();
     Executor::DiLoCoTransformer {
-        model: Fetch::huggingface(
-            "l45k/Resnet50",
-            None,
-            model_files,
-            Some(token_string.clone()),
-            hypha_messages::HFRepoType::Model,
-        ),
+        model: config.model.clone().into(),
         data: Fetch::scheduler(peer_id, dataset),
         updates: Receive::peers(vec![parameter_server]),
         results: Send::peers(vec![parameter_server], SelectionStrategy::One),
-        config: DiLoCoConfig::VisionClassification {
-            optimizer: Adam {
-                learning_rate: 1e-3,
-                betas: None,
-                epsilon: None,
-            },
-            epochs: 4,
-            batch_size: 26,
-            checkpointing: 1,
-            scheduler: None,
-            preprocessor: Some(Fetch::huggingface(
-                "l45k/Resnet50",
-                None,
-                vec!["preprocessor_config.json".to_string()],
-                Some(token_string.clone()),
-                hypha_messages::HFRepoType::Model,
-            )),
-            batches_per_local_epoch: 10,
-        },
+        config: config.worker.clone().into(),
     }
 }
 
