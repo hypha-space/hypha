@@ -20,13 +20,14 @@ use hypha_scheduler::{
     network::Network,
     scheduler_config::{DiLoCo, SchedulerConfig},
     slice_tracker::SliceTracker,
-    status_bridge::{AimConnector, NoOpConnector, StatusBridge, with_id},
+    status_bridge::{AimConnector, NoOpConnector, StatusBridge},
+    task::Task,
+    worker::Worker,
 };
 use hypha_telemetry as telemetry;
 use libp2p::{Multiaddr, PeerId, multiaddr::Protocol};
 use miette::{IntoDiagnostic, Result};
 use serde::Serialize;
-use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::{
     EnvFilter, Layer, Registry, layer::SubscriberExt, util::SubscriberInitExt,
@@ -262,13 +263,19 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
 
     tracing::info!("Starting worker allocation and job creation process");
 
+    let worker_spec = hypha_messages::WorkerSpec {
+        requirements: diloco_config.resources.worker.clone(),
+    };
+
+    let parameter_server_spec = hypha_messages::WorkerSpec {
+        requirements: diloco_config.resources.parameter_server.clone(),
+    };
+
     // NOTE: Phase 1 - Allocate workers using the new allocator/arbiter protocol
     // First, request worker nodes for job execution
-    let mut allocated_workers = match allocator
+    let allocated_workers = match allocator
         .request(
-            hypha_messages::WorkerSpec {
-                requirements: diloco_config.resources.worker.clone(),
-            },
+            worker_spec.clone(),
             100.0,
             None,
             diloco_config.resources.num_workers as usize,
@@ -290,15 +297,8 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
     };
 
     // Request multiple workers to increase chances of two distinct peers
-    let mut allocated_parameter_servers = match allocator
-        .request(
-            hypha_messages::WorkerSpec {
-                requirements: diloco_config.resources.parameter_server.clone(),
-            },
-            100.0,
-            None,
-            1,
-        )
+    let allocated_parameter_servers = match allocator
+        .request(parameter_server_spec.clone(), 100.0, None, 1)
         .await
     {
         Ok(allocated_parameter_servers) => {
@@ -331,70 +331,70 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
     let status_handle = if allocated_workers.len() >= diloco_config.resources.num_workers as usize
         && allocated_parameter_servers.len() == 1
     {
+        let worker1 = Worker::create(allocated_workers[0].clone(), network.clone()).await;
+
+        let worker2 = Worker::create(allocated_workers[1].clone(), network.clone()).await;
+
         let worker_ids = allocated_workers
             .iter()
-            .map(|w| w.peer_id())
+            .map(|w| w.peer_id)
             .collect::<Vec<_>>();
-        let parameter_server = &mut allocated_parameter_servers[0];
 
-        let w1_rx = allocated_workers[0]
-            .dispatch(JobSpec {
+        let parameter_server =
+            Worker::create(allocated_parameter_servers[0].clone(), network.clone()).await;
+
+        let worker_task = Task::try_new(
+            network.clone(),
+            JobSpec {
                 executor: get_executor_with_dataset(
                     diloco_config,
                     peer_id,
                     dataset.clone(),
                     parameter_server.peer_id(),
                 ),
-            })
-            .await
-            .into_diagnostic()?;
+            },
+            &[&worker1, &worker2],
+        )
+        .await
+        .into_diagnostic()?;
 
-        // TODO: use a different dataset here.
-        let w2_rx = allocated_workers[1]
-            .dispatch(JobSpec {
-                executor: get_executor_with_dataset(
-                    diloco_config,
-                    peer_id,
-                    dataset,
-                    parameter_server.peer_id(),
-                ),
-            })
-            .await
-            .into_diagnostic()?;
-
-        let p_rx = parameter_server
-            .dispatch(JobSpec {
+        let parameter_server_task = Task::try_new(
+            network.clone(),
+            JobSpec {
                 executor: Executor::ParameterServer {
                     updates: Receive::peers(worker_ids.clone()),
                     results: Send::peers(worker_ids.clone(), SelectionStrategy::All),
                     optimizer: diloco_config.parameter_server.optimizer.clone(),
                 },
-            })
-            .await
-            .into_diagnostic()?;
+            },
+            &[&parameter_server],
+        )
+        .await
+        .into_diagnostic()?;
 
         let mut status_bridge = match config.status_bridge() {
             Some(value) => StatusBridge::new(Box::new(AimConnector::new(value))),
             None => StatusBridge::new(Box::new(NoOpConnector::new())),
         };
 
-        status_bridge.register_stream(with_id(
-            allocated_workers[0].peer_id(),
-            ReceiverStream::new(w1_rx),
-        ));
-        status_bridge.register_stream(with_id(
-            allocated_workers[1].peer_id(),
-            ReceiverStream::new(w2_rx),
-        ));
-        status_bridge.register_stream(with_id(
-            parameter_server.peer_id(),
-            ReceiverStream::new(p_rx),
-        ));
+        status_bridge.register_stream(worker_task);
+        status_bridge.register_stream(parameter_server_task);
 
         let cancel_token = token.clone();
         tokio::spawn(async move {
-            if let Err(e) = status_bridge.run(cancel_token).await {
-                tracing::error!(error = %e, "Status Bridge failed");
+            tokio::select! {
+                Err(e) = status_bridge.run(cancel_token) => {
+                    tracing::error!(error = %e, "Status bridge failed");
+                }
+                Err(e) = worker1 => {
+                    tracing::error!(error = %e, "Worker 1 failed");
+                },
+                Err(e) = worker2 => {
+                    tracing::error!(error = %e, "Worker 2 failed");
+                }
+                Err(e) = parameter_server => {
+                    tracing::error!(error = %e, "Parameter Server failed");
+                }
             }
         })
     } else {
