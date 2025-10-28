@@ -1,5 +1,6 @@
 pub mod allocator;
 pub mod config;
+pub mod controller;
 pub mod metrics_bridge;
 pub mod network;
 pub mod scheduler_config;

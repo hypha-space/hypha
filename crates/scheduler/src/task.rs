@@ -10,10 +10,7 @@ use libp2p::PeerId;
 use tokio::{sync::mpsc, task::JoinHandle};
 use uuid::Uuid;
 
-use crate::{
-    network::Network,
-    worker::{Worker, WorkerError},
-};
+use crate::{network::Network, worker::WorkerError};
 
 /// A task represents a task as it is being executed by one or multiple nodes.
 /// During its lifetime, it provides a stream of status updates for the task, sent by these nodes.
@@ -27,7 +24,7 @@ impl Task {
     pub async fn try_new(
         network: Network,
         job_spec: JobSpec,
-        workers: &[&Worker],
+        workers: &[PeerId],
     ) -> Result<Self, WorkerError> {
         let (tx, rx) = mpsc::channel(100);
 
@@ -67,13 +64,13 @@ impl Task {
                 }),
         );
 
-        let dispatch_futures = workers.iter().map(|worker| {
+        let dispatch_futures = workers.iter().map(|peer_id| {
             let network = network.clone();
             let job_spec = job_spec.clone();
             async move {
                 match network
                     .request::<api::Codec>(
-                        worker.peer_id(),
+                        *peer_id,
                         api::Request::DispatchJob(dispatch_job::Request {
                             id,
                             spec: job_spec.clone(),

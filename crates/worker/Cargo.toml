@@ -42,12 +42,12 @@ utoipa.workspace = true
 uuid.workspace = true
 
 [build-dependencies]
-indoc.workspace = true
 clap.workspace = true
+clap-markdown = "0.1.5"
 hypha-network.workspace = true
+indoc.workspace = true
 libp2p.workspace = true
 serde.workspace = true
-clap-markdown = "0.1.5"
 
 [dev-dependencies]
 http-body-util.workspace = true

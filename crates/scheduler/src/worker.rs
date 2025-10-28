@@ -59,7 +59,6 @@ pub struct Worker {
     lease_id: Uuid,
     peer_id: PeerId,
     // NOTE: We'll need the spec and price to re-allocate a worker in case of failure.
-    #[allow(dead_code)]
     spec: WorkerSpec,
     #[allow(dead_code)]
     price: f64,
@@ -68,7 +67,23 @@ pub struct Worker {
 }
 
 impl Worker {
-    pub async fn create(
+    pub fn new(
+        lease_id: Uuid,
+        peer_id: PeerId,
+        spec: WorkerSpec,
+        price: f64,
+        lease_handler: JoinHandle<Result<(), WorkerError>>,
+    ) -> Self {
+        Self {
+            lease_id,
+            peer_id,
+            spec,
+            price,
+            lease_handler,
+        }
+    }
+
+    pub fn create(
         lease_id: Uuid,
         peer_id: PeerId,
         spec: WorkerSpec,
@@ -130,13 +145,7 @@ impl Worker {
             }
         });
 
-        Self {
-            lease_id,
-            peer_id,
-            spec,
-            price,
-            lease_handler,
-        }
+        Self::new(lease_id, peer_id, spec, price, lease_handler)
     }
 
     pub fn peer_id(&self) -> PeerId {
@@ -145,6 +154,10 @@ impl Worker {
 
     pub fn lease_id(&self) -> Uuid {
         self.lease_id
+    }
+
+    pub fn spec(&self) -> &WorkerSpec {
+        &self.spec
     }
 }
 

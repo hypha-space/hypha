@@ -5,7 +5,7 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use futures_util::{Stream, StreamExt, future::join_all};
+use futures_util::{Stream, StreamExt};
 use hypha_messages::{
     WorkerSpec, api, request_worker,
     worker_offer::{self, Request as WorkerOfferRequest},
@@ -139,15 +139,19 @@ impl Allocator for GreedyWorkerAllocator {
             Some(offers) if !offers.is_empty() => {
                 // While the worker instances created here are themselves futures, it's the caller's
                 // responsibility to await them.
-                #[allow(clippy::async_yields_async)]
-                let workers = join_all(offers.into_iter().map(|(peer_id, offer)| {
-                    let spec = spec.clone();
-                    async move {
-                        Worker::create(offer.id, peer_id, spec, offer.price, self.network.clone())
-                            .await
-                    }
-                }))
-                .await;
+                //#[allow(clippy::async_yields_async)]
+                let workers = offers
+                    .into_iter()
+                    .map(|(peer_id, offer)| {
+                        Worker::create(
+                            offer.id,
+                            peer_id,
+                            spec.clone(),
+                            offer.price,
+                            self.network.clone(),
+                        )
+                    })
+                    .collect::<Vec<_>>();
 
                 Ok(workers)
             }

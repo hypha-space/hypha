@@ -12,8 +12,8 @@ documented.workspace = true
 figment.workspace = true
 futures-util.workspace = true
 hypha-config.workspace = true
-hypha-network.workspace = true
 hypha-messages.workspace = true
+hypha-network.workspace = true
 hypha-telemetry.workspace = true
 indoc.workspace = true
 libp2p.workspace = true
@@ -25,8 +25,8 @@ tracing-subscriber.workspace = true
 
 [build-dependencies]
 clap.workspace = true
+clap-markdown = "0.1.5"
 hypha-network.workspace = true
 indoc.workspace = true
 libp2p.workspace = true
 serde.workspace = true
-clap-markdown = "0.1.5"
