@@ -7,7 +7,9 @@ use figment::providers::{Env, Format, Serialized, Toml};
 use futures_util::future::{join_all, select_all};
 use hypha_config::{ConfigWithMetadata, ConfigWithMetadataTLSExt, builder, to_toml};
 use hypha_messages::{
-    DataRecord, Executor, Fetch, JobSpec, Receive, SelectionStrategy, Send, health,
+    AggregateExecutorConfig, AggregateExecutorDescriptor, DataRecord, Fetch, JobSpec, Receive,
+    Requirement, SelectionStrategy, Send, TrainExecutorConfig, TrainExecutorDescriptor, WorkerSpec,
+    health,
 };
 use hypha_network::{
     IpNet, cert::identity_from_private_key, dial::DialInterface,
@@ -20,7 +22,7 @@ use hypha_scheduler::{
     config::Config,
     metrics_bridge::{AimConnector, MetricsBridge, NoOpConnector},
     network::Network,
-    scheduler_config::{DiLoCo, SchedulerConfig, WorkerConfig},
+    scheduler_config::Job as SchedulerJob,
     simulation::BasicSimulation,
     statistics::RunningMean,
     task::Task,
@@ -37,6 +39,9 @@ use tracing_subscriber::{
     EnvFilter, Layer, Registry, layer::SubscriberExt, util::SubscriberInitExt,
 };
 use uuid::Uuid;
+
+const TRAIN_EXECUTOR_NAME: &str = "diloco-transformer";
+const PARAMETER_SERVER_EXECUTOR_NAME: &str = "parameter-server";
 
 #[derive(Debug, Parser, Serialize)]
 #[command(
@@ -261,19 +266,29 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
 
     let token = CancellationToken::new();
 
-    let SchedulerConfig::DiLoCo(diloco_config) = config.scheduler_config();
+    let SchedulerJob::Diloco(diloco_config) = &config.scheduler_config().job;
 
     // NOTE: Create allocator for resource allocation alongside existing job management
     let allocator = GreedyWorkerAllocator::new(network.clone());
 
     tracing::info!("Starting worker allocation and job creation process");
 
-    let worker_spec = hypha_messages::WorkerSpec {
-        requirements: diloco_config.resources.worker.clone(),
+    let worker_spec = WorkerSpec {
+        requirements: vec![Requirement::Executor(
+            TrainExecutorDescriptor::new(TRAIN_EXECUTOR_NAME).into(),
+        )]
+        .into_iter()
+        .chain(diloco_config.resources.worker.clone())
+        .collect(),
     };
 
-    let parameter_server_spec = hypha_messages::WorkerSpec {
-        requirements: diloco_config.resources.parameter_server.clone(),
+    let parameter_server_spec = WorkerSpec {
+        requirements: vec![Requirement::Executor(
+            AggregateExecutorDescriptor::new(PARAMETER_SERVER_EXECUTOR_NAME).into(),
+        )]
+        .into_iter()
+        .chain(diloco_config.resources.parameter_server.clone())
+        .collect(),
     };
 
     // NOTE: Phase 1 - Allocate workers using the new allocator/arbiter protocol
@@ -380,29 +395,46 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
             network.clone(),
             JobSpec {
                 job_id,
-                executor: get_executor_with_dataset(
-                    diloco_config,
-                    peer_id,
-                    dataset.clone(),
-                    parameter_server.peer_id(),
-                    batch_sizes[0],
-                ),
+                executor: TrainExecutorDescriptor::new(TRAIN_EXECUTOR_NAME)
+                    .into_executor(TrainExecutorConfig {
+                        model: diloco_config.model.clone().into(),
+                        data: Fetch::scheduler(peer_id, dataset.to_string()),
+                        updates: Send::peers(
+                            vec![parameter_server.peer_id()],
+                            SelectionStrategy::All,
+                        ),
+                        results: Receive::peers(vec![parameter_server.peer_id()]),
+                        optimizer: diloco_config.inner_optimizer.clone(),
+                        batch_size: 22,
+                        preprocessor: diloco_config.preprocessor.clone().map(|p| p.into()),
+                        scheduler: None,
+                    })
+                    .into(),
             },
             &[worker1],
         )
         .await
         .into_diagnostic()?;
+
         let _w2_task = Task::try_new(
             network.clone(),
             JobSpec {
                 job_id,
-                executor: get_executor_with_dataset(
-                    diloco_config,
-                    peer_id,
-                    dataset.clone(),
-                    parameter_server.peer_id(),
-                    batch_sizes[1],
-                ),
+                executor: TrainExecutorDescriptor::new(TRAIN_EXECUTOR_NAME)
+                    .into_executor(TrainExecutorConfig {
+                        model: diloco_config.model.clone().into(),
+                        data: Fetch::scheduler(peer_id, dataset.to_string()),
+                        updates: Send::peers(
+                            vec![parameter_server.peer_id()],
+                            SelectionStrategy::All,
+                        ),
+                        results: Receive::peers(vec![parameter_server.peer_id()]),
+                        optimizer: diloco_config.inner_optimizer.clone(),
+                        batch_size: 12,
+                        preprocessor: diloco_config.preprocessor.clone().map(|p| p.into()),
+                        scheduler: None,
+                    })
+                    .into(),
             },
             &[worker2],
         )
@@ -413,11 +445,13 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
             network.clone(),
             JobSpec {
                 job_id,
-                executor: Executor::ParameterServer {
-                    updates: Receive::peers(worker_ids.clone()),
-                    results: Send::peers(worker_ids.clone(), SelectionStrategy::All),
-                    optimizer: diloco_config.parameter_server.optimizer.clone(),
-                },
+                executor: AggregateExecutorDescriptor::new(PARAMETER_SERVER_EXECUTOR_NAME)
+                    .into_executor(AggregateExecutorConfig {
+                        updates: Receive::peers(worker_ids.to_vec()),
+                        results: Send::peers(worker_ids.to_vec(), SelectionStrategy::All),
+                        optimizer: diloco_config.outer_optimizer.clone(),
+                    })
+                    .into(),
             },
             &[parameter_server],
         )
@@ -484,22 +518,6 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
     logging.shutdown().into_diagnostic()?;
 
     Ok(())
-}
-
-fn get_executor_with_dataset(
-    config: &DiLoCo,
-    peer_id: PeerId,
-    dataset: String,
-    parameter_server: PeerId,
-    batch_size: u32,
-) -> Executor {
-    Executor::DiLoCoTransformer {
-        model: config.model.clone().into(),
-        data: Fetch::scheduler(peer_id, dataset),
-        updates: Receive::peers(vec![parameter_server]),
-        results: Send::peers(vec![parameter_server], SelectionStrategy::One),
-        config: WorkerConfig::to_diloco(config.worker.clone(), batch_size as u32),
-    }
 }
 
 // Find the data provider for the requested dataset

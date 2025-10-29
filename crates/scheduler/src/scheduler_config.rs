@@ -1,26 +1,64 @@
-use hypha_messages::{
-    Adam, DiLoCoConfig, Fetch, HFRepoType, Loss, Nesterov, Requirement, Resources, Scheduler,
-};
+use hypha_messages::{Adam, Fetch, HFRepoType, Model, Nesterov, Requirement, Resources};
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
-#[serde(tag = "type")]
-pub enum SchedulerConfig {
-    #[serde(rename = "diloco")]
-    DiLoCo(DiLoCo),
+pub struct SchedulerConfig {
+    pub job: Job,
 }
 
 impl Default for SchedulerConfig {
     fn default() -> Self {
-        SchedulerConfig::DiLoCo(DiLoCo {
-            model: HuggingFaceSource {
+        Self {
+            job: Job::Diloco(DiLoCo::default()),
+        }
+    }
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+#[serde(tag = "type", rename_all = "kebab-case")]
+pub enum Job {
+    Diloco(DiLoCo),
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct DiLoCo {
+    pub model: ModelSource,
+    pub preprocessor: Option<PreprocessorSource>,
+    pub dataset: DataNodeSource,
+    #[serde(rename = "inner_optimizer")]
+    pub inner_optimizer: Adam,
+    #[serde(rename = "outer_optimizer")]
+    pub outer_optimizer: Nesterov,
+    pub resources: DiLoCoResources,
+}
+
+impl Default for DiLoCo {
+    fn default() -> Self {
+        Self {
+            model: ModelSource {
                 repository: "l45k/Resnet50".to_string(),
                 revision: None,
                 filenames: vec!["config.json".to_string(), "model.safetensors".to_string()],
-                token: None,
+                token: Some("hf_1234token".to_string()),
+                model_type: ModelType::VisionClassification,
             },
+            preprocessor: Some(PreprocessorSource {
+                repository: "l45k/Resnet50".to_string(),
+                revision: None,
+                filenames: vec!["preprocessor_config.json".to_string()],
+                token: Some("hf_1234token".to_string()),
+            }),
             dataset: DataNodeSource {
                 dataset: "imagnet".to_string(),
+            },
+            inner_optimizer: Adam {
+                learning_rate: 1e-3,
+                betas: None,
+                epsilon: None,
+            },
+            outer_optimizer: Nesterov {
+                learning_rate: 0.7,
+                momentum: 0.9,
             },
             resources: DiLoCoResources {
                 num_workers: 2,
@@ -28,69 +66,70 @@ impl Default for SchedulerConfig {
                     Requirement::Resource(Resources::Gpu { min: 10.0 }),
                     Requirement::Resource(Resources::Cpu { min: 1.0 }),
                     Requirement::Resource(Resources::Memory { min: 1.0 }),
-                    Requirement::Driver {
-                        kind: "diloco-transformer".into(),
-                    },
                 ],
                 parameter_server: vec![
                     Requirement::Resource(Resources::Cpu { min: 1.0 }),
                     Requirement::Resource(Resources::Memory { min: 1.0 }),
-                    Requirement::Driver {
-                        kind: "parameter-server".into(),
-                    },
                 ],
             },
-            worker: WorkerConfig::VisionClassification {
-                optimizer: Adam {
-                    learning_rate: 1e-3,
-                    betas: None,
-                    epsilon: None,
-                },
-                scheduler: None,
-                preprocessor: Some(HuggingFaceSource {
-                    repository: "l45k/Resnet50".to_string(),
-                    revision: None,
-                    filenames: vec!["preprocessor_config.json".to_string()],
-                    token: None,
-                }),
-            },
-            parameter_server: ParameterServerConfig {
-                optimizer: Nesterov {
-                    learning_rate: 0.7,
-                    momentum: 0.9,
-                },
-            },
-        })
+        }
     }
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
-pub struct DiLoCo {
-    pub model: HuggingFaceSource,
-    pub dataset: DataNodeSource,
-    pub resources: DiLoCoResources,
-    pub worker: WorkerConfig,
-    pub parameter_server: ParameterServerConfig,
-}
-
-#[derive(Deserialize, Serialize, Debug, Clone)]
-pub struct HuggingFaceSource {
+pub struct ModelSource {
     pub repository: String,
     pub revision: Option<String>,
     pub filenames: Vec<String>,
     pub token: Option<String>,
+    #[serde(rename = "type")]
+    pub model_type: ModelType,
 }
 
-impl From<HuggingFaceSource> for Fetch {
-    fn from(source: HuggingFaceSource) -> Self {
+impl From<ModelSource> for Model {
+    fn from(source: ModelSource) -> Model {
+        let artifact = Fetch::huggingface(
+            source.repository.clone(),
+            source.revision.clone(),
+            source.filenames.clone(),
+            source.token.clone(),
+            HFRepoType::Model,
+        );
+
+        match source.model_type {
+            ModelType::VisionClassification => Model::VisionClassification { artifact },
+            ModelType::CausalLm => Model::CausalLm { artifact },
+            ModelType::Torch => Model::Torch { artifact },
+        }
+    }
+}
+
+impl From<PreprocessorSource> for Fetch {
+    fn from(source: PreprocessorSource) -> Fetch {
         Fetch::huggingface(
-            source.repository,
-            source.revision,
-            source.filenames,
-            source.token,
+            source.repository.clone(),
+            source.revision.clone(),
+            source.filenames.clone(),
+            source.token.clone(),
             HFRepoType::Model,
         )
     }
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub enum ModelType {
+    VisionClassification,
+    CausalLm,
+    Torch,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct PreprocessorSource {
+    pub repository: String,
+    pub revision: Option<String>,
+    pub filenames: Vec<String>,
+    pub token: Option<String>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
@@ -102,65 +141,5 @@ pub struct DataNodeSource {
 pub struct DiLoCoResources {
     pub num_workers: u32,
     pub worker: Vec<Requirement>,
-
     pub parameter_server: Vec<Requirement>,
-}
-
-#[derive(Deserialize, Serialize, Debug, Clone)]
-#[serde(tag = "type")]
-pub enum WorkerConfig {
-    CausalLm {
-        optimizer: Adam,
-        scheduler: Option<Scheduler>,
-    },
-    VisionClassification {
-        optimizer: Adam,
-        scheduler: Option<Scheduler>,
-        preprocessor: Option<HuggingFaceSource>,
-    },
-    Torch {
-        optimizer: Adam,
-        loss_fn: Loss,
-        scheduler: Option<Scheduler>,
-    },
-}
-
-impl WorkerConfig {
-    pub fn to_diloco(value: WorkerConfig, batch_size: u32) -> DiLoCoConfig {
-        match value {
-            WorkerConfig::CausalLm {
-                optimizer,
-                scheduler,
-            } => DiLoCoConfig::CausalLm {
-                optimizer,
-                batch_size,
-                scheduler,
-            },
-            WorkerConfig::VisionClassification {
-                optimizer,
-                scheduler,
-                preprocessor,
-            } => DiLoCoConfig::VisionClassification {
-                optimizer,
-                batch_size,
-                scheduler,
-                preprocessor: preprocessor.map(|p| p.into()),
-            },
-            WorkerConfig::Torch {
-                optimizer,
-                loss_fn,
-                scheduler,
-            } => DiLoCoConfig::Torch {
-                optimizer,
-                loss_fn,
-                batch_size,
-                scheduler,
-            },
-        }
-    }
-}
-
-#[derive(Deserialize, Serialize, Debug, Clone)]
-pub struct ParameterServerConfig {
-    pub optimizer: Nesterov,
 }

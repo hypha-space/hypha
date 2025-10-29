@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use documented::{Documented, DocumentedFieldsOpt};
 use hypha_config::{ConfigError, ConfigWithMetadata, TLSConfig, ValidatableConfig};
+use hypha_messages::ExecutorDescriptor;
 use hypha_network::{IpNet, find_containing_cidr, reserved_cidrs};
 use hypha_telemetry::{
     attributes::Attributes,
@@ -25,6 +26,57 @@ pub struct ResourceConfig {
     // TODO: How do we want to map multiple GPUs?
     /// Available GPU memory in GB.
     gpu: u32,
+}
+
+#[derive(Clone, Deserialize, Serialize, Documented, DocumentedFieldsOpt)]
+/// Configure an executor advertised and managed by the worker.
+pub struct ExecutorConfig {
+    /// Executor descriptor exposed to the scheduler (class + name).
+    #[serde(flatten)]
+    descriptor: ExecutorDescriptor,
+    /// Runtime implementation used to fulfill this executor.
+    #[serde(flatten)]
+    runtime: ExecutorRuntime,
+}
+
+#[derive(Clone, Deserialize, Serialize, Documented, DocumentedFieldsOpt)]
+#[serde(tag = "runtime", rename_all = "kebab-case")]
+/// Runtime implementation backing an executor selector.
+pub enum ExecutorRuntime {
+    /// Built-in parameter server implementation.
+    ParameterServer,
+    /// External process launched by the worker.
+    Process {
+        /// Command to execute for process-based executors.
+        cmd: String,
+        /// Arguments passed to the process-based executor.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        args: Vec<String>,
+    },
+}
+
+impl ExecutorConfig {
+    pub fn descriptor(&self) -> ExecutorDescriptor {
+        self.descriptor.clone()
+    }
+
+    pub fn runtime(&self) -> &ExecutorRuntime {
+        &self.runtime
+    }
+
+    pub fn cmd(&self) -> Option<&str> {
+        match &self.runtime {
+            ExecutorRuntime::Process { cmd, .. } => Some(cmd.as_str()),
+            ExecutorRuntime::ParameterServer => None,
+        }
+    }
+
+    pub fn args(&self) -> &[String] {
+        match &self.runtime {
+            ExecutorRuntime::Process { args, .. } => args,
+            ExecutorRuntime::ParameterServer => &[],
+        }
+    }
 }
 
 #[derive(Deserialize, Serialize, Documented, DocumentedFieldsOpt)]
@@ -55,8 +107,8 @@ pub struct Config {
     work_dir: PathBuf,
     /// Available resources.
     resources: ResourceConfig,
-    /// Available driver.
-    driver: Vec<String>,
+    /// Available executors.
+    executors: Vec<ExecutorConfig>,
     #[serde(alias = "exporter_otlp_endpoint")]
     /// OTLP Exporter endpoint for telemetry data. If unset, telemetry is disabled.
     telemetry_endpoint: Option<Endpoint>,
@@ -110,7 +162,7 @@ impl Default for Config {
             // NOTE: Default work directory base. Jobs create subdirs `hypha-{uuid}` under this path.
             work_dir: PathBuf::from("/tmp"),
             resources: ResourceConfig::default(),
-            driver: vec!["diloco-transformer".into()],
+            executors: Vec::new(),
             telemetry_attributes: None,
             telemetry_endpoint: None,
             telemetry_headers: None,
@@ -163,8 +215,8 @@ impl Config {
         }
     }
 
-    pub fn driver(&self) -> Vec<String> {
-        self.driver.clone()
+    pub fn executors(&self) -> &[ExecutorConfig] {
+        &self.executors
     }
 
     /// Base directory for per-job working directories.

@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use crate::resources::{
     ResourceManager, ResourceManagerError, extract_compute_resource_requirements,
-    extract_other_resource_requirements,
+    extract_executor_requirements,
 };
 
 #[derive(Debug, Clone, Error)]
@@ -103,10 +103,10 @@ where
         duration: Duration,
     ) -> Result<Lease<ResourceLease>, LeaseError> {
         let compute_resources = extract_compute_resource_requirements(&requirements);
-        let other_resources = extract_other_resource_requirements(&requirements);
+        let required_executors = extract_executor_requirements(&requirements);
         let reservation = self
             .resource_manager
-            .reserve(compute_resources, other_resources)
+            .reserve(compute_resources, required_executors)
             .await?;
 
         let result = self

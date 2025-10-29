@@ -296,6 +296,7 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
     ready.store(true, Ordering::Relaxed);
 
     let token = CancellationToken::new();
+    let executors = config.executors().to_vec();
 
     // NOTE: Create arbiter for resource allocation - this is the primary worker allocation mechanism
     let work_dir_base = if config.work_dir().is_absolute() {
@@ -310,7 +311,10 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
     let arbiter = Arbiter::new(
         ResourceLeaseManager::new(StaticResourceManager::new(
             config.resources(),
-            config.driver(),
+            executors
+                .iter()
+                .map(|cfg| cfg.descriptor())
+                .collect::<Vec<_>>(),
         )),
         WeightedResourceRequestEvaluator::default(),
         network.clone(),
@@ -318,6 +322,7 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
             Connector::new(network.clone()),
             network.clone(),
             work_dir_base,
+            executors,
         ),
     );
 

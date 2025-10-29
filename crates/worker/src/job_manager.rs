@@ -1,6 +1,6 @@
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
-use hypha_messages::{Executor, JobSpec};
+use hypha_messages::{Executor, ExecutorDescriptor, JobSpec, JobStatus};
 use hypha_network::request_response::RequestResponseError;
 use libp2p::PeerId;
 use thiserror::Error;
@@ -9,6 +9,7 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::{
+    config::{ExecutorConfig, ExecutorRuntime},
     connector::Connector,
     executor::{self, Execution, JobExecutor, ParameterServerExecutor, ProcessExecutor},
     network::Network,
@@ -28,6 +29,8 @@ pub enum JobManagerError {
     Execution(#[from] executor::Error),
     #[error("Executor not supported")]
     ExecutorNotSupported,
+    #[error("Executor configuration missing: {0:?}")]
+    ExecutorConfigMissing(ExecutorDescriptor),
 }
 
 pub struct Job {
@@ -36,7 +39,6 @@ pub struct Job {
     pub scheduler: PeerId,
     pub spec: JobSpec,
     pub cancel_token: CancellationToken,
-    // NOTE: Type-erased execution handle to support heterogeneous executors.
     pub execution: Box<dyn Execution + Sync + Send>,
 }
 
@@ -49,26 +51,37 @@ impl Job {
     }
 }
 
-/// Manages job execution and lifecycle
 #[derive(Clone)]
 pub struct JobManager {
     active_jobs: Arc<Mutex<HashMap<Uuid, Job>>>,
     connector: Connector<Network>,
     network: Network,
     work_dir_base: PathBuf,
+    executor_configs: Vec<ExecutorConfig>,
 }
 
 impl JobManager {
-    pub fn new(connector: Connector<Network>, network: Network, work_dir_base: PathBuf) -> Self {
+    pub fn new(
+        connector: Connector<Network>,
+        network: Network,
+        work_dir_base: PathBuf,
+        executor_configs: Vec<ExecutorConfig>,
+    ) -> Self {
         Self {
             active_jobs: Arc::new(Mutex::new(HashMap::new())),
             connector,
             network,
             work_dir_base,
+            executor_configs,
         }
     }
 
-    /// Dispatch a new job for execution
+    fn find_executor_config(&self, descriptor: &ExecutorDescriptor) -> Option<&ExecutorConfig> {
+        self.executor_configs
+            .iter()
+            .find(|cfg| cfg.descriptor() == *descriptor)
+    }
+
     pub async fn execute(
         &mut self,
         id: Uuid,
@@ -77,21 +90,28 @@ impl JobManager {
         scheduler: PeerId,
     ) -> Result<(), JobManagerError> {
         let cancel_token = CancellationToken::new();
-        tracing::info!(
-            task_id = %id,
-            "Job dispatched for execution"
-        );
+        tracing::info!(job_id = %id, "Job dispatched for execution");
 
-        // NOTE: Spawn job execution based on executor type
         match &spec.executor {
-            Executor::DiLoCoTransformer { .. } => {
+            Executor::Train(_) => {
+                let descriptor = ExecutorDescriptor::from(&spec.executor);
+                let config = self
+                    .find_executor_config(&descriptor)
+                    .cloned()
+                    .ok_or_else(|| JobManagerError::ExecutorConfigMissing(descriptor.clone()))?;
+
+                if !matches!(config.runtime(), ExecutorRuntime::Process { .. }) {
+                    return Err(JobManagerError::ExecutorNotSupported);
+                }
+
                 let executor = ProcessExecutor::new(
                     self.connector.clone(),
                     self.network.clone(),
                     self.work_dir_base.clone(),
+                    config,
                 );
                 let execution = executor
-                    .execute(spec.clone(), cancel_token.clone(), id, scheduler)
+                    .execute(spec.clone(), cancel_token.clone(), spec.job_id, scheduler)
                     .await?;
                 let job = Job {
                     id,
@@ -99,14 +119,22 @@ impl JobManager {
                     scheduler,
                     spec: spec.clone(),
                     cancel_token: cancel_token.clone(),
-                    // NOTE: Box the concrete execution handle as a trait object.
                     execution: Box::new(execution),
                 };
                 self.active_jobs.lock().await.insert(id, job);
-
                 Ok(())
             }
-            Executor::ParameterServer { .. } => {
+            Executor::Aggregate(_) => {
+                let descriptor = ExecutorDescriptor::from(&spec.executor);
+                let config = self
+                    .find_executor_config(&descriptor)
+                    .cloned()
+                    .ok_or_else(|| JobManagerError::ExecutorConfigMissing(descriptor.clone()))?;
+
+                if !matches!(config.runtime(), ExecutorRuntime::ParameterServer) {
+                    return Err(JobManagerError::ExecutorNotSupported);
+                }
+
                 let executor = ParameterServerExecutor::new(
                     self.connector.clone(),
                     self.network.clone(),
@@ -121,18 +149,14 @@ impl JobManager {
                     scheduler,
                     spec: spec.clone(),
                     cancel_token: cancel_token.clone(),
-                    // NOTE: Box the concrete execution handle as a trait object.
                     execution: Box::new(execution),
                 };
                 self.active_jobs.lock().await.insert(id, job);
-
                 Ok(())
             }
-            _ => Err(JobManagerError::ExecutorNotSupported),
         }
     }
 
-    /// Cancel a running job
     pub async fn cancel(&mut self, job_id: &Uuid) -> Result<(), JobManagerError> {
         let job = {
             let mut guard = self.active_jobs.lock().await;
@@ -148,7 +172,6 @@ impl JobManager {
         }
     }
 
-    /// List all active job IDs that were dispatched under the provided lease
     pub async fn find_jobs_by_lease(&self, lease_id: &Uuid) -> Vec<Uuid> {
         self.active_jobs
             .lock()
@@ -158,7 +181,23 @@ impl JobManager {
             .collect()
     }
 
-    /// Shutdown the job manager and all executors
+    pub async fn find_jobs_by_scheduler(&self, scheduler: &PeerId) -> Vec<Uuid> {
+        self.active_jobs
+            .lock()
+            .await
+            .values()
+            .filter_map(|job| (job.scheduler == *scheduler).then_some(job.id))
+            .collect()
+    }
+
+    pub async fn get_status(&self, job_id: &Uuid) -> Result<JobStatus, JobManagerError> {
+        Err(JobManagerError::TaskNotFound(*job_id))
+    }
+
+    pub async fn cleanup_finished_jobs(&mut self) -> Vec<Uuid> {
+        Vec::new()
+    }
+
     pub async fn shutdown(&mut self) {
         let jobs: Vec<Job> = {
             let mut guard = self.active_jobs.lock().await;

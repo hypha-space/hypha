@@ -11,7 +11,7 @@ use candle_core::{
     safetensors::{Load, MmapedSafetensors},
 };
 use futures_util::StreamExt;
-use hypha_messages::progress;
+use hypha_messages::{Executor, progress};
 use libp2p::PeerId;
 use safetensors::serialize_to_file;
 use sha2::{Digest, Sha256};
@@ -86,12 +86,11 @@ impl JobExecutor for ParameterServerExecutor {
 
         let device = Device::Cpu;
 
-        let (updates, results, optimizer) = match job.executor {
-            hypha_messages::Executor::ParameterServer {
-                updates,
-                results,
-                optimizer,
-            } => (updates, results, optimizer),
+        let (updates, results, optimizer) = match &job.executor {
+            Executor::Aggregate(aggregate) => {
+                let config = aggregate.config().clone();
+                (config.updates, config.results, config.optimizer)
+            }
             _ => return Err(Error::UnsupportedJobSpec()),
         };
 
