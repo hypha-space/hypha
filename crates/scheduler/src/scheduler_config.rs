@@ -46,9 +46,6 @@ impl Default for SchedulerConfig {
                     betas: None,
                     epsilon: None,
                 },
-                epochs: 3,
-                batch_size: 126,
-                checkpointing: 1,
                 scheduler: None,
                 preprocessor: Some(HuggingFaceSource {
                     repository: "l45k/Resnet50".to_string(),
@@ -56,7 +53,6 @@ impl Default for SchedulerConfig {
                     filenames: vec!["preprocessor_config.json".to_string()],
                     token: None,
                 }),
-                batches_per_local_epoch: 1,
             },
             parameter_server: ParameterServerConfig {
                 optimizer: Nesterov {
@@ -115,76 +111,49 @@ pub struct DiLoCoResources {
 pub enum WorkerConfig {
     CausalLm {
         optimizer: Adam,
-        epochs: i32,
-        batch_size: i32,
-        checkpointing: i32,
         scheduler: Option<Scheduler>,
     },
     VisionClassification {
         optimizer: Adam,
-        epochs: i32,
-        batch_size: i32,
-        checkpointing: i32,
         scheduler: Option<Scheduler>,
         preprocessor: Option<HuggingFaceSource>,
-        batches_per_local_epoch: i32,
     },
     Torch {
         optimizer: Adam,
         loss_fn: Loss,
-        epochs: i32,
-        batch_size: i32,
-        checkpointing: i32,
         scheduler: Option<Scheduler>,
     },
 }
 
-impl From<WorkerConfig> for DiLoCoConfig {
-    fn from(value: WorkerConfig) -> Self {
+impl WorkerConfig {
+    pub fn to_diloco(value: WorkerConfig, batch_size: u32) -> DiLoCoConfig {
         match value {
             WorkerConfig::CausalLm {
                 optimizer,
-                epochs,
-                batch_size,
-                checkpointing,
                 scheduler,
             } => DiLoCoConfig::CausalLm {
                 optimizer,
-                epochs,
                 batch_size,
-                checkpointing,
                 scheduler,
             },
             WorkerConfig::VisionClassification {
                 optimizer,
-                epochs,
-                batch_size,
-                checkpointing,
                 scheduler,
                 preprocessor,
-                batches_per_local_epoch,
             } => DiLoCoConfig::VisionClassification {
                 optimizer,
-                epochs,
                 batch_size,
-                checkpointing,
                 scheduler,
                 preprocessor: preprocessor.map(|p| p.into()),
-                batches_per_local_epoch,
             },
             WorkerConfig::Torch {
                 optimizer,
                 loss_fn,
-                epochs,
-                batch_size,
-                checkpointing,
                 scheduler,
             } => DiLoCoConfig::Torch {
                 optimizer,
                 loss_fn,
-                epochs,
                 batch_size,
-                checkpointing,
                 scheduler,
             },
         }

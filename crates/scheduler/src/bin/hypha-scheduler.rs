@@ -1,6 +1,6 @@
 //! Scheduler binary.
 
-use std::{fs, path::PathBuf, time::Duration};
+use std::{fs, path::PathBuf, sync::Arc, time::Duration};
 
 use clap::{Parser, Subcommand};
 use figment::providers::{Env, Format, Serialized, Toml};
@@ -16,22 +16,28 @@ use hypha_network::{
 };
 use hypha_scheduler::{
     allocator::{Allocator, GreedyWorkerAllocator},
+    batch_scheduler::BatchScheduler,
     config::Config,
+    metrics_bridge::{AimConnector, MetricsBridge, NoOpConnector},
     network::Network,
-    scheduler_config::{DiLoCo, SchedulerConfig},
-    slice_tracker::SliceTracker,
-    status_bridge::{AimConnector, NoOpConnector, StatusBridge},
+    scheduler_config::{DiLoCo, SchedulerConfig, WorkerConfig},
+    simulation::BasicSimulation,
+    statistics::RunningMean,
     task::Task,
+    tracker::{progress::ProgressTracker, slice::SliceTracker},
     worker::Worker,
 };
 use hypha_telemetry as telemetry;
 use libp2p::{Multiaddr, PeerId, multiaddr::Protocol};
 use miette::{IntoDiagnostic, Result};
 use serde::Serialize;
+use tokio::sync::Mutex;
+use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::{
     EnvFilter, Layer, Registry, layer::SubscriberExt, util::SubscriberInitExt,
 };
+use uuid::Uuid;
 
 #[derive(Debug, Parser, Serialize)]
 #[command(
@@ -291,7 +297,6 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
         }
         Err(e) => {
             tracing::error!(error = %e, "Failed to allocate worker");
-
             Vec::new()
         }
     };
@@ -331,8 +336,12 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
     let status_handle = if allocated_workers.len() >= diloco_config.resources.num_workers as usize
         && allocated_parameter_servers.len() == 1
     {
-        let worker1 = Worker::create(allocated_workers[0].clone(), network.clone()).await;
+        let job_id = Uuid::new_v4();
+        let batch_sizes = [22, 12];
+        let samples_per_update = 220;
+        let diloco_rounds = 4;
 
+        let worker1 = Worker::create(allocated_workers[0].clone(), network.clone()).await;
         let worker2 = Worker::create(allocated_workers[1].clone(), network.clone()).await;
 
         let worker_ids = allocated_workers
@@ -340,27 +349,72 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
             .map(|w| w.peer_id)
             .collect::<Vec<_>>();
 
+        // TODO compute true batch sizes
+        let run_tracker = Arc::new(Mutex::new(ProgressTracker::<RunningMean>::new(
+            allocated_parameter_servers[0].peer_id,
+            samples_per_update,
+            diloco_rounds,
+        )));
+        run_tracker
+            .lock()
+            .await
+            .worker_tracker
+            .add_worker(allocated_workers[0].peer_id, batch_sizes[0]);
+        run_tracker
+            .lock()
+            .await
+            .worker_tracker
+            .add_worker(allocated_workers[1].peer_id, batch_sizes[1]);
+
+        let (metrics_rx, batch_scheduler_handle) = BatchScheduler::run::<
+            RunningMean,
+            BasicSimulation,
+        >(
+            network.clone(), run_tracker.clone(), job_id
+        )
+        .await
+        .into_diagnostic()?;
+
         let parameter_server =
             Worker::create(allocated_parameter_servers[0].clone(), network.clone()).await;
 
-        let worker_task = Task::try_new(
+        let _w1_task = Task::try_new(
             network.clone(),
             JobSpec {
+                job_id,
                 executor: get_executor_with_dataset(
                     diloco_config,
                     peer_id,
                     dataset.clone(),
                     parameter_server.peer_id(),
+                    batch_sizes[0],
                 ),
             },
-            &[&worker1, &worker2],
+            &[&worker1],
+        )
+        .await
+        .into_diagnostic()?;
+        let _w2_task = Task::try_new(
+            network.clone(),
+            JobSpec {
+                job_id,
+                executor: get_executor_with_dataset(
+                    diloco_config,
+                    peer_id,
+                    dataset.clone(),
+                    parameter_server.peer_id(),
+                    batch_sizes[1],
+                ),
+            },
+            &[&worker2],
         )
         .await
         .into_diagnostic()?;
 
-        let parameter_server_task = Task::try_new(
+        let _parameter_server_task = Task::try_new(
             network.clone(),
             JobSpec {
+                job_id,
                 executor: Executor::ParameterServer {
                     updates: Receive::peers(worker_ids.clone()),
                     results: Send::peers(worker_ids.clone(), SelectionStrategy::All),
@@ -372,18 +426,17 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
         .await
         .into_diagnostic()?;
 
-        let mut status_bridge = match config.status_bridge() {
-            Some(value) => StatusBridge::new(Box::new(AimConnector::new(value))),
-            None => StatusBridge::new(Box::new(NoOpConnector::new())),
+        let mut metrics_bridge = match config.status_bridge() {
+            Some(value) => MetricsBridge::new(Box::new(AimConnector::new(value))),
+            None => MetricsBridge::new(Box::new(NoOpConnector::new())),
         };
 
-        status_bridge.register_stream(worker_task);
-        status_bridge.register_stream(parameter_server_task);
+        metrics_bridge.register_stream(ReceiverStream::new(metrics_rx));
 
         let cancel_token = token.clone();
         tokio::spawn(async move {
             tokio::select! {
-                Err(e) = status_bridge.run(cancel_token) => {
+                Err(e) = metrics_bridge.run(cancel_token) => {
                     tracing::error!(error = %e, "Status bridge failed");
                 }
                 Err(e) = worker1 => {
@@ -394,6 +447,9 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
                 }
                 Err(e) = parameter_server => {
                     tracing::error!(error = %e, "Parameter Server failed");
+                }
+                _ = batch_scheduler_handle => {
+                    tracing::info!("Batch Scheduler finished");
                 }
             }
         })
@@ -440,13 +496,14 @@ fn get_executor_with_dataset(
     peer_id: PeerId,
     dataset: String,
     parameter_server: PeerId,
+    batch_size: u64,
 ) -> Executor {
     Executor::DiLoCoTransformer {
         model: config.model.clone().into(),
         data: Fetch::scheduler(peer_id, dataset),
         updates: Receive::peers(vec![parameter_server]),
         results: Send::peers(vec![parameter_server], SelectionStrategy::One),
-        config: config.worker.clone().into(),
+        config: WorkerConfig::to_diloco(config.worker.clone(), batch_size as u32),
     }
 }
 

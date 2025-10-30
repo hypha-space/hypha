@@ -60,7 +60,7 @@ impl JobExecutor for ProcessExecutor {
         &self,
         job: hypha_messages::JobSpec,
         cancel: CancellationToken,
-        job_id: Uuid,
+        _task_id: Uuid,
         scheduler: PeerId,
     ) -> Result<ProcessExecution, Error> {
         let id = Uuid::new_v4();
@@ -76,7 +76,8 @@ impl JobExecutor for ProcessExecutor {
             work_dir.clone(),
             sock_path.clone(),
             cancel.clone(),
-            job_id,
+            job.job_id,
+            // task_id,
             scheduler,
         )
         .await?;

@@ -61,6 +61,62 @@ pub mod health {
     }
 }
 
+/// Task progress request/response messages
+pub mod progress {
+    use core::str;
+
+    use super::*;
+
+    pub type Codec = CborCodec<Request, Response>;
+
+    pub static IDENTIFIER: &str = "/hypha-progress/0.0.1";
+
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    pub struct Request {
+        pub job_id: Uuid,
+        pub progress: Progress,
+    }
+
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    #[serde(rename_all = "kebab-case")]
+    pub enum Progress {
+        // after a batch
+        Status(Status),
+        // after an update
+        Metrics(Metrics),
+        // when sending updates
+        Update,
+        // parameter server after update
+        Updated,
+        // Worker when update received
+        UpdateReceived,
+    }
+
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    pub struct Status {
+        pub batch_size: u64,
+    }
+
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    pub struct Metrics {
+        pub round: u64,
+        pub metrics: HashMap<String, f32>,
+    }
+
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    #[serde(tag = "type")]
+    pub enum Response {
+        Ok,
+        Continue,
+        ScheduleUpdate {
+            // Batch counter until update
+            counter: u64,
+        },
+        Done,
+        Error,
+    }
+}
+
 // Protocol: Scheduler requests available workers
 pub mod request_worker {
 
@@ -146,7 +202,7 @@ pub mod job_status {
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub struct Request {
-        pub job_id: Uuid,
+        pub task_id: Uuid,
         pub status: JobStatus,
     }
 
@@ -156,6 +212,7 @@ pub mod job_status {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct JobSpec {
+    pub job_id: Uuid,
     /// Executor configuration
     pub executor: Executor,
 }
@@ -381,26 +438,19 @@ impl AsRef<Reference> for Receive {
 pub enum DiLoCoConfig {
     CausalLm {
         optimizer: Adam,
-        epochs: i32,
-        batch_size: i32,
-        checkpointing: i32,
+        batch_size: u32,
         scheduler: Option<Scheduler>,
     },
     VisionClassification {
         optimizer: Adam,
-        epochs: i32,
-        batch_size: i32,
-        checkpointing: i32,
+        batch_size: u32,
         scheduler: Option<Scheduler>,
         preprocessor: Option<Fetch>,
-        batches_per_local_epoch: i32,
     },
     Torch {
         optimizer: Adam,
         loss_fn: Loss,
-        epochs: i32,
-        batch_size: i32,
-        checkpointing: i32,
+        batch_size: u32,
         scheduler: Option<Scheduler>,
     },
 }
@@ -492,15 +542,9 @@ pub enum Resources {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct Status {
-    pub round: u32,
-    pub metrics: HashMap<String, f32>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "type")]
 pub enum JobStatus {
-    Running { status: Status },
+    Running,
     Finished,
     Failed,
     Unknown,

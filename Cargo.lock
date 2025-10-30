@@ -2073,6 +2073,7 @@ dependencies = [
  "hypha-messages",
  "hypha-network",
  "hypha-telemetry",
+ "itertools 0.14.0",
  "libp2p",
  "libp2p-stream",
  "miette",

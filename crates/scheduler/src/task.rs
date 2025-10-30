@@ -39,8 +39,8 @@ impl Task {
                     matches!(
                         req,
                         api::Request::JobStatus(
-                        job_status::Request { job_id, .. }
-                    ) if job_id == &id
+                        job_status::Request { task_id, .. }
+                    ) if task_id == &id
                     )
                 })
                 .into_stream()

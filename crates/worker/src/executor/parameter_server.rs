@@ -11,6 +11,7 @@ use candle_core::{
     safetensors::{Load, MmapedSafetensors},
 };
 use futures_util::StreamExt;
+use hypha_messages::progress;
 use libp2p::PeerId;
 use safetensors::serialize_to_file;
 use sha2::{Digest, Sha256};
@@ -42,6 +43,7 @@ pub enum TensorOpError {
 
 pub struct ParameterServerExecutor {
     connector: Connector<Network>,
+    network: Network,
     work_dir_base: PathBuf,
 }
 
@@ -58,9 +60,10 @@ impl Execution for ParameterServerExecution {
 }
 
 impl ParameterServerExecutor {
-    pub fn new(connector: Connector<Network>, work_dir_base: PathBuf) -> Self {
+    pub fn new(connector: Connector<Network>, network: Network, work_dir_base: PathBuf) -> Self {
         ParameterServerExecutor {
             connector,
+            network,
             work_dir_base,
         }
     }
@@ -72,8 +75,8 @@ impl JobExecutor for ParameterServerExecutor {
         &self,
         job: hypha_messages::JobSpec,
         cancel: CancellationToken,
-        _: Uuid,
-        _: PeerId,
+        job_id: Uuid,
+        scheduler_id: PeerId,
     ) -> Result<ParameterServerExecution, Error> {
         tracing::info!(job_spec = ?job, "Executing parameter server job");
 
@@ -93,6 +96,7 @@ impl JobExecutor for ParameterServerExecutor {
         };
 
         let connector = self.connector.clone();
+        let network = self.network.clone();
 
         let task_tracker = TaskTracker::new();
         task_tracker.spawn(async move {
@@ -266,7 +270,17 @@ impl JobExecutor for ParameterServerExecutor {
                         }
 
                         fs::remove_file(gradient_file.as_path()).await.expect("gradient file can be removed");
-                        fs::remove_file(final_tensor_file_name.as_path()).await.expect("tensor file can be removed")
+                        fs::remove_file(final_tensor_file_name.as_path()).await.expect("tensor file can be removed");
+
+                        let _ = hypha_network::request_response::RequestResponseInterface::<progress::Codec>::request(
+                            &network,
+                            scheduler_id,
+                            progress::Request{
+                                job_id,
+                                progress: progress::Progress::Updated,
+                            }
+                        )
+                        .await.expect("Request progres");
                     }
                 }
             };

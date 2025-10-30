@@ -7,7 +7,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use futures_util::stream::StreamExt;
-use hypha_messages::{DataSlice, api, health};
+use hypha_messages::{DataSlice, api, health, progress};
 use hypha_network::{
     CertificateDer, CertificateRevocationListDer, IpNet, PrivateKeyDer,
     dial::{DialAction, DialDriver, DialInterface, PendingDials},
@@ -39,6 +39,7 @@ use tokio::sync::{SetOnce, mpsc};
 
 type HyphaRequestHandlers = Vec<RequestHandler<api::Codec>>;
 type HealthRequestHandlers = Vec<RequestHandler<health::Codec>>;
+type ProgressRequestHandlers = Vec<RequestHandler<progress::Codec>>;
 
 #[derive(Clone)]
 pub struct Network {
@@ -57,6 +58,7 @@ pub struct Behaviour {
     gossipsub: gossipsub::Behaviour,
     request_response: request_response::Behaviour<api::Codec>,
     health_request_response: request_response::Behaviour<health::Codec>,
+    progress_request_response: request_response::Behaviour<progress::Codec>,
 }
 
 pub struct NetworkDriver {
@@ -73,6 +75,9 @@ pub struct NetworkDriver {
     health_outbound_requests_map: OutboundRequests<health::Codec>,
     health_outbound_responses_map: OutboundResponses,
     health_request_handlers: HealthRequestHandlers,
+    progress_outbound_requests_map: OutboundRequests<progress::Codec>,
+    progress_outbound_responses_map: OutboundResponses,
+    progress_request_handlers: ProgressRequestHandlers,
     exclude_cidrs: Vec<IpNet>,
 }
 
@@ -84,6 +89,7 @@ enum Action {
     Gossipsub(GossipsubAction),
     RequestResponse(RequestResponseAction<api::Codec>),
     HealthRequestResponse(RequestResponseAction<health::Codec>),
+    ProgressRequestResponse(RequestResponseAction<progress::Codec>),
     ExternalAddress(ExternalAddressAction),
 }
 
@@ -155,6 +161,13 @@ impl Network {
                         )],
                         request_response::Config::default(),
                     ),
+                    progress_request_response: request_response::Behaviour::<progress::Codec>::new(
+                        [(
+                            StreamProtocol::new(progress::IDENTIFIER),
+                            request_response::ProtocolSupport::Outbound,
+                        )],
+                        request_response::Config::default(),
+                    ),
                 }
             })
             .map_err(|_| {
@@ -180,6 +193,9 @@ impl Network {
                 health_outbound_requests_map: HashMap::default(),
                 health_outbound_responses_map: HashMap::default(),
                 health_request_handlers: Vec::new(),
+                progress_outbound_requests_map: HashMap::default(),
+                progress_outbound_responses_map: HashMap::default(),
+                progress_request_handlers: Vec::new(),
                 action_receiver,
                 exclude_cidrs,
             },
@@ -224,6 +240,9 @@ impl SwarmDriver<Behaviour> for NetworkDriver {
                         SwarmEvent::Behaviour(BehaviourEvent::HealthRequestResponse(event)) => {
                             <NetworkDriver as RequestResponseDriver<Behaviour, health::Codec>>::process_request_response_event(&mut self, event).await;
                         }
+                        SwarmEvent::Behaviour(BehaviourEvent::ProgressRequestResponse(event)) => {
+                            <NetworkDriver as RequestResponseDriver<Behaviour, progress::Codec>>::process_request_response_event(&mut self, event).await;
+                        }
                         SwarmEvent::Behaviour(BehaviourEvent::Dcutr(event)) => {
                             tracing::debug!("dcutr event: {:?}", event);
                         }
@@ -244,6 +263,8 @@ impl SwarmDriver<Behaviour> for NetworkDriver {
                             <NetworkDriver as RequestResponseDriver<Behaviour, api::Codec>>::process_request_response_action(&mut self, action).await,
                         Action::HealthRequestResponse(action) =>
                             <NetworkDriver as RequestResponseDriver<Behaviour, health::Codec>>::process_request_response_action(&mut self, action).await,
+                        Action::ProgressRequestResponse(action) =>
+                            <NetworkDriver as RequestResponseDriver<Behaviour, progress::Codec>>::process_request_response_action(&mut self, action).await,
                         Action::ExternalAddress(action) =>
                             self.process_external_address_action(action).await,
                     }
@@ -432,6 +453,44 @@ impl RequestResponseInterface<health::Codec> for Network {
     ) -> Result<(), RequestResponseError> {
         self.action_sender
             .try_send(Action::HealthRequestResponse(action))
+            .map_err(|_| RequestResponseError::Other("Failed to send action".to_string()))
+    }
+}
+
+impl RequestResponseBehaviour<progress::Codec> for Behaviour {
+    fn request_response(&mut self) -> &mut libp2p::request_response::Behaviour<progress::Codec> {
+        &mut self.progress_request_response
+    }
+}
+
+impl RequestResponseDriver<Behaviour, progress::Codec> for NetworkDriver {
+    fn outbound_requests(&mut self) -> &mut OutboundRequests<progress::Codec> {
+        &mut self.progress_outbound_requests_map
+    }
+
+    fn outbound_responses(&mut self) -> &mut OutboundResponses {
+        &mut self.progress_outbound_responses_map
+    }
+
+    fn request_handlers(&mut self) -> &mut ProgressRequestHandlers {
+        &mut self.progress_request_handlers
+    }
+}
+
+impl RequestResponseInterface<progress::Codec> for Network {
+    async fn send(&self, action: RequestResponseAction<progress::Codec>) {
+        self.action_sender
+            .send(Action::ProgressRequestResponse(action))
+            .await
+            .expect("network driver is running");
+    }
+
+    fn try_send(
+        &self,
+        action: RequestResponseAction<progress::Codec>,
+    ) -> Result<(), RequestResponseError> {
+        self.action_sender
+            .try_send(Action::ProgressRequestResponse(action))
             .map_err(|_| RequestResponseError::Other("Failed to send action".to_string()))
     }
 }

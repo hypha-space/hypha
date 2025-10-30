@@ -19,7 +19,7 @@ use axum::{
 use futures_util::{StreamExt, stream};
 use hypha_messages::{
     Fetch, Receive, Reference, Send,
-    api::{self, Request},
+    progress::{self, Request},
 };
 use hypha_network::request_response::RequestResponseError;
 use libp2p::PeerId;
@@ -112,6 +112,7 @@ struct SockState {
     connector: Connector<Network>,
     network: Network,
     job_id: Uuid,
+    // task_id: Uuid,
     scheduler: PeerId,
 }
 
@@ -412,20 +413,21 @@ async fn receive_subscribe(
 
 async fn send_status(
     State(state): State<Arc<SockState>>,
-    Json(req): Json<hypha_messages::JobStatus>,
-) -> Result<(), Error> {
+    Json(req): Json<progress::Progress>,
+) -> Result<Json<progress::Response>, Error> {
     tracing::info!("{:?}", req);
-    let _ = hypha_network::request_response::RequestResponseInterface::<api::Codec>::request(
-        &state.network,
-        state.scheduler,
-        Request::JobStatus(hypha_messages::job_status::Request {
-            job_id: state.job_id,
-            status: req,
-        }),
-    )
-    .await?;
+    let response =
+        hypha_network::request_response::RequestResponseInterface::<progress::Codec>::request(
+            &state.network,
+            state.scheduler,
+            Request {
+                job_id: state.job_id,
+                progress: req,
+            },
+        )
+        .await?;
 
-    Ok(())
+    Ok(axum::Json(response))
 }
 
 fn derive_name_and_reader(item: ReadItem, idx: usize) -> (String, BoxAsyncRead) {
