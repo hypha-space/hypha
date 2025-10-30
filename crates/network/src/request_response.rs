@@ -434,12 +434,6 @@ where
     {
         let interface = self.interface.clone();
 
-        let max_concurrent = max_concurrent.unwrap_or_else(|| {
-            std::thread::available_parallelism()
-                .map(|n| n.get())
-                .unwrap_or(4)
-        });
-
         self.for_each_concurrent(max_concurrent, move |result| {
             let interface = interface.clone();
             let handler = handler.clone();
