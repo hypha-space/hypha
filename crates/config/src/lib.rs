@@ -69,7 +69,8 @@
 //! let config = Config::builder()
 //!     .with_provider(Toml::file("config.toml"))
 //!     .with_provider(Env::prefixed("CONFIG_"))
-//!     .build()?;
+//!     .build()?
+//!     .validate()?;
 //!
 //! println!("Binding to: {}", config.bind_address);
 //! # Ok(())
@@ -152,7 +153,8 @@
 //! let config = Config::builder()
 //!     .with_provider(Toml::file("config.toml"))
 //!     .with_provider(Env::prefixed("CONFIG_"))
-//!     .build()?;
+//!     .build()?
+//!     .validate()?;
 //!
 //! // Use metadata to enhance file operation errors
 //! let metadata = config.find_metadata("cert_pem");
@@ -329,6 +331,10 @@ pub enum ConfigError {
     /// the configuration cannot be serialized.
     #[error("Failed to serialize configuration")]
     Toml(#[from] Box<toml::ser::Error>),
+    /// Semantic validation error produced by configuration checks.
+    #[error("Invalid configuration: {0}")]
+    #[diagnostic(help("Update the configuration value to satisfy validation rules"))]
+    Invalid(String),
 }
 
 impl From<figment::Error> for ConfigError {
@@ -411,6 +417,7 @@ impl<T> ConfigWithMetadata<T> {
     /// Find metadata for a configuration field (name, value, source).
     pub fn find_metadata(&self, option: &str) -> Option<(String, String, Source)> {
         let option = option.to_owned();
+
         if let Ok(value) = self.figment.find_value(&option)
             && let Some(metadata) = self.figment.get_metadata(value.tag())
         {
@@ -425,6 +432,31 @@ impl<T> ConfigWithMetadata<T> {
         }
 
         None
+    }
+
+    /// Validate the configuration.
+    pub fn validate(self) -> Result<Self, ConfigError>
+    where
+        T: ValidatableConfig,
+    {
+        T::validate(&self)?;
+
+        Ok(self)
+    }
+}
+
+/// Optional validation hook for configuration structs.
+///
+/// Types implementing this trait can perform semantic validation using the full
+/// [`ConfigWithMetadata`] wrapper, allowing them to attach rich diagnostics via
+/// [`ConfigError::with_metadata`].
+pub trait ValidatableConfig {
+    /// Validate the configuration, returning an error when a constraint is violated.
+    fn validate(_cfg: &ConfigWithMetadata<Self>) -> Result<(), ConfigError>
+    where
+        Self: Sized,
+    {
+        Ok(())
     }
 }
 
@@ -554,6 +586,7 @@ where
     // #[allow(clippy::result_large_err)]
     pub fn build(self) -> Result<ConfigWithMetadata<T>, ConfigError> {
         let config: T = self.figment.extract()?;
+
         Ok(ConfigWithMetadata {
             config,
             figment: self.figment,
@@ -624,6 +657,8 @@ mod tests {
         #[serde(default)]
         field2: i32,
     }
+
+    impl ValidatableConfig for TestConfig {}
 
     #[test]
     fn builder_with_toml_provider_loads_configuration() {

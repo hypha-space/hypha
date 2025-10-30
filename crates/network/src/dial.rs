@@ -12,7 +12,7 @@ use libp2p::{
 };
 use tokio::sync::oneshot;
 
-use crate::swarm::SwarmDriver;
+use crate::{IpNet, find_containing_cidr, swarm::SwarmDriver};
 
 /// Type alias for tracking pending dial operations.
 ///
@@ -42,6 +42,9 @@ pub trait DialDriver<TBehavior>: SwarmDriver<TBehavior> + Send
 where
     TBehavior: NetworkBehaviour,
 {
+    /// Returns the CIDR ranges that should be excluded from dialing.
+    fn exclude_cidrs(&self) -> &[IpNet];
+
     /// Returns a mutable reference to the pending dials tracker.
     ///
     /// This is used to store and retrieve dial response channels while
@@ -60,7 +63,16 @@ where
         async move {
             match action {
                 DialAction::Dial(address, tx) => {
-                    tracing::info!(address=%address.clone(),"Dialing");
+                    tracing::info!(address = %address, "Dialing");
+
+                    if let Some(cidr) = find_containing_cidr(&address, self.exclude_cidrs()) {
+                        tracing::warn!(
+                            address = %address,
+                            cidr = %cidr,
+                            "Dialing address matches excluded CIDRs"
+                        );
+                    }
+
                     let opts = DialOpts::from(address);
                     let connection_id = opts.connection_id();
 

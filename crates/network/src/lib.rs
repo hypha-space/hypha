@@ -52,6 +52,7 @@ use std::str::FromStr;
 pub use ipnet::{IpNet, Ipv4Net, Ipv6Net};
 // Re-export commonly used certificate types
 pub use rustls::pki_types::{CertificateDer, CertificateRevocationListDer, PrivateKeyDer};
+pub use utils::find_containing_cidr;
 
 /// Loopback CIDRs.
 pub fn loopback_cidrs() -> Vec<IpNet> {

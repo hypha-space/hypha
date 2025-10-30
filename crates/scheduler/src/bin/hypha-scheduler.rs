@@ -491,11 +491,12 @@ async fn main() -> Result<()> {
             timeout,
             ..
         } => {
-            let config: ConfigWithMetadata<Config> = builder()
+            let config = builder::<Config>()
                 .with_provider(Toml::file(config_file))
                 .with_provider(Env::prefixed("HYPHA_"))
                 .with_provider(Serialized::from(&args, figment::Profile::Default))
-                .build()?;
+                .build()?
+                .validate()?;
 
             let exclude_cidrs = config.exclude_cidr().clone();
             let (network, driver) = Network::create(
@@ -527,12 +528,13 @@ async fn main() -> Result<()> {
             Ok(())
         }
         args @ Commands::Run { config_file, .. } => {
-            let config: ConfigWithMetadata<Config> = builder()
+            let config = builder::<Config>()
                 .with_provider(Toml::file(config_file))
                 .with_provider(Env::prefixed("HYPHA_"))
                 .with_provider(Env::prefixed("OTEL_"))
                 .with_provider(Serialized::defaults(args))
-                .build()?;
+                .build()?
+                .validate()?;
 
             return run(config).await;
         }
