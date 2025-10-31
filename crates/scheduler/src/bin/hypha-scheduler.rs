@@ -301,6 +301,9 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
         }
     };
 
+    let worker1 = Worker::create(allocated_workers[0].clone(), network.clone()).await;
+    let worker2 = Worker::create(allocated_workers[1].clone(), network.clone()).await;
+
     // Request multiple workers to increase chances of two distinct peers
     let allocated_parameter_servers = match allocator
         .request(parameter_server_spec.clone(), 100.0, None, 1)
@@ -321,6 +324,9 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
         }
     };
 
+    let parameter_server =
+        Worker::create(allocated_parameter_servers[0].clone(), network.clone()).await;
+
     let dataset = diloco_config.dataset.dataset.clone();
     let (data_provider, dataset_record) = get_data_provider(&network, dataset.as_str()).await?;
 
@@ -340,9 +346,6 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
         let batch_sizes = [22, 12];
         let samples_per_update = 220;
         let diloco_rounds = 4;
-
-        let worker1 = Worker::create(allocated_workers[0].clone(), network.clone()).await;
-        let worker2 = Worker::create(allocated_workers[1].clone(), network.clone()).await;
 
         let worker_ids = allocated_workers
             .iter()
@@ -374,9 +377,6 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
         )
         .await
         .into_diagnostic()?;
-
-        let parameter_server =
-            Worker::create(allocated_parameter_servers[0].clone(), network.clone()).await;
 
         let _w1_task = Task::try_new(
             network.clone(),
