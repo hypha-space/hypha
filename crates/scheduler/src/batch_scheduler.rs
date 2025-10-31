@@ -86,7 +86,7 @@ where
                 State::Training => {
                     let time_cap = 10000u64;
                     let update_cap = 3u64;
-                    let (time, cnt, projection) = S::project(
+                    let (time, cnt, projection, capped) = S::project(
                         tracker.worker_tracker.last_updates(),
                         tracker.worker_tracker.batch_sizes(),
                         tracker.worker_tracker.estimates(),
@@ -102,7 +102,7 @@ where
                         cnt,
                         tracker.count()
                     );
-                    if cnt == 0 && projection[peer_position] < update_cap {
+                    if cnt == 0 && !capped {
                         tracker
                             .worker_tracker
                             .update_worker_state(&peer_id, State::UpdateScheduled);
@@ -118,6 +118,8 @@ where
             }
         }
         progress::Progress::Update => {
+            // ToDo. Track times for update scheduled and force update when a worker
+            // isn't responsive
             tracker
                 .lock()
                 .await
@@ -441,5 +443,40 @@ mod batch_scheduler_tests {
         );
         assert_eq!(tracker.lock().await.count(), 800);
         assert_eq!(tracker.lock().await.round(), 1);
+    }
+
+    #[tokio::test]
+    async fn single_worker_responding() {
+        let ps = PeerId::random();
+        let tracker = Arc::new(Mutex::new(ProgressTracker::<RunningMean>::new(ps, 200, 2)));
+        tokio::time::pause();
+        let w1 = PeerId::random();
+        tracker.lock().await.worker_tracker.add_worker(w1, 150);
+        let w2 = PeerId::random();
+        tracker.lock().await.worker_tracker.add_worker(w2, 100);
+        let (tx, _) = channel(1);
+        let job_id = Uuid::new_v4();
+
+        let steps = vec![
+            Step::new(
+                w1,
+                Status(progress::Status { batch_size: 100 }),
+                Response::ScheduleUpdate { counter: 1 },
+                100,
+            ),
+            Step::new(
+                w1,
+                Status(progress::Status { batch_size: 100 }),
+                Response::Continue {},
+                100,
+            ),
+        ];
+
+        advance_and_assert(tx.clone(), tracker.clone(), job_id, steps).await;
+
+        assert_eq!(
+            tracker.lock().await.worker_tracker.states(),
+            vec![State::UpdateScheduled, State::Training]
+        );
     }
 }
