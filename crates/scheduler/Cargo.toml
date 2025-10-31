@@ -21,7 +21,7 @@ libp2p.workspace = true
 libp2p-stream.workspace = true
 miette.workspace = true
 pin-project.workspace = true
-reqwest = {version="0.12.23", features = ["json"]}
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
