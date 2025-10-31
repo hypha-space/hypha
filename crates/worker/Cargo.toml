@@ -24,7 +24,7 @@ libp2p-stream.workspace = true
 miette.workspace = true
 nix.workspace = true
 ordered-float = "5"
-reqwest = { version = "0.12", default-features = false, features = ["stream", "json", "rustls-tls"] }
+reqwest.workspace = true
 safetensors.workspace = true
 serde.workspace = true
 serde_json.workspace = true
