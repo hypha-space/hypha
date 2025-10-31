@@ -8,7 +8,7 @@ pub trait Simulation {
         target: u64,
         time_cap: u64,
         steps_cap: u64,
-    ) -> (u64, u64, Vec<u64>);
+    ) -> (u64, u64, Vec<u64>, bool);
 }
 
 pub struct BasicSimulation {}
@@ -21,14 +21,7 @@ impl Simulation for BasicSimulation {
         data_points_left: u64,
         time_cap: u64,
         steps_cap: u64,
-    ) -> (u64, u64, Vec<u64>) {
-        if statistics.iter().contains(&0) {
-            return (
-                u64::MAX,
-                data_points_left,
-                (0..batch_sizes.len()).map(|_| steps_cap).collect(),
-            );
-        }
+    ) -> (u64, u64, Vec<u64>, bool) {
         let mut updates = vec![0u64; batch_sizes.len()];
         let mut next_update: Vec<u64> = progress
             .iter()
@@ -37,6 +30,7 @@ impl Simulation for BasicSimulation {
             .collect();
         let mut time = 0;
         let mut to_go = data_points_left;
+        let mut capped = false;
         while to_go > 0 {
             let min_set = next_update
                 .iter()
@@ -45,6 +39,7 @@ impl Simulation for BasicSimulation {
 
             let next_event_time = *min_set[0].0;
             if next_event_time >= time_cap {
+                capped = true;
                 break;
             }
             time = next_event_time;
@@ -63,10 +58,11 @@ impl Simulation for BasicSimulation {
             }
 
             if max_steps_reached {
+                capped = true;
                 break;
             }
         }
-        (time, to_go, updates)
+        (time, to_go, updates, capped)
     }
 }
 
@@ -78,7 +74,7 @@ mod tests {
     fn test_simulation_hits_time_cap() {
         let batch_sizes = [10, 5, 1];
         let statistics = vec![20, 30, 50];
-        let (time, cnt, updates) =
+        let (time, cnt, updates, capped) =
             BasicSimulation::project(&[0; 3], &batch_sizes, statistics, 9999, 101, 999);
 
         // Simulation trace:
@@ -95,13 +91,14 @@ mod tests {
         assert_eq!(time, 100, "Final time should be 100");
         assert_eq!(cnt, 9999 - 67, "Total 'done' items should be correct");
         assert_eq!(updates, vec![5, 3, 2], "Update counts per worker");
+        assert_eq!(capped, true, "Limit reached")
     }
 
     #[test]
     fn test_simulation_hits_steps_cap() {
         let batch_sizes = [10, 5, 1];
         let statistics = vec![20, 30, 50];
-        let (time, done, updates) =
+        let (time, done, updates, capped) =
             BasicSimulation::project(&[0; 3], &batch_sizes, statistics, 9999, 999, 3);
 
         // Simulation trace:
@@ -112,13 +109,14 @@ mod tests {
         assert_eq!(time, 60, "Stops at t=60 when S0 hits 3 steps");
         assert_eq!(done, 9999 - 41, "Done count at t=60");
         assert_eq!(updates, vec![3, 2, 1], "S0 hits the cap of 3");
+        assert_eq!(capped, true, "Limit reached")
     }
 
     #[test]
     fn test_simulation_hits_update_target() {
         let batch_sizes = [10, 5, 1];
         let statistics = vec![20, 30, 50];
-        let (time, done, updates) =
+        let (time, done, updates, capped) =
             BasicSimulation::project(&[0; 3], &batch_sizes, statistics, 50, 999, 999);
 
         // Simulation trace:
@@ -131,5 +129,6 @@ mod tests {
         assert_eq!(time, 80, "Stops at t=80 when done 0");
         assert_eq!(done, 0, "Final done count");
         assert_eq!(updates, vec![4, 2, 1], "Updates at t=80");
+        assert_eq!(capped, false, "Limit not reached")
     }
 }

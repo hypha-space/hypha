@@ -13,7 +13,7 @@ pub struct RunningMean {
 impl RunningMean {
     fn new() -> Self {
         RunningMean {
-            running_mean: 0,
+            running_mean: u64::MAX,
             samples: 0,
         }
     }
