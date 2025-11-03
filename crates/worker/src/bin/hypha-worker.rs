@@ -1,7 +1,7 @@
 //! Worker binary.
 
 use std::{
-    fs,
+    env, fs,
     path::PathBuf,
     sync::{
         Arc,
@@ -298,6 +298,15 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
     let token = CancellationToken::new();
 
     // NOTE: Create arbiter for resource allocation - this is the primary worker allocation mechanism
+    let work_dir_base = if config.work_dir().is_absolute() {
+        config.work_dir().clone()
+    } else {
+        // NOTE: Align worker jobs with driver expectations by normalizing relative paths once.
+        env::current_dir()
+            .into_diagnostic()?
+            .join(config.work_dir())
+    };
+
     let arbiter = Arbiter::new(
         ResourceLeaseManager::new(StaticResourceManager::new(
             config.resources(),
@@ -308,7 +317,7 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
         JobManager::new(
             Connector::new(network.clone()),
             network.clone(),
-            config.work_dir().clone(),
+            work_dir_base,
         ),
     );
 
