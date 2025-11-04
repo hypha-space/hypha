@@ -26,6 +26,7 @@ default-members = [
 [workspace.package]
 publish = false
 edition = "2024"
+version = "0.0.0"
 
 [workspace.dependencies]
 axum = { version = "0.8.4", features = ["http2"] }
