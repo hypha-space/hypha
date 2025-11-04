@@ -1,4 +1,4 @@
-use hypha_messages::{Adam, Fetch, HFRepoType, Model, Nesterov, Requirement, Resources};
+use hypha_messages::{Adam, Fetch, Model, Nesterov, Requirement, Resources};
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
@@ -93,7 +93,6 @@ impl From<ModelSource> for Model {
             source.revision.clone(),
             source.filenames.clone(),
             source.token.clone(),
-            HFRepoType::Model,
         );
 
         match source.model_type {
@@ -111,7 +110,6 @@ impl From<PreprocessorSource> for Fetch {
             source.revision.clone(),
             source.filenames.clone(),
             source.token.clone(),
-            HFRepoType::Model,
         )
     }
 }
