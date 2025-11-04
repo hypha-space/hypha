@@ -114,11 +114,14 @@ struct SockState {
     job_id: Uuid,
     // task_id: Uuid,
     scheduler: PeerId,
+    task_tracker: TaskTracker,
+    cancel: CancellationToken,
 }
 
 pub struct Bridge {
     task_tracker: TaskTracker,
     socket_path: PathBuf,
+    cancel: CancellationToken,
 }
 
 impl Bridge {
@@ -135,12 +138,17 @@ impl Bridge {
         P1: AsRef<std::path::Path>,
         P2: AsRef<std::path::Path>,
     {
+        let task_tracker = TaskTracker::new();
+        let cancel_token = cancel;
+
         let state = Arc::new(SockState {
             work_dir: PathBuf::from(work_dir.as_ref()),
             connector,
             network,
             job_id,
             scheduler,
+            task_tracker: task_tracker.clone(),
+            cancel: cancel_token.clone(),
         });
 
         let router = Router::new()
@@ -156,8 +164,8 @@ impl Bridge {
 
         // Access is restricted to the current user.
         set_permissions(&socket_path, Permissions::from_mode(0o600)).await?;
-        let task_tracker = TaskTracker::new();
-        let shutdown = cancel.clone();
+
+        let shutdown = cancel_token.clone();
         task_tracker.spawn(
             axum::serve(listener, router)
                 .with_graceful_shutdown(async move {
@@ -165,15 +173,17 @@ impl Bridge {
                 })
                 .into_future(),
         );
-        task_tracker.close();
 
         Ok(Bridge {
             task_tracker,
             socket_path: PathBuf::from(socket_path.as_ref()),
+            cancel: cancel_token,
         })
     }
 
     pub(crate) async fn wait(&self) -> Result<(), Error> {
+        self.cancel.cancel();
+        self.task_tracker.close();
         self.task_tracker.wait().await;
 
         // If for some reason we can't remove the socket, ignore the error.
@@ -208,8 +218,6 @@ async fn fetch_resource(
     Json(resource): Json<Fetch>,
 ) -> Result<Json<Vec<FileResponse>>, Error> {
     validate_fetch(&resource)?;
-
-    tracing::info!("Fetching resource: {:?}", resource);
 
     let dir_rel = "artifacts".to_string();
     let dir_abs = safe_join(&state.work_dir, &dir_rel)?;
@@ -258,17 +266,60 @@ async fn send_resource(
         }
     };
 
+    let cancel = state.cancel.clone();
+    let file_path = abs.clone();
+    let task_tracker = state.task_tracker.clone();
+
     // Copy the resource in the background to avoid blocking.
-    tokio::spawn(async move {
-        while let Some(item) = writers.next().await.transpose().expect("stream") {
+    task_tracker.spawn(async move {
+        loop {
+            let next_item = tokio::select! {
+                _ = cancel.cancelled() => None,
+                item = writers.next() => item,
+            };
+
+            let Some(item_result) = next_item else {
+                if cancel.is_cancelled() {
+                    tracing::debug!(file = %file_path.display(), "send_resource: task cancelled");
+                }
+                break;
+            };
+
+            let item = match item_result {
+                Ok(item) => item,
+                Err(err) => {
+                    tracing::error!(error = %err, file = %file_path.display(), "send_resource: writer stream error");
+                    break;
+                }
+            };
+
             let peer_id = item.meta.name.clone();
-            let file = fs::File::open(&abs).await.expect("file exists");
-            tracing::info!(peer_id = %peer_id, file = %abs.display(), "Sending resource");
-            let mut reader = file;
             let mut writer = item.writer;
-            let sent_bytes = io::copy(&mut reader, &mut writer).await.expect("copy");
-            writer.shutdown().await.expect("shutdown");
-            tracing::info!(size = sent_bytes, file = %abs.display(), "Sent resource");
+
+            let mut reader = match fs::File::open(&file_path).await {
+                Ok(file) => file,
+                Err(err) => {
+                    tracing::error!(error = %err, file = %file_path.display(), peer_id = %peer_id, "send_resource: failed to open file");
+                    break;
+                }
+            };
+
+            tracing::info!(peer_id = %peer_id, file = %file_path.display(), "Sending resource");
+
+            let sent_bytes = match io::copy(&mut reader, &mut writer).await {
+                Ok(bytes) => bytes,
+                Err(err) => {
+                    tracing::error!(error = %err, file = %file_path.display(), peer_id = %peer_id, "send_resource: failed to copy resource");
+                    break;
+                }
+            };
+
+            if let Err(err) = writer.shutdown().await {
+                tracing::error!(error = %err, file = %file_path.display(), peer_id = %peer_id, "send_resource: failed to shutdown writer");
+                break;
+            }
+
+            tracing::info!(size = sent_bytes, file = %file_path.display(), peer_id = %peer_id, "Sent resource");
         }
     });
 
@@ -351,36 +402,72 @@ async fn receive_subscribe(
     let connector = state.connector.clone();
     let work_dir = state.work_dir.clone();
     let resource = req.resource.clone();
+    let cancel = state.cancel.clone();
+    let task_tracker = state.task_tracker.clone();
+    let dir_rel_clone = dir_rel.clone();
 
     // Background task: receive loops until the client disconnects or an error occurs
-    tokio::spawn(async move {
+    task_tracker.spawn(async move {
         let mut incoming = match connector.receive(resource).await {
             Ok(s) => s,
-            Err(_) => return,
+            Err(err) => {
+                tracing::error!(error = %err, path = %dir_rel_clone, "receive_subscribe: failed to start stream");
+                return;
+            }
         };
         let mut index = 0usize;
-        while let Some(item) = incoming.next().await.transpose().ok().flatten() {
+        while let Some(item_result) = tokio::select! {
+            _ = cancel.cancelled() => {
+                tracing::debug!(path = %dir_rel_clone, "receive_subscribe: task cancelled");
+                None
+            }
+            item = incoming.next() => item,
+        } {
+            let item = match item_result {
+                Ok(item) => item,
+                Err(err) => {
+                    tracing::error!(error = %err, path = %dir_rel_clone, "receive_subscribe: stream error");
+                    break;
+                }
+            };
             let (file_name, mut reader) = derive_name_and_reader(item, index);
-            let file_rel = format!("{}/{}", dir_rel, file_name);
+            let file_rel = format!("{}/{}", dir_rel_clone, file_name);
             let file_abs = match safe_join(&work_dir, &file_rel) {
                 Ok(p) => p,
-                Err(_) => break,
+                Err(err) => {
+                    tracing::error!(error = %err, file = %file_rel, "receive_subscribe: invalid target path");
+                    break;
+                }
             };
-            if let Some(parent) = file_abs.parent()
-                && fs::create_dir_all(parent).await.is_err()
-            {
-                break;
+            if let Some(parent) = file_abs.parent() {
+                match fs::create_dir_all(parent).await {
+                    Ok(()) => (),
+                    Err(err) => {
+                        tracing::error!(error = %err, directory = %parent.display(), "receive_subscribe: failed to create directory");
+                        break;
+                    }
+                }
             }
             let mut file = match fs::File::create(&file_abs).await {
                 Ok(f) => f,
-                Err(_) => break,
+                Err(err) => {
+                    tracing::error!(error = %err, file = %file_abs.display(), "receive_subscribe: failed to create file");
+                    break;
+                }
             };
             let size = match tokio::io::copy(&mut reader, &mut file).await {
                 Ok(n) => n,
-                Err(_) => break,
+                Err(err) => {
+                    tracing::error!(error = %err, file = %file_abs.display(), "receive_subscribe: failed to copy resource");
+                    break;
+                }
             };
-            let _ = file.sync_all().await;
-            let _ = set_permissions(&file_abs, Permissions::from_mode(0o600)).await;
+            if let Err(err) = file.sync_all().await {
+                tracing::warn!(error = %err, file = %file_abs.display(), "receive_subscribe: failed to sync file");
+            }
+            if let Err(err) = set_permissions(&file_abs, Permissions::from_mode(0o600)).await {
+                tracing::warn!(error = %err, file = %file_abs.display(), "receive_subscribe: failed to set permissions");
+            }
 
             tracing::info!(size, file = %file_abs.display(), "Received resource");
 
@@ -390,10 +477,15 @@ async fn receive_subscribe(
                 size,
                 from_peer,
             };
-            let ev = serde_json::to_string(&pointer)
-                .map(|s| Event::default().data(s))
-                .unwrap_or_else(|_| Event::default().data("{\\\"error\\\":\\\"serialize\\\"}"));
+            let ev = match serde_json::to_string(&pointer) {
+                Ok(data) => Event::default().data(data),
+                Err(err) => {
+                    tracing::error!(error = %err, "receive_subscribe: failed to serialize pointer");
+                    Event::default().data(r#"{"error":"serialize"}"#)
+                }
+            };
             if tx.send(ev).await.is_err() {
+                tracing::debug!(path = %dir_rel_clone, "receive_subscribe: client disconnected");
                 break;
             }
             index += 1;
