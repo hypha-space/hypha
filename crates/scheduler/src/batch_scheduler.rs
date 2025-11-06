@@ -84,8 +84,9 @@ where
             tracker.update(&peer_id, batch_size)?;
             match tracker.worker_tracker.worker_state(&peer_id) {
                 State::Training => {
-                    let time_cap = 10000u64;
-                    let update_cap = 3u64;
+                    // NOTE: time_cap is u64 (time), update_cap is u32 (count)
+                    let time_cap: u64 = 10000;
+                    let update_cap: u32 = 3;
                     let (time, cnt, projection, capped) = S::project(
                         tracker.worker_tracker.last_updates(),
                         tracker.worker_tracker.batch_sizes(),

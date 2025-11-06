@@ -23,7 +23,7 @@ where
 {
     pub(crate) last_update: Vec<u64>,
     peer_ids: Vec<PeerId>,
-    batch_sizes: Vec<u64>,
+    batch_sizes: Vec<u32>,
     statistics: Vec<T>,
     woker_state: Vec<State>,
 }
@@ -49,7 +49,7 @@ where
         }
     }
 
-    pub fn add_worker(&mut self, id: PeerId, batch_size: u64) {
+    pub fn add_worker(&mut self, id: PeerId, batch_size: u32) {
         self.peer_ids.push(id);
         self.batch_sizes.push(batch_size);
         self.last_update.push(0); // TODO: Need to handle this better for late arrivals
@@ -74,7 +74,7 @@ where
         Ok(())
     }
 
-    pub fn batch_sizes(&self) -> &[u64] {
+    pub fn batch_sizes(&self) -> &[u32] {
         self.batch_sizes.as_slice()
     }
 

@@ -18,7 +18,7 @@ pub enum MetricsError {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AimMetrics {
     pub worker_id: PeerId,
-    pub round: u64,
+    pub round: u32,
     pub metric_name: String,
     pub value: f32,
 }

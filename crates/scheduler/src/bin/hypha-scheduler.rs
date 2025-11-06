@@ -491,7 +491,7 @@ fn get_executor_with_dataset(
     peer_id: PeerId,
     dataset: String,
     parameter_server: PeerId,
-    batch_size: u64,
+    batch_size: u32,
 ) -> Executor {
     Executor::DiLoCoTransformer {
         model: config.model.clone().into(),

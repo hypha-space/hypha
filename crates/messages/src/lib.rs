@@ -8,7 +8,7 @@ use uuid::Uuid;
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ArtifactHeader {
     pub job_id: Uuid,
-    pub epoch: u64,
+    pub epoch: u32,
 }
 
 pub mod api {
@@ -94,12 +94,12 @@ pub mod progress {
 
     #[derive(Clone, Debug, Serialize, Deserialize)]
     pub struct Status {
-        pub batch_size: u64,
+        pub batch_size: u32,
     }
 
     #[derive(Clone, Debug, Serialize, Deserialize)]
     pub struct Metrics {
-        pub round: u64,
+        pub round: u32,
         pub metrics: HashMap<String, f32>,
     }
 
@@ -110,7 +110,7 @@ pub mod progress {
         Continue,
         ScheduleUpdate {
             // Batch counter until update
-            counter: u64,
+            counter: u32,
         },
         Done,
         Error,
