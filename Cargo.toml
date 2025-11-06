@@ -83,6 +83,7 @@ tokio = { version = "1.43.0", features = [
     "rt-multi-thread",
     "sync",
     "signal",
+    "test-util",
     "io-util",
 ] }
 tokio-stream = { version = "0.1.17", features = ["fs", "sync"] }
