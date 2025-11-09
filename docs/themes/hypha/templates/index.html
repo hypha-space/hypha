@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="hero">
+    <h1>{{ section.title | default(value=config.title) }}</h1>
+    {% if section.extra.subtitle %}
+        <p class="subtitle">{{ section.extra.subtitle }}</p>
+    {% endif %}
+    {% if section.content %}
+        {{ section.content | safe }}
+    {% endif %}
+</div>
+
+{% if section.extra.features %}
+<section class="features">
+    <h2>Features</h2>
+    <div class="feature-grid">
+        {% for feature in section.extra.features %}
+        <div class="feature-card">
+            <h3>{{ feature.title }}</h3>
+            <p>{{ feature.description }}</p>
+        </div>
+        {% endfor %}
+    </div>
+</section>
+{% endif %}
+{% endblock %}

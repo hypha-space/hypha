@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="{{ lang | default(value='en') }}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}{{ config.title }}{% endblock %}</title>
+    <meta name="description" content="{% block description %}{{ config.description }}{% endblock %}">
+
+    <!-- Favicon -->
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+
+    <!-- Styles -->
+    <link rel="stylesheet" href="{{ get_url(path='css/style.css', trailing_slash=false) }}">
+
+    {% block extra_head %}{% endblock %}
+</head>
+<body>
+    <div class="wrapper">
+        <header class="header">
+            <div class="container">
+                <nav class="nav">
+                    <a href="{{ config.base_url }}" class="logo">
+                        <strong>{{ config.extra.project_name | default(value='Hypha') }}</strong>
+                    </a>
+                    <ul class="menu">
+                        {% if config.extra.menu %}
+                            {% for item in config.extra.menu %}
+                                <li>
+                                    <a href="{{ item.url }}" {% if item.external %}target="_blank" rel="noopener noreferrer"{% endif %}>
+                                        {{ item.name }}
+                                    </a>
+                                </li>
+                            {% endfor %}
+                        {% endif %}
+                    </ul>
+                </nav>
+            </div>
+        </header>
+
+        <main class="main">
+            <div class="container">
+                {% block content %}{% endblock %}
+            </div>
+        </main>
+
+        <footer class="footer">
+            <div class="container">
+                <p>
+                    &copy; {{ now() | date(format="%Y") }} Hypha Project.
+                    <a href="{{ config.extra.repository_url }}" target="_blank" rel="noopener noreferrer">View on GitHub</a>
+                </p>
+            </div>
+        </footer>
+    </div>
+
+    {% block extra_js %}{% endblock %}
+</body>
+</html>

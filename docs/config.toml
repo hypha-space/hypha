@@ -1,0 +1,69 @@
+# Hypha Documentation Site Configuration
+
+# Base URL - update this when deploying to production
+base_url = "https://hypha.space"
+
+# Site title and description
+title = "Hypha Documentation"
+description = "Self-managing, enterprise-ready ML system that democratizes access to large-scale machine learning"
+
+# Language settings
+default_language = "en"
+
+# Theme configuration
+theme = "hypha"
+
+# Build settings
+compile_sass = true
+minify_html = true
+generate_feed = false
+build_search_index = true
+
+# Additional metadata
+[extra]
+# Project information
+project_name = "Hypha"
+repository_url = "https://github.com/hypha-space/hypha"
+documentation_url = "https://docs.hypha.space"
+
+# Navigation menu
+[[extra.menu]]
+name = "Home"
+url = "/"
+
+[[extra.menu]]
+name = "Getting Started"
+url = "/getting-started/"
+
+[[extra.menu]]
+name = "Architecture"
+url = "/architecture/"
+
+[[extra.menu]]
+name = "Deployment"
+url = "/deployment/"
+
+[[extra.menu]]
+name = "Contributing"
+url = "/contributing/"
+
+[[extra.menu]]
+name = "GitHub"
+url = "https://github.com/hypha-space/hypha"
+external = true
+
+# Markdown settings
+[markdown]
+highlight_code = true
+highlight_theme = "base16-ocean-dark"
+render_emoji = true
+external_links_target_blank = true
+external_links_no_follow = true
+external_links_no_referrer = true
+smart_punctuation = true
+
+# Table of contents
+[extra.toc]
+enabled = true
+min_level = 2
+max_level = 3

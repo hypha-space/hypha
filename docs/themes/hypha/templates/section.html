@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+
+{% block title %}{{ section.title }} | {{ config.title }}{% endblock %}
+
+{% block description %}{{ section.description | default(value=config.description) }}{% endblock %}
+
+{% block content %}
+<div class="section">
+    <header class="section-header">
+        <h1>{{ section.title }}</h1>
+        {% if section.description %}
+            <p class="section-description">{{ section.description }}</p>
+        {% endif %}
+    </header>
+
+    {% if section.content %}
+    <div class="section-content">
+        {{ section.content | safe }}
+    </div>
+    {% endif %}
+
+    {% if section.pages %}
+    <div class="page-list">
+        <h2>Pages</h2>
+        <ul>
+            {% for page in section.pages %}
+            <li>
+                <a href="{{ page.permalink }}">
+                    <strong>{{ page.title }}</strong>
+                    {% if page.description %}
+                        <p>{{ page.description }}</p>
+                    {% endif %}
+                </a>
+            </li>
+            {% endfor %}
+        </ul>
+    </div>
+    {% endif %}
+
+    {% if section.subsections %}
+    <div class="subsection-list">
+        <h2>Sections</h2>
+        <ul>
+            {% for subsection_path in section.subsections %}
+                {% set subsection = get_section(path=subsection_path) %}
+                <li>
+                    <a href="{{ subsection.permalink }}">
+                        <strong>{{ subsection.title }}</strong>
+                        {% if subsection.description %}
+                            <p>{{ subsection.description }}</p>
+                        {% endif %}
+                    </a>
+                </li>
+            {% endfor %}
+        </ul>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}
