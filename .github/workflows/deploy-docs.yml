@@ -1,0 +1,45 @@
+name: Deploy Documentation to Cloudflare
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'docs/**'
+      - 'wrangler.toml'
+      - '.github/workflows/deploy-docs.yml'
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    name: Deploy Documentation
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Zola
+        uses: taiki-e/install-action@v2
+        with:
+          tool: zola@0.21.0
+
+      - name: Build documentation
+        run: |
+          cd docs
+          zola build
+        env:
+          ZOLA_ENV: production
+
+      - name: Deploy to Cloudflare Workers
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: deploy
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Deployment summary
+        run: |
+          echo "✅ Documentation deployed successfully!"
+          echo "The documentation site has been deployed to Cloudflare."
