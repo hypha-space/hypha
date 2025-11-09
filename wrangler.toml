@@ -1,0 +1,19 @@
+name = "hypha-docs"
+compatibility_date = "2025-01-01"
+
+[assets]
+directory = "./docs/public"
+not_found_handling = "404-page"
+html_handling = "auto-trailing-slash"
+
+[build]
+command = "zola build"
+
+# Environment variables for production
+[env.production]
+vars = { ENVIRONMENT = "production" }
+
+# Optional: Custom routes (uncomment and configure when you have a custom domain)
+# routes = [
+#   { pattern = "docs.hypha.space/*", zone_name = "hypha.space" }
+# ]
