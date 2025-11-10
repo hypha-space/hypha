@@ -12,7 +12,7 @@ use thiserror::Error;
 use tokio::{task::JoinHandle, time::sleep};
 use uuid::Uuid;
 
-use crate::{allocator::AllocatedWorker, network::Network};
+use crate::network::Network;
 
 #[derive(Debug, Clone)]
 pub struct WorkerInfo {
@@ -68,18 +68,22 @@ pub struct Worker {
 }
 
 impl Worker {
-    pub async fn create(allocated_worker: AllocatedWorker, network: Network) -> Self {
+    pub async fn create(
+        lease_id: Uuid,
+        peer_id: PeerId,
+        spec: WorkerSpec,
+        price: f64,
+        network: Network,
+    ) -> Self {
         let lease_handler: JoinHandle<Result<(), WorkerError>> = tokio::spawn({
             let network = network.clone();
             async move {
                 loop {
-                    tracing::info!(lease_id = %allocated_worker.lease_id, peer_id = %allocated_worker.peer_id, "Refreshing lease");
+                    tracing::info!(%lease_id, %peer_id, "Refreshing lease");
                     match network
                         .request::<api::Codec>(
-                            allocated_worker.peer_id,
-                            api::Request::RenewLease(renew_lease::Request {
-                                id: allocated_worker.lease_id,
-                            }),
+                            peer_id,
+                            api::Request::RenewLease(renew_lease::Request { id: lease_id }),
                         )
                         .await
                     {
@@ -100,7 +104,7 @@ impl Worker {
                             tracing::info!(
                                 duration = duration.as_millis(),
                                 safe_duration = safe_duration.as_millis(),
-                                lease_id = %allocated_worker.lease_id,
+                                %lease_id,
                                 "Lease renewed, renewing in {}ms",
                                 safe_duration.as_millis()
                             );
@@ -127,10 +131,10 @@ impl Worker {
         });
 
         Self {
-            lease_id: allocated_worker.lease_id,
-            peer_id: allocated_worker.peer_id,
-            spec: allocated_worker.spec,
-            price: allocated_worker.price,
+            lease_id,
+            peer_id,
+            spec,
+            price,
             lease_handler,
         }
     }

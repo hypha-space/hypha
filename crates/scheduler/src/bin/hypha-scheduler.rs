@@ -4,7 +4,7 @@ use std::{fs, path::PathBuf, sync::Arc, time::Duration};
 
 use clap::{Parser, Subcommand};
 use figment::providers::{Env, Format, Serialized, Toml};
-use futures_util::future::join_all;
+use futures_util::future::{join_all, select_all};
 use hypha_config::{ConfigWithMetadata, ConfigWithMetadataTLSExt, builder, to_toml};
 use hypha_messages::{
     DataRecord, Executor, Fetch, JobSpec, Receive, SelectionStrategy, Send, health,
@@ -25,7 +25,6 @@ use hypha_scheduler::{
     statistics::RunningMean,
     task::Task,
     tracker::{progress::ProgressTracker, slice::SliceTracker},
-    worker::Worker,
 };
 use hypha_telemetry as telemetry;
 use libp2p::{Multiaddr, PeerId, multiaddr::Protocol};
@@ -341,17 +340,17 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
         let samples_per_update = 220;
         let diloco_rounds = 4;
 
-        let worker1 = Worker::create(allocated_workers[0].clone(), network.clone()).await;
-        let worker2 = Worker::create(allocated_workers[1].clone(), network.clone()).await;
+        let worker1 = &allocated_workers[0];
+        let worker2 = &allocated_workers[1];
 
         let worker_ids = allocated_workers
             .iter()
-            .map(|w| w.peer_id)
+            .map(|w| w.peer_id())
             .collect::<Vec<_>>();
 
         // TODO compute true batch sizes
         let run_tracker = Arc::new(Mutex::new(ProgressTracker::<RunningMean>::new(
-            allocated_parameter_servers[0].peer_id,
+            allocated_parameter_servers[0].peer_id(),
             samples_per_update,
             diloco_rounds,
         )));
@@ -359,12 +358,12 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
             .lock()
             .await
             .worker_tracker
-            .add_worker(allocated_workers[0].peer_id, batch_sizes[0]);
+            .add_worker(allocated_workers[0].peer_id(), batch_sizes[0]);
         run_tracker
             .lock()
             .await
             .worker_tracker
-            .add_worker(allocated_workers[1].peer_id, batch_sizes[1]);
+            .add_worker(allocated_workers[1].peer_id(), batch_sizes[1]);
 
         let (metrics_rx, batch_scheduler_handle) = BatchScheduler::run::<
             RunningMean,
@@ -375,8 +374,7 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
         .await
         .into_diagnostic()?;
 
-        let parameter_server =
-            Worker::create(allocated_parameter_servers[0].clone(), network.clone()).await;
+        let parameter_server = &allocated_parameter_servers[0];
 
         let _w1_task = Task::try_new(
             network.clone(),
@@ -390,7 +388,7 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
                     batch_sizes[0],
                 ),
             },
-            &[&worker1],
+            &[worker1],
         )
         .await
         .into_diagnostic()?;
@@ -406,7 +404,7 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
                     batch_sizes[1],
                 ),
             },
-            &[&worker2],
+            &[worker2],
         )
         .await
         .into_diagnostic()?;
@@ -421,7 +419,7 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
                     optimizer: diloco_config.parameter_server.optimizer.clone(),
                 },
             },
-            &[&parameter_server],
+            &[parameter_server],
         )
         .await
         .into_diagnostic()?;
@@ -439,15 +437,6 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
                 Err(e) = metrics_bridge.run(cancel_token) => {
                     tracing::error!(error = %e, "Status bridge failed");
                 }
-                Err(e) = worker1 => {
-                    tracing::error!(error = %e, "Worker 1 failed");
-                },
-                Err(e) = worker2 => {
-                    tracing::error!(error = %e, "Worker 2 failed");
-                }
-                Err(e) = parameter_server => {
-                    tracing::error!(error = %e, "Parameter Server failed");
-                }
                 _ = batch_scheduler_handle => {
                     tracing::info!("Batch Scheduler finished");
                 }
@@ -462,6 +451,12 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {
             tracing::info!("Received SIGINT, shutting down");
+        }
+        (Err(e), index, _) = select_all(allocated_workers) => {
+            tracing::error!(error = %e, "Worker {index} failed");
+        }
+        (Err(e), _, _) = select_all(allocated_parameter_servers) => {
+            tracing::error!(error = %e, "Parameter server failed");
         }
         _ = &mut driver_task => {
             tracing::warn!("Network driver terminated, shutting down");

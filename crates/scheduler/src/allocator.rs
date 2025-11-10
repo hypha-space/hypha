@@ -5,7 +5,7 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use futures_util::{Stream, StreamExt};
+use futures_util::{Stream, StreamExt, future::join_all};
 use hypha_messages::{
     WorkerSpec, api, request_worker,
     worker_offer::{self, Request as WorkerOfferRequest},
@@ -18,7 +18,7 @@ use tokio::{sync::mpsc, time::Sleep};
 use tokio_stream::wrappers::ReceiverStream;
 use uuid::Uuid;
 
-use crate::network::Network;
+use crate::{network::Network, worker::Worker};
 
 const WORKER_TOPIC: &str = "hypha/worker";
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -37,14 +37,6 @@ pub enum AllocatorError {
     LeaseFailed(#[from] hypha_leases::LedgerError),
 }
 
-#[derive(Debug, Clone)]
-pub struct AllocatedWorker {
-    pub lease_id: Uuid,
-    pub peer_id: PeerId,
-    pub spec: WorkerSpec,
-    pub price: f64,
-}
-
 /// Trait for different worker allocation strategies
 pub trait Allocator: Send + Sync {
     /// Request `num` workers matching the given specification offered for no more than the given price
@@ -55,7 +47,7 @@ pub trait Allocator: Send + Sync {
         price: f64,
         deadline: Option<Duration>,
         num: usize,
-    ) -> impl Future<Output = Result<Vec<AllocatedWorker>, AllocatorError>> + Send;
+    ) -> impl Future<Output = Result<Vec<Worker>, AllocatorError>> + Send;
 }
 
 /// Greedy allocator that selects the first worker offering the lowest price
@@ -76,7 +68,7 @@ impl Allocator for GreedyWorkerAllocator {
         bid: f64,
         deadline: Option<Duration>,
         num: usize,
-    ) -> Result<Vec<AllocatedWorker>, AllocatorError> {
+    ) -> Result<Vec<Worker>, AllocatorError> {
         let id = Uuid::new_v4();
         let deadline = deadline.unwrap_or(DEFAULT_TIMEOUT);
 
@@ -145,15 +137,17 @@ impl Allocator for GreedyWorkerAllocator {
 
         match offers {
             Some(offers) if !offers.is_empty() => {
-                let workers = offers
-                    .into_iter()
-                    .map(|(peer_id, offer)| AllocatedWorker {
-                        lease_id: offer.id,
-                        peer_id,
-                        spec: spec.clone(),
-                        price: offer.price,
-                    })
-                    .collect::<Vec<_>>();
+                // While the worker instances created here are themselves futures, it's the caller's
+                // responsibility to await them.
+                #[allow(clippy::async_yields_async)]
+                let workers = join_all(offers.into_iter().map(|(peer_id, offer)| {
+                    let spec = spec.clone();
+                    async move {
+                        Worker::create(offer.id, peer_id, spec, offer.price, self.network.clone())
+                            .await
+                    }
+                }))
+                .await;
 
                 Ok(workers)
             }
