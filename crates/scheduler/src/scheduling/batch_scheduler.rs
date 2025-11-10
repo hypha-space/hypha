@@ -239,8 +239,8 @@ mod batch_scheduler_tests {
     };
     use uuid::Uuid;
 
+    use super::schedule;
     use crate::{
-        batch_scheduler::schedule,
         simulation::BasicSimulation,
         statistics::RunningMean,
         tracker::{progress::ProgressTracker, worker::State},

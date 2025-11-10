@@ -28,25 +28,20 @@ from .api import Session
 FETCH_PATH = "artifacts"
 
 
-def prepare_files(config: dict[str, Any], session: Session, work_dir: str) -> str:
-    tensor_data = session.fetch(config["data"])
-    tensor_data_path = os.path.join(work_dir, tensor_data[0]["path"])
-
+def prepare_files(config: dict[str, Any], session: Session) -> None:
     session.fetch(config["model"]["artifact"])
 
     preprocessor = config.get("preprocessor")
     if preprocessor:
         session.fetch(preprocessor)
 
-    return tensor_data_path
-
 
 def get_model(model_config: str, model_type: str) -> Module:
     # Initializing a model from a Hugging Face configuration
     if model_type == "causal-lm":
-        return AutoModelForCausalLM.from_pretrained(model_config)
+        return AutoModelForCausalLM.from_pretrained(model_config, trust_remote_code=True)
     if model_type == "vision-classification":
-        return cast(Module, AutoModelForImageClassification.from_pretrained(model_config))
+        return cast(Module, AutoModelForImageClassification.from_pretrained(model_config, trust_remote_code=True))
     # if model_type == "Torch":
     # ...
     raise RuntimeError(f"Model type {model_type} not supported.")
@@ -54,7 +49,7 @@ def get_model(model_config: str, model_type: str) -> Module:
 
 def get_preprocessor(preprocessor_file: str, model_type: str) -> Any:
     if model_type == "vision-classification":
-        return AutoImageProcessor.from_pretrained(preprocessor_file)  # type: ignore[no-untyped-call]
+        return AutoImageProcessor.from_pretrained(preprocessor_file, trust_remote_code=True)  # type: ignore[no-untyped-call]
     raise RuntimeError(f"Pre-Processor for model type {model_type} not found")
 
 
@@ -69,34 +64,45 @@ def get_adam(optimizer: dict[str, Any], parameters: Iterable[torch.Tensor]) -> O
     return torch.optim.AdamW(parameters, lr=lr)
 
 
+def fetch_data(session: Session, data: str, work_dir: str) -> Iterator[str]:
+    def wrap() -> Iterator[str]:
+        while True:
+            tensor_data = session.fetch(data)
+            yield os.path.join(work_dir, tensor_data[0]["path"])
+
+    return iter(wrap())
+
+
 def get_data_loader(
-    data_set_path: str,
-    work_dir: str,
+    data_file_iter: Iterator[str],
     model_type: str,
-    preprocessor_file: str | None,
+    preprocessor: Any,
     batch_size: int,
 ) -> torch.utils.data.DataLoader:  # type: ignore[type-arg]
     if model_type == "causal-lm":
+        data_set_path = next(data_file_iter)
         with safe_open(data_set_path, framework="pt", device="cpu") as data:  # type: ignore
             ds = data.get_tensor(data.keys()[0])
             return torch.utils.data.DataLoader(ds, batch_size=batch_size)
     if model_type == "vision-classification":
-        if not preprocessor_file:
-            raise RuntimeError("Vision classification requires a preprocessor artifact")
 
         class VisionDs(torch.utils.data.IterableDataset):  # type: ignore[type-arg]
-            def __init__(self, data_set_path: str, work_dir: str):
+            def __init__(self) -> None:
                 super(VisionDs).__init__()  # type: ignore[misc]
-                self.data_set_path = data_set_path
-                self.processor = get_preprocessor(f"{work_dir}/{preprocessor_file}", model_type)
+
+                if not preprocessor:
+                    raise RuntimeError("Vision classification requires a preprocessor")
+
+                self.processor = preprocessor
 
             def __iter__(self):  # type: ignore[no-untyped-def]
-                with safe_open(self.data_set_path, framework="pt", device="cpu") as data:  # type: ignore
-                    processed = self.processor(data.get_tensor("inputs"))
-                    for pixel, label in zip(iter(processed["pixel_values"]), iter(data.get_tensor("targets"))):
-                        yield ({"pixel_values": pixel, "labels": label})
+                for path in data_file_iter:
+                    with safe_open(path, framework="pt", device="cpu") as data:  # type: ignore
+                        processed = self.processor(data.get_tensor("inputs"))
+                        for pixel, label in zip(iter(processed["pixel_values"]), iter(data.get_tensor("targets"))):
+                            yield ({"pixel_values": pixel, "labels": label})
 
-        return torch.utils.data.DataLoader(VisionDs(data_set_path, work_dir), batch_size=batch_size)
+        return torch.utils.data.DataLoader(VisionDs(), batch_size=batch_size)
     raise RuntimeError(f"Dataset for {model_type} not supported")
 
 
@@ -166,7 +172,7 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR09
 
         accelerator = Accelerator(project_dir=work_dir)
 
-        tensor_data_path = prepare_files(config, session, work_dir)
+        prepare_files(config, session)
         local_fetch_path = f"{work_dir}/{FETCH_PATH}"
         print(os.listdir(local_fetch_path))
         model_type = config["model"]["task"]
@@ -182,18 +188,17 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR09
             scheduler_args = {k: v for k, v in scheduler_config.items() if k != "type"}
             scheduler = get_scheduler(scheduler_type, scheduler_args, optimizer)
 
-        preprocessor = config.get("preprocessor")
-        preprocessor_file: str | None = None
-        if preprocessor:
-            filenames = preprocessor.get("filenames")
+        preprocessor_config = config.get("preprocessor")
+        preprocessor: Any | None = None
+        if preprocessor_config:
+            filenames = preprocessor_config.get("filenames")
             if filenames:
-                preprocessor_file = filenames[0]
+                preprocessor = get_preprocessor(f"{local_fetch_path}/{filenames[0]}", model_type)
 
         data_loader = get_data_loader(
-            tensor_data_path,
-            local_fetch_path,
+            fetch_data(session, config["data"], work_dir),
             model_type,
-            preprocessor_file,
+            preprocessor,
             config["batch_size"],
         )
 

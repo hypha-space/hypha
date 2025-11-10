@@ -178,7 +178,7 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
         |(peer_id, resource, mut stream)| {
             let dataset_files = dataset_files.clone();
             async move {
-                tracing::info!(peer_id = %peer_id, dataset = resource.dataset, "Sending tensor to peer");
+                tracing::info!(peer_id = %peer_id, dataset = resource.dataset, slice= resource.index, "Sending tensor to peer");
 
                 if dataset_name == resource.dataset.as_str() {
                     // Use the provided offsets to select a subset of the available dataset files.
