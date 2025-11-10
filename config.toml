@@ -10,6 +10,9 @@ description = "Self-managing, enterprise-ready ML system that democratizes acces
 # Language settings
 default_language = "en"
 
+# Content directory - markdown files live in docs/
+content_dir = "docs"
+
 # Theme configuration
 theme = "hypha"
 

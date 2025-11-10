@@ -1,6 +1,6 @@
 # Hypha Documentation
 
-This directory contains the source for Hypha's documentation website, built with [Zola](https://www.getzola.org/) and deployed to Cloudflare.
+This directory contains the markdown content for Hypha's documentation website. The site is built with [Zola](https://www.getzola.org/) and deployed to Cloudflare.
 
 ## Local Development
 
@@ -11,10 +11,7 @@ This directory contains the source for Hypha's documentation website, built with
 ### Building Locally
 
 ```bash
-# Navigate to docs directory
-cd docs
-
-# Build the site
+# From the project root
 zola build
 
 # Serve locally with live reload
@@ -26,36 +23,36 @@ The documentation will be available at `http://127.0.0.1:1111`.
 ## Project Structure
 
 ```
-docs/
+hypha/
 ├── config.toml              # Zola configuration
-├── content/                 # Markdown content
+├── themes/                  # Custom theme
+│   └── hypha/
+│       ├── templates/       # HTML templates
+│       └── static/          # Theme assets (CSS, JS)
+├── static/                  # Static assets (images, favicon, etc.)
+├── docs/                    # Markdown documentation (this directory)
 │   ├── _index.md           # Homepage
 │   ├── getting-started.md  # Getting started guide
 │   ├── architecture/       # Architecture documentation
 │   ├── deployment/         # Deployment guides
 │   └── contributing.md     # Contributing guide
-├── static/                 # Static assets (images, favicon, etc.)
-├── themes/                 # Custom theme
-│   └── hypha/
-│       ├── templates/      # HTML templates
-│       └── static/         # Theme assets (CSS, JS)
-└── public/                 # Generated site (ignored by git)
+└── public/                  # Generated site (ignored by git)
 ```
 
 ## Writing Documentation
 
 ### Adding a New Page
 
-1. Create a new markdown file in `content/`:
+1. Create a new markdown file in `docs/`:
 
 ```bash
 # Simple page
-touch content/new-page.md
+touch docs/new-page.md
 
 # Page in a section
-mkdir -p content/section-name
-touch content/section-name/_index.md
-touch content/section-name/new-page.md
+mkdir -p docs/section-name
+touch docs/section-name/_index.md
+touch docs/section-name/new-page.md
 ```
 
 2. Add frontmatter to the markdown file:
@@ -74,7 +71,7 @@ weight = 1
 
 ### Adding a New Section
 
-1. Create a directory in `content/`
+1. Create a directory in `docs/`
 2. Add an `_index.md` file with section metadata:
 
 ```markdown
@@ -119,11 +116,9 @@ If you have Cloudflare credentials configured:
 
 ```bash
 # Build the site
-cd docs
 zola build
 
 # Deploy with Wrangler
-cd ..
 wrangler deploy
 ```
 
@@ -140,8 +135,8 @@ See the main [CONTRIBUTING.md](../CONTRIBUTING.md) for general contribution guid
 
 For documentation-specific contributions:
 
-1. Make changes to markdown files in `content/`
-2. Test locally with `zola serve`
+1. Make changes to markdown files in `docs/`
+2. Test locally with `zola serve` (from project root)
 3. Submit a pull request
 4. Documentation will be deployed automatically on merge
 

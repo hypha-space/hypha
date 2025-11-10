@@ -24,9 +24,7 @@ jobs:
           tool: zola@0.21.0
 
       - name: Build documentation
-        run: |
-          cd docs
-          zola build
+        run: zola build
         env:
           ZOLA_ENV: production
 
