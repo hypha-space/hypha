@@ -1,0 +1,55 @@
+name: "Build Python Project (uv)"
+description: "Builds a given python uv project"
+inputs:
+  version:
+    description: "Version to set in pyproject.toml"
+    required: true
+  project-path:
+    description: "Path to project"
+    required: true
+runs:
+  using: "composite"
+  steps:
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 #v4.2.2
+    - uses: astral-sh/setup-uv@bd01e18f51369d5a26f1651c3cb451d3417e3bba #v6.3.1
+      with:
+        working-directory: ${{ inputs.project-path }}
+        enable-cache: true
+        # We want a per-project cache and assume that each one uses 'uv'.
+        # Furthermore, the symbolic links in the project causes '**' globs to fail.
+        cache-dependency-glob: |
+          ${{ inputs.project-path }}/pyproject.toml
+          ${{ inputs.project-path }}/uv.lock
+
+    - name: Set version
+      shell: bash
+      run: |
+        # Convert semver (1.2.3-alpha.1) to Python version (1.2.3a1), also truncate metadata other prerelease types (its broken then :shrug:)
+        PYVER=$(echo "${{ inputs.version }}" | sed -E 's/-alpha\./-a/;s/-beta\./-b/;s/-rc\./-rc/;s/-[0-9A-Za-z.-]+$//')
+        uv version "${PYVER}"
+      working-directory: ${{ inputs.project-path }}
+
+    - name: Build project
+      shell: bash
+      run: uv build
+      working-directory: ${{ inputs.project-path }}
+
+    - name: Generate Checksum files
+      shell: bash
+      run: |
+        cd ${{ inputs.project-path }}/dist
+        for file in *; do
+          sha256sum "$file" > "$file.sha256"
+        done
+
+    - name: Set sanitized name
+      id: sanitize
+      shell: bash
+      run: |
+        echo "SANITIZED_NAME=$(echo ${{ inputs.project-path }} | sed 's/\//-/g')" >> $GITHUB_ENV
+
+    - name: Upload built artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-output-python-${{ env.SANITIZED_NAME }}
+        path: ${{ inputs.project-path }}/dist

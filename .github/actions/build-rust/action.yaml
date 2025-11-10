@@ -1,0 +1,63 @@
+name: "Build Rust Project"
+description: "Set version and build selected Rust binaries for a target, then upload them."
+
+inputs:
+  version:
+    description: "Version to set in Cargo.toml"
+    required: true
+  target:
+    description: "Rust target triple (e.g., x86_64-unknown-linux-gnu)"
+    required: true
+  binaries:
+    description: "Space-separated or comma-separated list of binary names to build and upload"
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 #v4.2.2
+
+    - uses: swatinem/rust-cache@f0deed1e0edfc6a9be95417288c0e1099b1eeec3 # v2
+      with:
+        save-if: true
+        cache-provider: "github"
+
+    - name: Install cargo-edit
+      run: cargo install cargo-edit
+      shell: bash
+
+    - name: Set version
+      run: cargo set-version "${{ inputs.version }}"
+      shell: bash
+
+    - name: Build binaries for this target
+      shell: bash
+      run: cargo build --release --target "${{ inputs.target }}" --bins
+
+    - name: Prep selected artifacts for upload
+      shell: bash
+      run: |
+        mkdir -p artifacts
+        bins="${{ inputs.binaries }}"
+        # allow comma-separated or space-separated lists
+        bins="${bins//,/ }"
+        for bin in $bins; do
+          src="target/${{ inputs.target }}/release/$bin"
+          dst="artifacts/$bin-${{ inputs.target }}"
+          cp "$src" "$dst"
+          echo "Copied $src to $dst"
+        done
+
+    - name: Generate Checksum files
+      shell: bash
+      run: |
+        cd artifacts
+        for file in *; do
+          sha256sum "$file" > "$file.sha256"
+        done
+
+    - name: Upload built artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-output-rust-${{ inputs.target }}
+        path: artifacts/*

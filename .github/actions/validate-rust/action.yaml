@@ -1,0 +1,61 @@
+name: "Validate Rust Project"
+description: "Validates a given rust (cargo) project"
+inputs:
+  CODECOV_TOKEN:
+    description: "Codecov will be uploaded if token is provided"
+    required: false
+  save-cache:
+    description: "Whether to save cache after run"
+    required: false
+    default: "false"
+runs:
+  using: "composite"
+  steps:
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 #v4.2.2
+
+    # Setup Rust toolchain
+    - shell: bash
+      run: |
+        rustup toolchain install nightly --component rustfmt
+        rustup component add llvm-tools-preview
+
+    # Cache dependencies and build artifacts
+    - uses: swatinem/rust-cache@f0deed1e0edfc6a9be95417288c0e1099b1eeec3 # v2
+      with:
+        save-if: ${{ inputs.save-cache == 'true' }}
+        cache-provider: "github"
+
+    # Add custom matcher for cargo output
+    - shell: bash
+      run: echo "::add-matcher::.github/matcher/cargo.json"
+
+    - name: Check formatting
+      shell: bash
+      run: cargo +nightly fmt --check
+
+    - name: Lint
+      shell: bash
+      run: cargo clippy -- -D warnings
+
+    # Run tests with coverage instrumentation
+    - name: Test
+      shell: bash
+      run: cargo test
+      env:
+        RUSTFLAGS: -C instrument-coverage
+        LLVM_PROFILE_FILE: test-%p-%m.profraw
+
+    # Convert and upload coverage report
+    - shell: bash
+      run: cargo install --locked grcov
+
+    - shell: bash
+      run: grcov . -s . --binary-path ./target/debug/  --branch --ignore-not-existing -t lcov -o ./lcov.info
+
+    - name: Upload coverage report
+      if: "${{ inputs.CODECOV_TOKEN != '' }}"
+      uses: codecov/codecov-action@ad3126e916f78f00edff4ed0317cf185271ccc2d # v5.4.2
+      env:
+        CODECOV_TOKEN: ${{ inputs.CODECOV_TOKEN }}
+      with:
+        fail_ci_if_error: true

@@ -1,6 +1,6 @@
 [package]
 name = "hypha-network"
-version = "0.0.0"
+version.workspace = true
 publish.workspace = true
 edition.workspace = true
 license = "Apache-2.0"

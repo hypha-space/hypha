@@ -1,0 +1,147 @@
+name: Release Branch
+
+on:
+  push:
+    branches:
+      - main
+      - beta
+      - alpha
+      - "*.x"
+
+concurrency:
+  group: release-${{ github.ref }}
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
+
+jobs:
+  get-next-version:
+    name: Check for Release
+    uses: semantic-release-action/next-release-version/.github/workflows/next-release-version.yml@v4
+
+  validate-rust:
+    name: Validate Rust
+    needs:
+      - get-next-version
+    if: needs.get-next-version.outputs.new-release-published == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 #v4.2.2
+      - id: validate-rust
+        uses: ./.github/actions/validate-rust
+        with:
+          save-cache: "true"
+
+  validate-python:
+    runs-on: ubuntu-latest
+    name: Validate Python
+    needs:
+      - get-next-version
+    if: needs.get-next-version.outputs.new-release-published == 'true'
+    strategy:
+      matrix:
+        projects: ["drivers/hypha-accelerate-driver", "drivers/aim-driver"]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 #v4.2.2
+      - id: validate-python-uv
+        uses: ./.github/actions/validate-python-uv
+        with:
+          project-path: ${{ matrix.projects }}
+
+  check-dependencies:
+    name: Check Rust Dependencies
+    runs-on: ubuntu-latest
+    needs:
+      - get-next-version
+    if: needs.get-next-version.outputs.new-release-published == 'true'
+    strategy:
+      matrix:
+        checks:
+          - advisories
+          - bans licenses sources
+    # NOTE: Prevent sudden announcement of a new advisory from failing ci
+    continue-on-error: ${{ matrix.checks == 'advisories' }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 #v4.2.2
+      - uses: EmbarkStudios/cargo-deny-action@34899fc7ba81ca6268d5947a7a16b4649013fea1 #v2.0.11
+        with:
+          command: check ${{ matrix.checks }}
+
+  build-python:
+    runs-on: ubuntu-latest
+    name: Build Python
+    needs:
+      - get-next-version
+    strategy:
+      matrix:
+        projects: ["drivers/hypha-accelerate-driver"]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 #v4.2.2
+      - id: build-python-uv
+        uses: ./.github/actions/build-python-uv
+        with:
+          version: ${{ needs.get-next-version.outputs.new-release-version }}
+          project-path: ${{ matrix.projects }}
+
+  build-rust:
+    name: Build Rust
+    needs:
+      - get-next-version
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 #v4.2.2
+      - id: build-rust
+        uses: ./.github/actions/build-rust
+        with:
+          version: ${{ needs.get-next-version.outputs.new-release-version }}
+          target: ${{ matrix.target }}
+          binaries: "hypha-gateway hypha-worker hypha-data hypha-scheduler hypha-certutil"
+
+  github-release:
+    runs-on: ubuntu-latest
+    name: Create Github Release
+    needs:
+      - validate-rust
+      - validate-python
+      - check-dependencies
+      - build-python
+      - build-rust
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 #v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: lts/*
+
+      - name: Install semantic-release
+        run: npm install -g semantic-release@24 # same version as the action above
+
+      - name: Download release artifacts
+        uses: actions/download-artifact@v6
+        with:
+          pattern: build-output-*
+          path: artifacts
+
+      - name: ls artifacts
+        run: ls -R ./artifacts
+
+      - name: Invoke semantic-release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx semantic-release

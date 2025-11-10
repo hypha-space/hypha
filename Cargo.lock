@@ -1926,7 +1926,7 @@ dependencies = [
 
 [[package]]
 name = "hypha-config"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "documented",
  "figment",
@@ -1982,7 +1982,7 @@ dependencies = [
 
 [[package]]
 name = "hypha-leases"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "thiserror 2.0.17",
  "tokio",
@@ -2030,7 +2030,7 @@ dependencies = [
 
 [[package]]
 name = "hypha-scheduler"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "ciborium",
  "clap",
@@ -2085,7 +2085,7 @@ dependencies = [
 
 [[package]]
 name = "hypha-worker"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "axum",
  "candle-core",

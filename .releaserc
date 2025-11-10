@@ -1,0 +1,14 @@
+branches:
+  - "+([0-9])?(.{+([0-9]),x}).x"
+  - main
+  - name: beta
+    prerelease: true
+  - name: alpha
+    prerelease: true
+plugins:
+  - "@semantic-release/commit-analyzer"
+  - "@semantic-release/release-notes-generator"
+  - - "@semantic-release/github"
+    - assets:
+        # artifacts will be pushed to artifacts/**/* by the release workflow
+        - path: artifacts/**/*
