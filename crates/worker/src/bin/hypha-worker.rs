@@ -56,8 +56,12 @@ struct Cli {
 enum Commands {
     Init {
         /// Path where the configuration file will be written
-        #[clap(short, long, default_value = "config.toml")]
-        output: PathBuf,
+        #[clap(short, long)]
+        output: Option<PathBuf>,
+
+        /// Optional name for this worker node, defaults to "worker"
+        #[clap(short = 'n', long = "name", default_value = "worker")]
+        name: String,
     },
 
     /// Probe a target multiaddr for readiness and exit 0 if healthy.
@@ -380,8 +384,13 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
 async fn main() -> miette::Result<()> {
     let cli = Cli::parse();
     match &cli.command {
-        Commands::Init { output } => {
-            fs::write(output, &to_toml(&Config::default()).into_diagnostic()?).into_diagnostic()?;
+        Commands::Init { output, name } => {
+            let config = Config::with_name(name);
+            let output = output
+                .clone()
+                .unwrap_or_else(|| PathBuf::from(format!("{}-config.toml", name)));
+
+            fs::write(&output, &to_toml(&config).into_diagnostic()?).into_diagnostic()?;
 
             println!("Configuration written to: {output:?}");
             Ok(())

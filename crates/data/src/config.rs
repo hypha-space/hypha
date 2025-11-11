@@ -53,12 +53,17 @@ pub struct Config {
     telemetry_sample_ratio: Option<f64>,
 }
 
-impl Default for Config {
-    fn default() -> Self {
+impl Config {
+    /// Create a default configuration with the specified name prefix for certificate files.
+    ///
+    /// NOTE: This method enables the CLI `init --name` functionality by generating
+    /// configuration files with customized certificate file names based on the provided name.
+    /// This is essential for multi-node deployments where each node needs distinct certificates.
+    pub fn with_name(name: &str) -> Self {
         Self {
-            cert_pem: PathBuf::from("data-cert.pem"),
-            key_pem: PathBuf::from("data-key.pem"),
-            trust_pem: PathBuf::from("data-trust.pem"),
+            cert_pem: PathBuf::from(format!("{}-cert.pem", name)),
+            key_pem: PathBuf::from(format!("{}-key.pem", name)),
+            trust_pem: PathBuf::from(format!("{}-trust.pem", name)),
             crls_pem: None,
             gateway_addresses: vec![
                 "/ip4/1.2.3.4/tcp/1234"
@@ -167,5 +172,46 @@ impl ValidatableConfig for Config {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_with_name_sets_certificate_file_names() {
+        let config = Config::with_name("test-data");
+
+        assert_eq!(config.cert_pem, PathBuf::from("test-data-cert.pem"));
+        assert_eq!(config.key_pem, PathBuf::from("test-data-key.pem"));
+        assert_eq!(config.trust_pem, PathBuf::from("test-data-trust.pem"));
+    }
+
+    #[test]
+    fn config_with_name_preserves_other_default_values() {
+        let config = Config::with_name("custom");
+
+        // Verify that non-certificate fields retain their default values
+        assert_eq!(config.crls_pem, None);
+        assert!(!config.gateway_addresses.is_empty());
+    }
+
+    #[test]
+    fn config_with_name_handles_empty_string() {
+        let config = Config::with_name("");
+
+        assert_eq!(config.cert_pem, PathBuf::from("-cert.pem"));
+        assert_eq!(config.key_pem, PathBuf::from("-key.pem"));
+        assert_eq!(config.trust_pem, PathBuf::from("-trust.pem"));
+    }
+
+    #[test]
+    fn config_with_name_handles_special_characters() {
+        let config = Config::with_name("data-123_test");
+
+        assert_eq!(config.cert_pem, PathBuf::from("data-123_test-cert.pem"));
+        assert_eq!(config.key_pem, PathBuf::from("data-123_test-key.pem"));
+        assert_eq!(config.trust_pem, PathBuf::from("data-123_test-trust.pem"));
     }
 }
