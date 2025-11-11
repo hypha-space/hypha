@@ -180,4 +180,272 @@ mod integration_tests {
             "validation-test-trust.pem"
         );
     }
+
+    // Tests for the new --set parameter functionality
+
+    #[test]
+    fn init_with_set_dataset_path_override() {
+        let temp_dir = TempDir::new().expect("Failed to create temp directory");
+        let temp_path = temp_dir.path();
+
+        let binary_path = get_binary_path();
+        let output = Command::new(&binary_path)
+            .arg("init")
+            .arg("--name")
+            .arg("test-data")
+            .arg("--set")
+            .arg("dataset_path=/data/ml-datasets")
+            .arg("--output")
+            .arg(temp_path.join("set-dataset.toml"))
+            .output()
+            .expect("Failed to execute command");
+
+        assert!(
+            output.status.success(),
+            "Command failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let config_content = fs::read_to_string(temp_path.join("set-dataset.toml"))
+            .expect("Failed to read config file");
+
+        // Verify the --set override took effect for dataset_path
+        // NOTE: This replaces the old specific --dataset-path parameter functionality
+        assert!(
+            config_content.contains("dataset_path = \"/data/ml-datasets\""),
+            "Config should contain custom dataset_path, got: {}",
+            config_content
+        );
+    }
+
+    #[test]
+    fn init_with_set_string_override() {
+        let temp_dir = TempDir::new().expect("Failed to create temp directory");
+        let temp_path = temp_dir.path();
+
+        let binary_path = get_binary_path();
+        let output = Command::new(&binary_path)
+            .arg("init")
+            .arg("--name")
+            .arg("test-data")
+            .arg("--set")
+            .arg("cert_pem=custom-certificate.pem")
+            .arg("--output")
+            .arg(temp_path.join("set-string.toml"))
+            .output()
+            .expect("Failed to execute command");
+
+        assert!(
+            output.status.success(),
+            "Command failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let config_content = fs::read_to_string(temp_path.join("set-string.toml"))
+            .expect("Failed to read config file");
+
+        // Verify the --set override took effect
+        assert!(
+            config_content.contains("cert_pem = \"custom-certificate.pem\""),
+            "Config should contain custom cert_pem, got: {}",
+            config_content
+        );
+    }
+
+    #[test]
+    fn init_name_and_set_combination() {
+        let temp_dir = TempDir::new().expect("Failed to create temp directory");
+        let temp_path = temp_dir.path();
+
+        let binary_path = get_binary_path();
+        let output = Command::new(&binary_path)
+            .arg("init")
+            .arg("--name")
+            .arg("custom-data")
+            .arg("--set")
+            .arg("trust_pem=override-trust.pem")
+            .arg("--set")
+            .arg("dataset_path=/custom/data/path")
+            .arg("--output")
+            .arg(temp_path.join("name-and-set.toml"))
+            .output()
+            .expect("Failed to execute command");
+
+        assert!(
+            output.status.success(),
+            "Command failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let config_content = fs::read_to_string(temp_path.join("name-and-set.toml"))
+            .expect("Failed to read config file");
+
+        // Verify the --name parameter affected cert_pem and key_pem
+        assert!(
+            config_content.contains("cert_pem = \"custom-data-cert.pem\""),
+            "Config should contain name-based cert_pem, got: {}",
+            config_content
+        );
+        assert!(
+            config_content.contains("key_pem = \"custom-data-key.pem\""),
+            "Config should contain name-based key_pem, got: {}",
+            config_content
+        );
+
+        // Verify the --set parameters overrode the specified values
+        assert!(
+            config_content.contains("trust_pem = \"override-trust.pem\""),
+            "Config should contain override trust_pem, got: {}",
+            config_content
+        );
+        assert!(
+            config_content.contains("dataset_path = \"/custom/data/path\""),
+            "Config should contain custom dataset_path, got: {}",
+            config_content
+        );
+    }
+
+    #[test]
+    fn init_with_set_multiple_overrides() {
+        let temp_dir = TempDir::new().expect("Failed to create temp directory");
+        let temp_path = temp_dir.path();
+
+        let binary_path = get_binary_path();
+        let output = Command::new(&binary_path)
+            .arg("init")
+            .arg("--name")
+            .arg("test-data")
+            .arg("--set")
+            .arg("cert_pem=custom-cert.pem")
+            .arg("--set")
+            .arg("key_pem=custom-key.pem")
+            .arg("--set")
+            .arg("dataset_path=/tmp/multi-test-data")
+            .arg("--output")
+            .arg(temp_path.join("set-multiple.toml"))
+            .output()
+            .expect("Failed to execute command");
+
+        assert!(
+            output.status.success(),
+            "Command failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let config_content = fs::read_to_string(temp_path.join("set-multiple.toml"))
+            .expect("Failed to read config file");
+
+        // Verify all --set overrides took effect
+        assert!(config_content.contains("cert_pem = \"custom-cert.pem\""));
+        assert!(config_content.contains("key_pem = \"custom-key.pem\""));
+        assert!(config_content.contains("dataset_path = \"/tmp/multi-test-data\""));
+    }
+
+    #[test]
+    fn init_with_set_numeric_types() {
+        let temp_dir = TempDir::new().expect("Failed to create temp directory");
+        let temp_path = temp_dir.path();
+
+        let binary_path = get_binary_path();
+        let output = Command::new(&binary_path)
+            .arg("init")
+            .arg("--name")
+            .arg("test-data")
+            .arg("--set")
+            .arg("telemetry_sample_ratio=0.8")
+            .arg("--output")
+            .arg(temp_path.join("set-types.toml"))
+            .output()
+            .expect("Failed to execute command");
+
+        assert!(
+            output.status.success(),
+            "Command failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let config_content = fs::read_to_string(temp_path.join("set-types.toml"))
+            .expect("Failed to read config file");
+
+        // Verify numeric type detection works (no quotes around numbers)
+        assert!(
+            config_content.contains("telemetry_sample_ratio = 0.8"),
+            "Float should not have quotes, got: {}",
+            config_content
+        );
+    }
+
+    #[test]
+    fn init_with_set_invalid_syntax_fails() {
+        let temp_dir = TempDir::new().expect("Failed to create temp directory");
+        let temp_path = temp_dir.path();
+
+        let binary_path = get_binary_path();
+        let output = Command::new(&binary_path)
+            .arg("init")
+            .arg("--name")
+            .arg("test-data")
+            .arg("--set")
+            .arg("invalid_no_equals_sign")
+            .arg("--output")
+            .arg(temp_path.join("should-not-exist.toml"))
+            .output()
+            .expect("Failed to execute command");
+
+        // Command should fail due to invalid --set syntax
+        assert!(
+            !output.status.success(),
+            "Command should have failed with invalid --set syntax, stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        // Verify no config file was created
+        assert!(
+            !temp_path.join("should-not-exist.toml").exists(),
+            "Config file should not have been created on error"
+        );
+    }
+
+    #[test]
+    fn probe_accepts_set_parameters() {
+        let temp_dir = TempDir::new().expect("Failed to create temp directory");
+        let temp_path = temp_dir.path();
+
+        // First create a config file
+        let binary_path = get_binary_path();
+        let init_output = Command::new(&binary_path)
+            .arg("init")
+            .arg("--output")
+            .arg(temp_path.join("probe-config.toml"))
+            .output()
+            .expect("Failed to execute init command");
+
+        assert!(init_output.status.success());
+
+        // Test that probe accepts --set parameters syntax
+        let probe_output = Command::new(&binary_path)
+            .arg("probe")
+            .arg("--config")
+            .arg(temp_path.join("probe-config.toml"))
+            .arg("--set")
+            .arg("dataset_path=/tmp/probe-test")
+            .arg("--timeout")
+            .arg("100") // Quick timeout to fail fast
+            .arg("/ip4/127.0.0.1/tcp/1234")
+            .output()
+            .expect("Failed to execute probe command");
+
+        let stderr = String::from_utf8_lossy(&probe_output.stderr);
+
+        // The probe should fail with a connection-related error, not argument parsing error
+        assert!(
+            stderr.contains("Connection") ||
+            stderr.contains("timeout") ||
+            stderr.contains("refused") ||
+            stderr.contains("No such file or directory") ||  // Certificate files don't exist
+            stderr.contains("Configuration error"), // Expected if cert files don't exist
+            "Probe should fail due to connection/config issues, not argument parsing. stderr: {}",
+            stderr
+        );
+    }
 }

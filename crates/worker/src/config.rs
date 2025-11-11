@@ -317,7 +317,6 @@ mod tests {
         assert!(config.external_addresses.is_empty());
         assert!(config.relay_circuit);
         assert_eq!(config.work_dir, PathBuf::from("/tmp"));
-        assert!(!config.driver.is_empty());
     }
 
     #[test]

@@ -5,7 +5,7 @@ use std::{fs, path::PathBuf, sync::Arc, time::Duration};
 use clap::{Parser, Subcommand};
 use figment::providers::{Env, Format, Serialized, Toml};
 use futures_util::future::{join_all, select_all};
-use hypha_config::{ConfigWithMetadata, ConfigWithMetadataTLSExt, builder, to_toml};
+use hypha_config::{ConfigWithMetadata, ConfigWithMetadataTLSExt, builder, cli, to_toml};
 use hypha_messages::{
     AggregateExecutorConfig, AggregateExecutorDescriptor, DataRecord, Fetch, JobSpec, Receive,
     Requirement, SelectionStrategy, Send, TrainExecutorConfig, TrainExecutorDescriptor, WorkerSpec,
@@ -66,6 +66,12 @@ enum Commands {
         /// Optional name for this scheduler node, defaults to "scheduler"
         #[clap(short = 'n', long = "name", default_value = "scheduler")]
         name: String,
+
+        /// Set configuration values (can be used multiple times)
+        /// Example: --set gateway_addresses.0="/ip4/127.0.0.1/tcp/8080" --set listen_addresses.0="/ip4/0.0.0.0/tcp/8080"
+        #[clap(long = "set", value_parser = cli::parse_key_val)]
+        #[serde(skip)]
+        config_overrides: Vec<(String, String)>,
     },
     /// Probe a target multiaddr for readiness and exit 0 if healthy.
     #[serde(untagged)]
@@ -101,6 +107,12 @@ enum Commands {
         /// Target multiaddr to probe (e.g., /ip4/127.0.0.1/tcp/8080)
         #[clap(index = 1)]
         address: String,
+
+        /// Set configuration values (can be used multiple times)
+        /// Example: --set gateway_addresses.0="/ip4/127.0.0.1/tcp/8080"
+        #[clap(long = "set", value_parser = cli::parse_key_val)]
+        #[serde(skip)]
+        config_overrides: Vec<(String, String)>,
     },
     #[serde(untagged)]
     Run {
@@ -134,6 +146,12 @@ enum Commands {
         #[clap(long("exclude-cidr"))]
         #[serde(skip_serializing_if = "Option::is_none")]
         exclude_cidr: Option<Vec<IpNet>>,
+
+        /// Set configuration values (can be used multiple times)
+        /// Example: --set gateway_addresses.0="/ip4/127.0.0.1/tcp/8080"
+        #[clap(long = "set", value_parser = cli::parse_key_val)]
+        #[serde(skip)]
+        config_overrides: Vec<(String, String)>,
     },
 }
 
@@ -553,8 +571,28 @@ async fn get_data_provider(
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     match &cli.command {
-        Commands::Init { output, name } => {
-            let config = Config::with_name(name);
+        Commands::Init {
+            output,
+            name,
+            config_overrides,
+        } => {
+            // Create config with defaults, allowing override via --set
+            let mut config = Config::with_name(name);
+
+            // Apply config overrides if provided
+            if !config_overrides.is_empty() {
+                let overrides_toml = cli::create_overrides_toml(config_overrides);
+                let base_config = to_toml(&config)?;
+
+                // Create a merged configuration by applying overrides
+                let merged_figment = builder::<Config>()
+                    .with_provider(Toml::string(&base_config))
+                    .with_provider(Toml::string(&overrides_toml))
+                    .build()?;
+
+                config = merged_figment.config;
+            }
+
             let output = output
                 .clone()
                 .unwrap_or_else(|| PathBuf::from(format!("{}-config.toml", name)));
@@ -568,14 +606,16 @@ async fn main() -> Result<()> {
             config_file,
             address,
             timeout,
+            config_overrides,
             ..
         } => {
-            let config = builder::<Config>()
+            let mut config_builder = builder::<Config>()
                 .with_provider(Toml::file(config_file))
                 .with_provider(Env::prefixed("HYPHA_"))
-                .with_provider(Serialized::from(&args, figment::Profile::Default))
-                .build()?
-                .validate()?;
+                .with_provider(Serialized::from(&args, figment::Profile::Default));
+
+            config_builder = cli::apply_config_overrides(config_builder, config_overrides)?;
+            let config = config_builder.build()?.validate()?;
 
             let exclude_cidrs = config.exclude_cidr().clone();
             let (network, driver) = Network::create(
@@ -606,14 +646,19 @@ async fn main() -> Result<()> {
 
             Ok(())
         }
-        args @ Commands::Run { config_file, .. } => {
-            let config = builder::<Config>()
+        args @ Commands::Run {
+            config_file,
+            config_overrides,
+            ..
+        } => {
+            let mut config_builder = builder::<Config>()
                 .with_provider(Toml::file(config_file))
                 .with_provider(Env::prefixed("HYPHA_"))
                 .with_provider(Env::prefixed("OTEL_"))
-                .with_provider(Serialized::defaults(args))
-                .build()?
-                .validate()?;
+                .with_provider(Serialized::defaults(args));
+
+            config_builder = cli::apply_config_overrides(config_builder, config_overrides)?;
+            let config = config_builder.build()?.validate()?;
 
             return run(config).await;
         }

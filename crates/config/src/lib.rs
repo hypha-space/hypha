@@ -279,6 +279,8 @@ use miette::{Diagnostic, NamedSource, SourceSpan};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+pub mod cli;
+
 /// Comprehensive error type for configuration operations
 ///
 /// This error type provides detailed diagnostics for configuration problems,

@@ -13,6 +13,7 @@ miette.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 toml.workspace = true
+toml_edit = "0.23.7"
 
 [dev-dependencies]
 tempfile.workspace = true
