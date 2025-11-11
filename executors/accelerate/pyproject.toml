@@ -1,5 +1,5 @@
 [project]
-name = "hypha-accelerate-driver"
+name = "hypha-accelerate-executor"
 version = "0.0.0"
 license = "Apache-2.0"
 requires-python = ">=3.12"
@@ -91,6 +91,13 @@ dev = [
     "ty>=0.0.1a21",
     "types-tqdm>=4.67.0.20250516",
 ]
+
+[build-system]
+requires = ["uv_build>=0.9.8,<0.10.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "hypha.accelerate_executor"
 
 [tool.mypy]
 strict = true

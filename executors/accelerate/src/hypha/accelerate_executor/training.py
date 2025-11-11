@@ -23,7 +23,7 @@ from transformers.optimization import (
     get_wsd_schedule,
 )
 
-from api import Session
+from .api import Session
 
 FETCH_PATH = "artifacts"
 
