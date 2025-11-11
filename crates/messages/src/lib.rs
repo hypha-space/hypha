@@ -242,12 +242,6 @@ pub enum SelectionStrategy {
     One,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub enum HFRepoType {
-    Model,
-    Dataset,
-}
-
 /// Reference types for pointing to models, data, or other resources
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "type")]
@@ -270,7 +264,6 @@ pub enum Reference {
         revision: Option<String>,
         filenames: Vec<String>,
         token: Option<String>,
-        repo_type: HFRepoType,
     },
 
     #[serde(rename = "peers")]
@@ -300,14 +293,12 @@ impl Fetch {
         revision: Option<String>,
         filenames: Vec<String>,
         token: Option<String>,
-        repo_type: HFRepoType,
     ) -> Self {
         Self(Reference::HuggingFace {
             repository: repository.into(),
             revision,
             filenames,
             token,
-            repo_type,
         })
     }
 

@@ -5,7 +5,7 @@ use std::{io, pin::Pin, sync::Arc};
 use futures_util::{Stream, StreamExt, TryStreamExt};
 use hf_hub::api::tokio::ApiBuilder;
 use hypha_messages::{
-    DataSlice, Fetch, HFRepoType, Receive, Reference, SelectionStrategy, Send as SendRef, api, data,
+    DataSlice, Fetch, Receive, Reference, SelectionStrategy, Send as SendRef, api, data,
 };
 use hypha_network::{
     request_response::RequestResponseInterface,
@@ -258,7 +258,6 @@ impl FetchConnector for HttpHfFetcher {
                     revision,
                     filenames,
                     token,
-                    repo_type,
                 } => {
                     if filenames.is_empty() {
                         let s = futures_util::stream::empty::<Result<ReadItem, io::Error>>();
@@ -270,10 +269,7 @@ impl FetchConnector for HttpHfFetcher {
                     let rev = revision.as_deref().unwrap_or("main");
                     let repo = api.repo(hf_hub::Repo::with_revision(
                         repository.clone(),
-                        match repo_type {
-                            HFRepoType::Dataset => hf_hub::RepoType::Dataset,
-                            HFRepoType::Model => hf_hub::RepoType::Model,
-                        },
+                        hf_hub::RepoType::Model,
                         rev.to_string(),
                     ));
                     let repo = std::sync::Arc::new(repo);
