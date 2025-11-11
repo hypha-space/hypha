@@ -27,6 +27,8 @@ pub enum Error {
     UnsupportedOptimizer(),
     #[error("Tensor error")]
     Tensor(#[from] TensorOpError),
+    #[error("Executor configuration invalid: {0}")]
+    InvalidExecutorConfig(String),
 }
 
 pub trait JobExecutor {

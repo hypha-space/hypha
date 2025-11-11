@@ -10,12 +10,12 @@ pub struct ProgressTracker<T>
 where
     T: RuntimeStatistic,
 {
-    counter: u64,
+    counter: u32,
     parameter_server: PeerId,
-    update_target: u64,
+    update_target: u32,
     round_start_instant: Instant,
-    update_epochs: u64,
-    update_counter: u64,
+    update_epochs: u32,
+    update_counter: u32,
     pub worker_tracker: WorkerTracker<T>,
 }
 
@@ -23,7 +23,7 @@ impl<T> ProgressTracker<T>
 where
     T: RuntimeStatistic,
 {
-    pub fn new(parameter_server: PeerId, update_target: u64, update_epochs: u64) -> Self {
+    pub fn new(parameter_server: PeerId, update_target: u32, update_epochs: u32) -> Self {
         ProgressTracker {
             counter: update_target,
             parameter_server,
@@ -39,7 +39,7 @@ where
         self.parameter_server = new_paramter_server;
     }
 
-    pub fn update(&mut self, id: &PeerId, count: u64) -> Result<(), WorkerTrackerError> {
+    pub fn update(&mut self, id: &PeerId, count: u32) -> Result<(), WorkerTrackerError> {
         self.counter = self.counter.saturating_sub(count);
         self.worker_tracker
             .update(id, self.round_start_instant.elapsed().as_millis() as u64)?;
@@ -53,11 +53,11 @@ where
         self.worker_tracker.new_round();
     }
 
-    pub fn count(&self) -> u64 {
+    pub fn count(&self) -> u32 {
         self.counter
     }
 
-    pub fn round(&self) -> u64 {
+    pub fn round(&self) -> u32 {
         self.update_counter
     }
 

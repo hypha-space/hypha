@@ -8,7 +8,7 @@ use uuid::Uuid;
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ArtifactHeader {
     pub job_id: Uuid,
-    pub epoch: u64,
+    pub epoch: u32,
 }
 
 pub mod api {
@@ -94,12 +94,12 @@ pub mod progress {
 
     #[derive(Clone, Debug, Serialize, Deserialize)]
     pub struct Status {
-        pub batch_size: u64,
+        pub batch_size: u32,
     }
 
     #[derive(Clone, Debug, Serialize, Deserialize)]
     pub struct Metrics {
-        pub round: u64,
+        pub round: u32,
         pub metrics: HashMap<String, f32>,
     }
 
@@ -110,7 +110,7 @@ pub mod progress {
         Continue,
         ScheduleUpdate {
             // Batch counter until update
-            counter: u64,
+            counter: u32,
         },
         Done,
         Error,
@@ -230,11 +230,8 @@ pub struct WorkerSpec {
 pub enum Requirement {
     /// Hardware requirement
     Resource(Resources),
-    // We're currently ignoring driver requirements
-    // Driver, Service
-    Driver {
-        kind: String,
-    },
+    /// Executor requirement advertised by the worker
+    Executor(ExecutorDescriptor),
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -433,48 +430,168 @@ impl AsRef<Reference> for Receive {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(tag = "type", rename_all = "kebab-case")]
-pub enum DiLoCoConfig {
-    CausalLm {
-        optimizer: Adam,
-        batch_size: u32,
-        scheduler: Option<Scheduler>,
-    },
-    VisionClassification {
-        optimizer: Adam,
-        batch_size: u32,
-        scheduler: Option<Scheduler>,
-        preprocessor: Option<Fetch>,
-    },
-    Torch {
-        optimizer: Adam,
-        loss_fn: Loss,
-        batch_size: u32,
-        scheduler: Option<Scheduler>,
-    },
+/// Executor configuration payload keyed off the executor class.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "task", rename_all = "kebab-case")]
+pub enum Model {
+    VisionClassification { artifact: Fetch },
+    CausalLm { artifact: Fetch },
+    Torch { artifact: Fetch },
 }
 
-/// Driver specifications for different ML frameworks
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[non_exhaustive]
-#[serde(tag = "type")]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TrainExecutorConfig {
+    pub model: Model,
+    pub data: Fetch,
+    /// Destination to send local training updates.
+    pub updates: Send,
+    /// Stream providing aggregated parameters back to the executor.
+    pub results: Receive,
+    // TODO: Add support for additional optimizeres considering different executors and model types.
+    pub optimizer: Adam,
+    pub batch_size: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preprocessor: Option<Fetch>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scheduler: Option<Scheduler>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AggregateExecutorConfig {
+    /// Stream of updates produced by workers.
+    pub updates: Receive,
+    /// Stream used to distribute aggregated parameters back to workers.
+    pub results: Send,
+    // TODO: Add support for additional optimizeres when needed.
+    pub optimizer: Nesterov,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct TrainExecutorDescriptor {
+    name: String,
+}
+
+impl TrainExecutorDescriptor {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self { name: name.into() }
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn into_executor(self, config: TrainExecutorConfig) -> TrainExecutor {
+        TrainExecutor {
+            descriptor: self,
+            config,
+        }
+    }
+}
+
+impl From<TrainExecutorDescriptor> for ExecutorDescriptor {
+    fn from(descriptor: TrainExecutorDescriptor) -> Self {
+        Self::Train(descriptor.clone())
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct AggregateExecutorDescriptor {
+    name: String,
+}
+
+impl AggregateExecutorDescriptor {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self { name: name.into() }
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn into_executor(self, config: AggregateExecutorConfig) -> AggregateExecutor {
+        AggregateExecutor {
+            descriptor: self,
+            config,
+        }
+    }
+}
+
+impl From<AggregateExecutorDescriptor> for ExecutorDescriptor {
+    fn from(descriptor: AggregateExecutorDescriptor) -> Self {
+        Self::Aggregate(descriptor.clone())
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(tag = "class", rename_all = "kebab-case")]
+pub enum ExecutorDescriptor {
+    Train(TrainExecutorDescriptor),
+    Aggregate(AggregateExecutorDescriptor),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TrainExecutor {
+    descriptor: TrainExecutorDescriptor,
+    config: TrainExecutorConfig,
+}
+
+impl TrainExecutor {
+    pub fn descriptor(&self) -> &TrainExecutorDescriptor {
+        &self.descriptor
+    }
+
+    pub fn config(&self) -> &TrainExecutorConfig {
+        &self.config
+    }
+}
+
+impl From<TrainExecutor> for Executor {
+    fn from(executor: TrainExecutor) -> Self {
+        Self::Train(executor)
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AggregateExecutor {
+    descriptor: AggregateExecutorDescriptor,
+    config: AggregateExecutorConfig,
+}
+
+impl AggregateExecutor {
+    pub fn descriptor(&self) -> &AggregateExecutorDescriptor {
+        &self.descriptor
+    }
+
+    pub fn config(&self) -> &AggregateExecutorConfig {
+        &self.config
+    }
+}
+
+impl From<AggregateExecutor> for Executor {
+    fn from(executor: AggregateExecutor) -> Self {
+        Self::Aggregate(executor)
+    }
+}
+
 #[allow(clippy::large_enum_variant)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "class", rename_all = "kebab-case")]
 pub enum Executor {
-    #[serde(rename = "diloco-transformer")]
-    DiLoCoTransformer {
-        model: Fetch,
-        data: Fetch,
-        updates: Receive,
-        results: Send,
-        config: DiLoCoConfig,
-    },
-    #[serde(rename = "parameter-server")]
-    ParameterServer {
-        updates: Receive,
-        results: Send,
-        optimizer: Nesterov,
-    },
+    Train(TrainExecutor),
+    Aggregate(AggregateExecutor),
+}
+
+// NOTE: This is not only to convert an `Executor` into an `ExecutorDescriptor` enum but also
+// ensuring that the ExecutorDescriptor and Executor arms match.
+impl From<&Executor> for ExecutorDescriptor {
+    fn from(executor: &Executor) -> Self {
+        match executor {
+            Executor::Train(TrainExecutor { descriptor, .. }) => Self::Train(descriptor.clone()),
+            Executor::Aggregate(AggregateExecutor { descriptor, .. }) => {
+                Self::Aggregate(descriptor.clone())
+            }
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

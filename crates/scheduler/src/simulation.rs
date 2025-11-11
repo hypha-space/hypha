@@ -3,12 +3,12 @@ use itertools::Itertools;
 pub trait Simulation {
     fn project(
         progress: &[u64],
-        batch_sizes: &[u64],
+        batch_sizes: &[u32],
         statistics: Vec<u64>,
-        target: u64,
+        target: u32,
         time_cap: u64,
-        steps_cap: u64,
-    ) -> (u64, u64, Vec<u64>, bool);
+        steps_cap: u32,
+    ) -> (u64, u32, Vec<u32>, bool);
 }
 
 pub struct BasicSimulation {}
@@ -16,20 +16,22 @@ pub struct BasicSimulation {}
 impl Simulation for BasicSimulation {
     fn project(
         progress: &[u64],
-        batch_sizes: &[u64],
+        batch_sizes: &[u32],
         statistics: Vec<u64>,
-        data_points_left: u64,
+        data_points_left: u32,
         time_cap: u64,
-        steps_cap: u64,
-    ) -> (u64, u64, Vec<u64>, bool) {
-        let mut updates = vec![0u64; batch_sizes.len()];
+        steps_cap: u32,
+    ) -> (u64, u32, Vec<u32>, bool) {
+        // NOTE: `time` and `next_update` are u64 to represent time in ms.
+        // Counters remain u32 to reflect counts/steps within practical bounds.
+        let mut updates = vec![0u32; batch_sizes.len()];
         let mut next_update: Vec<u64> = progress
             .iter()
             .zip(statistics.iter())
             .map(|(a, b)| a + b)
             .collect();
-        let mut time = 0;
-        let mut to_go = data_points_left;
+        let mut time: u64 = 0;
+        let mut to_go: u32 = data_points_left;
         let mut capped = false;
         while to_go > 0 {
             let min_set = next_update
@@ -49,12 +51,12 @@ impl Simulation for BasicSimulation {
             for idx in min_indices.iter() {
                 let idx = *idx;
                 to_go = to_go.saturating_sub(batch_sizes[idx]);
-                updates[idx] += 1;
+                updates[idx] = updates[idx].saturating_add(1);
 
                 if updates[idx] >= steps_cap {
                     max_steps_reached = true;
                 }
-                next_update[idx] += statistics[idx];
+                next_update[idx] = next_update[idx].saturating_add(statistics[idx]);
             }
 
             if max_steps_reached {

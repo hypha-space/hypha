@@ -29,14 +29,14 @@ FETCH_PATH = "artifacts"
 
 
 def prepare_files(config: dict[str, Any], session: Session, work_dir: str) -> str:
-    # Fetch dataset
     tensor_data = session.fetch(config["data"])
     tensor_data_path = os.path.join(work_dir, tensor_data[0]["path"])
 
-    if "type" in config["model"] and config["model"]["type"] == "huggingface":
-        session.fetch(config["model"])
-    if "type" in config["config"]["preprocessor"] and config["config"]["preprocessor"]["type"] == "huggingface":
-        session.fetch(config["config"]["preprocessor"])
+    session.fetch(config["model"]["artifact"])
+
+    preprocessor = config.get("preprocessor")
+    if preprocessor:
+        session.fetch(preprocessor)
 
     return tensor_data_path
 
@@ -73,7 +73,7 @@ def get_data_loader(
     data_set_path: str,
     work_dir: str,
     model_type: str,
-    preprocessor_file: str,
+    preprocessor_file: str | None,
     batch_size: int,
 ) -> torch.utils.data.DataLoader:  # type: ignore[type-arg]
     if model_type == "causal-lm":
@@ -81,6 +81,8 @@ def get_data_loader(
             ds = data.get_tensor(data.keys()[0])
             return torch.utils.data.DataLoader(ds, batch_size=batch_size)
     if model_type == "vision-classification":
+        if not preprocessor_file:
+            raise RuntimeError("Vision classification requires a preprocessor artifact")
 
         class VisionDs(torch.utils.data.IterableDataset):  # type: ignore[type-arg]
             def __init__(self, data_set_path: str, work_dir: str):
@@ -156,41 +158,43 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR09
     with Session(socket_path) as session:
         job_spec = json.loads(job_json)
 
-        # simplify config retrival
-        job_spec = job_spec["executor"]
+        executor = job_spec["executor"]
+        assert executor["class"] == "train"
+        config = executor["config"]
 
-        # ensure that type is `parameter-server`
-        assert job_spec["type"] == "diloco-transformer"
+        print(json.dumps(executor))
 
-        print(json.dumps(job_spec))
-
-        # Training loop
         accelerator = Accelerator(project_dir=work_dir)
 
-        tensor_data_path = prepare_files(job_spec, session, work_dir)
+        tensor_data_path = prepare_files(config, session, work_dir)
         local_fetch_path = f"{work_dir}/{FETCH_PATH}"
         print(os.listdir(local_fetch_path))
-        model = get_model(local_fetch_path, job_spec["config"]["type"])
-        optimizer = get_adam(
-            job_spec["config"]["optimizer"],
-            model.parameters(),
-        )
+        model_type = config["model"]["task"]
+        model = get_model(local_fetch_path, model_type)
+        optimizer = get_adam(config["optimizer"], model.parameters())
         epoch_counter = 0
 
-        if not job_spec["config"]["scheduler"] or not job_spec["config"]["scheduler"]["type"]:
+        scheduler_config = config.get("scheduler")
+        if not scheduler_config or not scheduler_config.get("type"):
             scheduler = get_constant_schedule(optimizer)
         else:
-            scheduler_args = job_spec["config"]["scheduler"]
-            scheduler_type = scheduler_args["type"]
-            del scheduler_args["type"]
+            scheduler_type = scheduler_config["type"]
+            scheduler_args = {k: v for k, v in scheduler_config.items() if k != "type"}
             scheduler = get_scheduler(scheduler_type, scheduler_args, optimizer)
+
+        preprocessor = config.get("preprocessor")
+        preprocessor_file: str | None = None
+        if preprocessor:
+            filenames = preprocessor.get("filenames")
+            if filenames:
+                preprocessor_file = filenames[0]
 
         data_loader = get_data_loader(
             tensor_data_path,
             local_fetch_path,
-            job_spec["config"]["type"],
-            job_spec["config"]["preprocessor"]["filenames"][0],
-            job_spec["config"]["batch_size"],
+            model_type,
+            preprocessor_file,
+            config["batch_size"],
         )
 
         # Serialize the model to disk
@@ -201,7 +205,7 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR09
         training_data_iter = dataset_wrapper(training_dataloader)
 
         # Start receiver immediately, but do not consume until we've sent once
-        with session.receive(job_spec["updates"], "incoming") as receiver:
+        with session.receive(config["results"], "incoming") as receiver:
             updates_iter = iter(receiver)
             await_update = False
 
@@ -276,7 +280,7 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR09
                     model.to("cpu")
 
                     save_file(extract_gradients(model.state_dict(), previous_model_path), result_path)
-                    session.send_resource(job_spec["results"], file_name)
+                    session.send_resource(config["updates"], file_name)
 
                     # Mark that before the next training epoch we must wait for an update
                     await_update = True

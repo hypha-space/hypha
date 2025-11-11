@@ -1,13 +1,13 @@
 use std::{
     cmp::Ordering,
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     future::Future,
     iter::Sum,
     ops::{Add, AddAssign, Sub, SubAssign},
     sync::Arc,
 };
 
-use hypha_messages::Requirement;
+use hypha_messages::{ExecutorDescriptor, Requirement};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::sync::RwLock;
@@ -162,19 +162,33 @@ pub fn extract_compute_resource_requirements(requirements: &[Requirement]) -> Co
             Requirement::Resource(hypha_messages::Resources::Storage { min }) => {
                 acc + ComputeResources::new().with_storage(*min)
             }
-            Requirement::Driver { .. } => acc,
+            Requirement::Executor(..) => acc,
         })
 }
 
 /// Extracts resource requirements from a worker specification
-pub fn extract_other_resource_requirements(requirements: &[Requirement]) -> Vec<String> {
+pub fn extract_executor_requirements(requirements: &[Requirement]) -> Vec<ExecutorDescriptor> {
     requirements
         .iter()
         .filter_map(|x| match x {
             Requirement::Resource(..) => None,
-            Requirement::Driver { kind } => Some(kind.clone()),
+            Requirement::Executor(selector) => Some(selector.clone()),
         })
         .collect()
+}
+
+fn executor_matches(required: &ExecutorDescriptor, available: &ExecutorDescriptor) -> bool {
+    match (required, available) {
+        (
+            ExecutorDescriptor::Train(required_descriptor),
+            ExecutorDescriptor::Train(available_descriptor),
+        ) => required_descriptor.name() == available_descriptor.name(),
+        (
+            ExecutorDescriptor::Aggregate(required_descriptor),
+            ExecutorDescriptor::Aggregate(available_descriptor),
+        ) => required_descriptor.name() == available_descriptor.name(),
+        _ => false,
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Error)]
@@ -189,11 +203,11 @@ pub enum ResourceManagerError {
 pub trait ResourceManager: Send + Sync {
     /// Returns a reference to the current available resources.
     fn compute_resources(&self) -> impl Future<Output = ComputeResources> + Send;
-    fn other_resources(&self) -> impl Future<Output = Vec<String>> + Send;
+    fn executors(&self) -> impl Future<Output = Vec<ExecutorDescriptor>> + Send;
     fn reserve(
         &self,
         compute_resources: ComputeResources,
-        other_resources: Vec<String>,
+        required_executors: Vec<ExecutorDescriptor>,
     ) -> impl Future<Output = Result<Uuid, ResourceManagerError>> + Send;
     fn release(
         &self,
@@ -204,7 +218,7 @@ pub trait ResourceManager: Send + Sync {
 #[derive(Debug)]
 struct StaticResourceManagerState {
     compute_resources: ComputeResources,
-    other_resources: Vec<String>,
+    executors: Vec<ExecutorDescriptor>,
     reservations: HashMap<Uuid, ComputeResources>,
 }
 
@@ -214,11 +228,11 @@ pub struct StaticResourceManager {
 }
 
 impl StaticResourceManager {
-    pub fn new(compute_resources: ComputeResources, other_resources: Vec<String>) -> Self {
+    pub fn new(compute_resources: ComputeResources, executors: Vec<ExecutorDescriptor>) -> Self {
         StaticResourceManager {
             state: Arc::new(RwLock::new(StaticResourceManagerState {
                 compute_resources,
-                other_resources,
+                executors,
                 reservations: HashMap::default(),
             })),
         }
@@ -231,31 +245,33 @@ impl ResourceManager for StaticResourceManager {
         state.compute_resources - state.reservations.values().sum()
     }
 
-    async fn other_resources(&self) -> Vec<String> {
+    async fn executors(&self) -> Vec<ExecutorDescriptor> {
         let state = self.state.read().await;
-        state.other_resources.clone()
+        state.executors.clone()
     }
 
     async fn reserve(
         &self,
         compute_resources: ComputeResources,
-        other_resources: Vec<String>,
+        required_executors: Vec<ExecutorDescriptor>,
     ) -> Result<Uuid, ResourceManagerError> {
         let available = self.compute_resources().await;
-        let hard_constrains = self.other_resources().await;
+        let advertised = self.executors().await;
         tracing::info!(
             "Reserving resources: {:?} of {:?} and {:?} of {:?}",
             compute_resources,
             available,
-            other_resources,
-            hard_constrains
+            required_executors,
+            advertised
         );
 
-        let other_resources_set = HashSet::<&String>::from_iter(other_resources.iter());
-        let driver_miss_match =
-            HashSet::from_iter(hard_constrains.iter()).is_disjoint(&other_resources_set);
+        let mismatch = required_executors.iter().any(|required| {
+            !advertised
+                .iter()
+                .any(|candidate| executor_matches(required, candidate))
+        });
 
-        if available >= compute_resources && !driver_miss_match {
+        if available >= compute_resources && !mismatch {
             let mut state = self.state.write().await;
             // Re-check after acquiring write lock
             let current_available = state.compute_resources - state.reservations.values().sum();
