@@ -4,6 +4,7 @@ version.workspace = true
 publish.workspace = true
 edition.workspace = true
 license = "Apache-2.0"
+build = "build.rs"
 
 [[bin]]
 name = "hypha-certutil"
@@ -15,3 +16,7 @@ rcgen.workspace = true
 rustls.workspace = true
 thiserror.workspace = true
 time = "0.3.41"
+
+[build-dependencies]
+clap.workspace = true
+clap-markdown = "0.1.5"
