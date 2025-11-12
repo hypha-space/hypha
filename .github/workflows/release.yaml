@@ -141,6 +141,12 @@ jobs:
       - name: ls artifacts
         run: ls -R ./artifacts
 
+      - name: Prepare install script
+        run: |
+          mkdir -p ./artifacts/install-script
+          cp install.sh ./artifacts/install-script/install.sh
+          chmod +x ./artifacts/install-script/install.sh
+
       - name: Invoke semantic-release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
