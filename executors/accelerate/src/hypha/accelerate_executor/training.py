@@ -15,7 +15,7 @@ from torch.nn import Module
 from torch.optim import Optimizer
 
 # from torch.optim.lr_scheduler import LRScheduler
-from transformers import AutoImageProcessor, AutoModelForCausalLM, AutoModelForImageClassification
+from transformers import AutoImageProcessor, AutoModelForCausalLM, AutoModelForImageClassification, ProcessorMixin
 from transformers.optimization import (
     get_constant_schedule,
     get_cosine_schedule_with_warmup,
@@ -41,20 +41,22 @@ def prepare_files(config: dict[str, Any], session: Session, work_dir: str) -> st
     return tensor_data_path
 
 
-def get_model(model_config: str, model_type: str) -> Module:
+def get_model(model_config: str, model_type: str, trust_remote_code: bool) -> Module:
     # Initializing a model from a Hugging Face configuration
     if model_type == "causal-lm":
-        return AutoModelForCausalLM.from_pretrained(model_config)
+        return AutoModelForCausalLM.from_pretrained(model_config, trust_remote_code=trust_remote_code)
     if model_type == "vision-classification":
-        return cast(Module, AutoModelForImageClassification.from_pretrained(model_config))
+        return cast(
+            Module, AutoModelForImageClassification.from_pretrained(model_config, trust_remote_code=trust_remote_code)
+        )
     # if model_type == "Torch":
     # ...
     raise RuntimeError(f"Model type {model_type} not supported.")
 
 
-def get_preprocessor(preprocessor_file: str, model_type: str) -> Any:
+def get_preprocessor(preprocessor_file: str, model_type: str, trust_remote_code: bool) -> Any:
     if model_type == "vision-classification":
-        return AutoImageProcessor.from_pretrained(preprocessor_file)  # type: ignore[no-untyped-call]
+        return AutoImageProcessor.from_pretrained(preprocessor_file, trust_remote_code=trust_remote_code)  # type: ignore[no-untyped-call]
     raise RuntimeError(f"Pre-Processor for model type {model_type} not found")
 
 
@@ -71,9 +73,8 @@ def get_adam(optimizer: dict[str, Any], parameters: Iterable[torch.Tensor]) -> O
 
 def get_data_loader(
     data_set_path: str,
-    work_dir: str,
     model_type: str,
-    preprocessor_file: str | None,
+    preprocessor: Any | None,
     batch_size: int,
 ) -> torch.utils.data.DataLoader:  # type: ignore[type-arg]
     if model_type == "causal-lm":
@@ -81,22 +82,22 @@ def get_data_loader(
             ds = data.get_tensor(data.keys()[0])
             return torch.utils.data.DataLoader(ds, batch_size=batch_size)
     if model_type == "vision-classification":
-        if not preprocessor_file:
+        if not preprocessor:
             raise RuntimeError("Vision classification requires a preprocessor artifact")
 
         class VisionDs(torch.utils.data.IterableDataset):  # type: ignore[type-arg]
-            def __init__(self, data_set_path: str, work_dir: str):
+            def __init__(self, data_set_path: str):
                 super(VisionDs).__init__()  # type: ignore[misc]
                 self.data_set_path = data_set_path
-                self.processor = get_preprocessor(f"{work_dir}/{preprocessor_file}", model_type)
+                self.processor = preprocessor
 
             def __iter__(self):  # type: ignore[no-untyped-def]
                 with safe_open(self.data_set_path, framework="pt", device="cpu") as data:  # type: ignore
-                    processed = self.processor(data.get_tensor("inputs"))
+                    processed = self.processor(data.get_tensor("inputs")) if self.processor else data
                     for pixel, label in zip(iter(processed["pixel_values"]), iter(data.get_tensor("targets"))):
                         yield ({"pixel_values": pixel, "labels": label})
 
-        return torch.utils.data.DataLoader(VisionDs(data_set_path, work_dir), batch_size=batch_size)
+        return torch.utils.data.DataLoader(VisionDs(data_set_path), batch_size=batch_size)
     raise RuntimeError(f"Dataset for {model_type} not supported")
 
 
@@ -153,7 +154,7 @@ def dataset_wrapper(dataset: torch.utils.data.DataLoader) -> Iterator[dict[str, 
     return iter(wrap())
 
 
-def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR0915, PLR0912
+def main(socket_path: str, work_dir: str, job_json: str, trust_remote_code: bool) -> None:  # noqa: PLR0915, PLR0912
     # Background receiver context that fills a queue with update pointers
     with Session(socket_path) as session:
         job_spec = json.loads(job_json)
@@ -170,7 +171,7 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR09
         local_fetch_path = f"{work_dir}/{FETCH_PATH}"
         print(os.listdir(local_fetch_path))
         model_type = config["model"]["task"]
-        model = get_model(local_fetch_path, model_type)
+        model = get_model(local_fetch_path, model_type, trust_remote_code)
         optimizer = get_adam(config["optimizer"], model.parameters())
         epoch_counter = 0
 
@@ -182,18 +183,17 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR09
             scheduler_args = {k: v for k, v in scheduler_config.items() if k != "type"}
             scheduler = get_scheduler(scheduler_type, scheduler_args, optimizer)
 
-        preprocessor = config.get("preprocessor")
-        preprocessor_file: str | None = None
-        if preprocessor:
-            filenames = preprocessor.get("filenames")
+        preprocessor: ProcessorMixin | None = None
+        preprocessor_config = config.get("preprocessor")
+        if preprocessor_config:
+            filenames = preprocessor_config.get("filenames")
             if filenames:
-                preprocessor_file = filenames[0]
+                preprocessor = get_preprocessor(f"{local_fetch_path}/{filenames[0]}", model_type, trust_remote_code)
 
         data_loader = get_data_loader(
             tensor_data_path,
-            local_fetch_path,
             model_type,
-            preprocessor_file,
+            preprocessor,
             config["batch_size"],
         )
 
@@ -296,5 +296,6 @@ if __name__ == "__main__":
     parser.add_argument("--socket", required=True)
     parser.add_argument("--work-dir", required=True)
     parser.add_argument("--job", required=True)
+    parser.add_argument("--trust-remote-code", action=argparse.BooleanOptionalAction)
     args = parser.parse_args()
-    main(args.socket, args.work_dir, args.job)
+    main(args.socket, args.work_dir, args.job, args.trust_remote_code)

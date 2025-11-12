@@ -46,6 +46,7 @@ args = [
     "--socket", "{SOCKET_PATH}",
     "--work-dir", "{WORK_DIR}",
     "--job", "{JOB_JSON}",
+    "--trust-remote-code"
 ]
 ```
 
@@ -81,6 +82,7 @@ If you omit `--extra`, uv installs the default `mps_cu128` build.
 - `{SOCKET_PATH}` — Communication channel between the executor and worker
 - `{WORK_DIR}` — Working directory for the training job
 - `{JOB_JSON}` — Job specification passed from the scheduler
+- `--trust-remote-code` - If add the executer is allowed to run custom models from Hugging Face
 
 **Important note**: The module path `hypha.accelerate_executor.training` should remain unchanged—this is the standard entrypoint of the executor used by Hypha to launch training jobs via *accelerate*.
 
