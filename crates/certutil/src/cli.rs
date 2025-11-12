@@ -1,12 +1,30 @@
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
+use indoc::indoc;
 
 #[derive(Parser)]
-#[command(name = "hypha-certutil")]
-#[command(about = "Certificate utility for Hypha network", long_about = None)]
-#[command(version)]
-#[command(after_help = "For more information and examples, see the module documentation")]
+#[command(
+    name = "hypha-certutil",
+    version,
+    about = "Hypha Certificate Utility",
+    long_about = indoc!{"
+        Certificate generation and management tool for the Hypha network.
+
+        Creates a three-tier certificate hierarchy:
+
+        * Root CA - Central certificate authority (stored securely, used rarely)
+        * Organization CAs - Intermediate CAs for each tenant/organization
+        * Node Certificates - End-entity certificates for individual services
+
+        Uses Ed25519 exclusively for compatibility with libp2p and strong security with
+        small key sizes. All private keys are stored in PKCS#8 format as required by
+        the Hypha network.
+    "},
+    after_help = indoc!{"
+        Important! For production use, it is not recommended to use this tool as it is not designed for high security and scalability. Instead, consider using a dedicated PKI management tool or a third-party service providers."
+    }
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
@@ -14,87 +32,248 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
-    /// Generate a Root CA certificate
-    ///
-    /// This creates the root of your PKI hierarchy. In production, this would be
-    /// stored securely and used rarely. For development, you typically create one
-    /// root CA and reuse it across your test environment.
-    #[command(after_help = "Example: hypha-certutil root -n 'Test Root CA' -d certs/root")]
+    #[command(
+        about = "Generate a Root CA certificate (top of PKI hierarchy)",
+        long_about = indoc!{"
+            Generate a Root CA certificate (top of PKI hierarchy)
+
+            Creates the root certificate authority that forms the trust anchor for your entire
+            PKI. This certificate signs Organization CAs, which in turn sign node certificates.
+
+
+            OUTPUT FILES:
+            * `<org>-root-ca-cert.pem` - Root CA certificate (public, distribute to all nodes)
+            * `<org>-root-ca-key.pem` - Root CA private key (KEEP SECURE, never share)
+
+            The certificate uses Ed25519 algorithm and includes basic constraints marking it
+            as a CA certificate with path length constraint.
+        "},
+        after_help = indoc!{"
+            Example:
+
+            ```
+            hypha-certutil root -o 'ACME Corporation' --country US -d /secure/root-ca
+            ```
+        "}
+    )]
     Root {
-        /// Organization name
-        #[arg(short = 'o', long)]
+        /// Organization name (appears in certificate subject)
+        ///
+        /// This name identifies the entity that operates the PKI. Choose a name that
+        /// clearly identifies your organization for certificate validation.
+        ///
+        /// Examples: "ACME Corporation", "Hypha Dev", "Example University"
+        #[arg(short = 'o', long, verbatim_doc_comment)]
         organization: String,
 
-        /// Country name (2-letter code)
-        #[arg(long, default_value = "US")]
+        /// Country code (ISO 3166-1 alpha-2, 2 letters)
+        ///
+        /// Two-letter country code for the certificate subject. Common values:
+        /// * US - United States
+        /// * GB - United Kingdom
+        /// * DE - Germany
+        /// * CN - China
+        ///
+        /// While optional, including country helps with certificate identification.
+        #[arg(long, default_value = "US", verbatim_doc_comment)]
         country: String,
 
-        /// Common name for the Root CA (defaults to "<org> CA")
-        #[arg(short = 'n', long)]
+        /// Common name for the Root CA (defaults to "<org> Root CA")
+        ///
+        /// The CN field in the certificate subject. If not specified, automatically
+        /// generated as "<organization> Root CA".
+        ///
+        /// Best practice: Include "Root CA" in the name for easy identification.
+        ///
+        /// Examples: "ACME Production Root CA", "Hypha Test Root CA 2025"
+        #[arg(short = 'n', long, verbatim_doc_comment)]
         name: Option<String>,
 
-        /// Directory to save the certificate and key files
-        #[arg(short, long, default_value = ".")]
+        /// Output directory for certificate and private key files
+        ///
+        /// Directory where the Root CA certificate and private key will be saved.
+        /// The directory will be created if it doesn't exist.
+        ///
+        /// SECURITY: Use a secure location with restricted access:
+        /// * Encrypted filesystem
+        /// * Access controls (chmod 600 recommended)
+        #[arg(short, long, default_value = ".", verbatim_doc_comment)]
         dir: PathBuf,
     },
-    /// Generate an Intermediate Organization CA certificate signed by Root CA
-    ///
-    /// Organization CAs represent tenants in the Hypha network. Each tenant gets
-    /// their own CA certificate that can issue certificates for their nodes.
-    /// This provides cryptographic isolation between tenants.
+
     #[command(
-        after_help = "Example: hypha-certutil org --root-cert root-ca-cert.pem --root-key root-ca-key.pem -o acme-corp"
+        about = "Generate an Organization/Tenant CA (intermediate CA)",
+        long_about = indoc!{"
+            Generate an Organization/Tenant CA (intermediate CA)
+
+            Creates an intermediate CA certificate signed by the Root CA. Organization CAs
+            represent tenants or organizational units in the Hypha network. Each tenant gets
+            their own CA that can issue node certificates, providing cryptographic isolation.
+
+            OUTPUT FILES:
+            * `<org>-ca-cert.pem` - Organization CA certificate (public)
+            * `<org>-ca-key.pem` - Organization CA private key (KEEP SECURE)
+            * `<org>-ca-trust.pem` - Trust chain (Org CA + Root CA, for node configs)
+
+            The trust chain file bundles the Organization CA and Root CA certificates,
+            making it easy to configure nodes with the complete trust chain.
+        "},
+        after_help = indoc! {"
+            Example: Create Organization CA for tenant 'acme-corp'
+
+            ```
+            hypha-certutil org --root-cert certs/root/root-ca-cert.pem
+              --root-key certs/root/root-ca-key.pem
+              -o acme-corp -d certs/tenants/acme
+            ```
+        "}
     )]
     Org {
-        /// Root CA certificate file path
-        #[arg(long)]
+        /// Path to the Root CA certificate file
+        ///
+        /// The Root CA certificate that will sign this Organization CA. Must be
+        /// a valid PEM-encoded X.509 certificate.
+        ///
+        /// Typically a `*-cert.pem` generated via 'hypha-certutil root'
+        #[arg(long, verbatim_doc_comment)]
         root_cert: PathBuf,
 
-        /// Root CA private key file path
-        #[arg(long)]
+        /// Path to the Root CA private key file
+        ///
+        /// The Root CA's private key used to sign this Organization CA certificate.
+        /// Must be in PKCS#8 PEM format.
+        ///
+        /// SECURITY: This operation requires access to the Root CA private key.
+        ///
+        /// Typically a `*-key.pem` generated via 'hypha-certutil root'
+        #[arg(long, verbatim_doc_comment)]
         root_key: PathBuf,
 
-        /// Organization/tenant name (e.g., acme-corp)
-        #[arg(short = 'o', long)]
+        /// Organization/tenant name (e.g., acme-corp, globex)
+        ///
+        /// Identifies the tenant or organizational unit. This name appears in the
+        /// certificate subject and is used in output filenames.
+        ///
+        /// Choose a name that:
+        /// * Clearly identifies the tenant
+        /// * Is filesystem-safe (no special characters)
+        /// * Is consistent with your naming conventions
+        ///
+        /// Examples: "acme-corp", "engineering-dept", "tenant-001"
+        #[arg(short = 'o', long, verbatim_doc_comment)]
         organization: String,
 
         /// Common name for the Organization CA (defaults to "<org> CA")
-        #[arg(short = 'n', long)]
+        ///
+        /// The CN field in the certificate subject. If not specified, automatically
+        /// generated as "<organization> CA".
+        ///
+        /// Examples: "ACME Corp Intermediate CA", "Engineering Department CA"
+        #[arg(short = 'n', long, verbatim_doc_comment)]
         name: Option<String>,
 
-        /// Directory to save the certificate and key files
-        #[arg(short, long, default_value = ".")]
+        /// Output directory for certificate and key files
+        ///
+        /// Directory where the Organization CA certificate, private key, and trust
+        /// chain will be saved. Created if it doesn't exist.
+        #[arg(short, long, default_value = ".", verbatim_doc_comment)]
         dir: PathBuf,
     },
-    /// Generate a certificate signed by a CA (intermediate or root)
-    ///
-    /// Node certificates are used by individual services and nodes in the network.
-    /// They should typically be signed by an Organization CA, not the root CA directly.
-    /// The certificate will include a trust file (bundle) for easy deployment.
+
     #[command(
-        after_help = "Example: hypha-certutil node --ca-cert acme-ca-cert.pem --ca-key acme-ca-key.pem -n node1.acme.local -s node1.acme.local,*.acme.local"
+        about = "Generate a node certificate (end-entity certificate)",
+        long_about = indoc!{"
+            Generate a node certificate (end-entity certificate)
+
+            Creates a certificate for an individual node, service, or component in the Hypha
+            network. Node certificates are signed by an Organization.
+
+            These certificates are used by:
+
+            * Gateways - Network entry points
+            * Schedulers - Job orchestrators
+            * Workers - Task executors
+            * Data nodes - Dataset providers
+
+            OUTPUT FILES:
+            * `<name>-cert.pem` - Node certificate (public)
+            * `<name>-key.pem` - Node private key (KEEP SECURE, chmod 600)
+            * `<name>-trust.pem` - Complete trust chain (Org CA + Root CA)
+
+            The trust chain enables the node to validate peer certificates by including
+            the full CA hierarchy.
+        "},
+        after_help = indoc!{"
+            Example: simple scheduler certificate
+
+            ```
+            hypha-certutil node
+                -n scheduler
+                --ca-cert acme-ca-cert.pem
+                --ca-key acme-ca-key.pem
+                -d certs/nodes/scheduler-01
+            ```
+        "}
     )]
     Node {
-        /// CA certificate file path
+        /// Path to the Organization CA certificate file
+        ///
+        /// The CA certificate that will sign this node certificate. Typically an
+        /// Organization CA, but could be the Root CA for testing.
+        ///
+        /// Typically: `<org>-ca-cert.pem` from 'hypha-certutil org'
         #[arg(long)]
         ca_cert: PathBuf,
 
-        /// CA private key file path
-        #[arg(long)]
+        /// Path to the Organization CA private key file
+        ///
+        /// The CA's private key used to sign this node certificate. Must be in
+        /// PKCS#8 PEM format.
+        ///
+        /// SECURITY: Protect this key as it can issue certificates for the organization.
+        ///
+        /// Typically: `<org>-ca-key.pem` from 'hypha-certutil org'
+        #[arg(long, verbatim_doc_comment)]
         ca_key: PathBuf,
 
-        /// Common name for the certificate (e.g., node1.acme-corp.hypha.network)
-        #[arg(short = 'n', long)]
+        /// Common name for the node certificate
+        ///
+        /// Unique identifier for this node. Best practices:
+        /// * Use FQDN format: <hostname>.<tenant>.<domain>
+        /// * Include node type: gateway-01, scheduler-prod, worker-gpu-03
+        /// * Keep consistent naming convention across deployment
+        /// * Avoid special characters (use hyphens, not underscores)
+        ///
+        /// The CN is automatically added to SANs if not explicitly included.
+        #[arg(short = 'n', long, verbatim_doc_comment)]
         name: String,
 
-        /// Subject Alternative Names (SANs) - DNS names, IPs, etc.
-        /// Format: comma-separated list of DNS names and IP addresses
-        /// The common name will be automatically added if not present
-        #[arg(short, long, value_delimiter = ',', default_value = "0.0.0.0")]
+        /// Subject Alternative Names (SANs) - DNS names and IP addresses
+        ///
+        /// Comma-separated list of DNS names and/or IP addresses that this certificate
+        /// will be valid for. Critical for TLS validation and peer connectivity.
+        ///
+        /// The common name (-n) is automatically included if not in this list.
+        ///
+        /// NOTE: 0.0.0.0 is included by default for local testing. Override with
+        /// specific addresses for production.
+        #[arg(
+            short,
+            long,
+            value_delimiter = ',',
+            default_value = "0.0.0.0",
+            verbatim_doc_comment
+        )]
         san: Vec<String>,
 
-        /// Directory to save the certificate and key files
-        #[arg(short, long, default_value = ".")]
+        /// Output directory for certificate and key files
+        ///
+        /// Directory where the node certificate, private key, and trust chain will
+        /// be saved. Created if it doesn't exist.
+        ///
+        /// SECURITY: Set restrictive permissions on this directory (chmod 700)
+        /// and especially on `*-key.pem` files (chmod 600).
+        #[arg(short, long, default_value = ".", verbatim_doc_comment)]
         dir: PathBuf,
     },
 }

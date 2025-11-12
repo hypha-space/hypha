@@ -12,11 +12,13 @@ path = "src/main.rs"
 
 [dependencies]
 clap.workspace = true
+indoc.workspace = true
 rcgen.workspace = true
 rustls.workspace = true
 thiserror.workspace = true
 time = "0.3.41"
 
 [build-dependencies]
+indoc.workspace = true
 clap.workspace = true
 clap-markdown = "0.1.5"
