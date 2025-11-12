@@ -145,7 +145,7 @@ jobs:
       - name: Prepare install script
         run: |
           # Inject the release version into the install script
-          sed 's/^VERSION=""$/VERSION="${{ needs.get-next-version.outputs.new-release-version }}"/' install.sh > ./artifacts/install.sh
+          sed 's/^VERSION=""$/VERSION="v${{ needs.get-next-version.outputs.new-release-version }}"/' install.sh > ./artifacts/install.sh
           chmod +x ./artifacts/install.sh
 
       - name: ls artifacts
