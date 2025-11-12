@@ -1,5 +1,6 @@
 use std::{
     fs,
+    path::PathBuf,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -157,8 +158,20 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     match &cli.command {
-        Commands::Init { output } => {
-            fs::write(output, &to_toml(&Config::default()).into_diagnostic()?).into_diagnostic()?;
+        Commands::Init { output, name } => {
+            let mut config = Config::default();
+            let mut output = output.clone();
+
+            // Override config fields if values are provided.
+            if let Some(name) = name {
+                config.cert_pem = PathBuf::from(format!("{name}-cert.pem"));
+                config.key_pem = PathBuf::from(format!("{name}-key.pem"));
+                config.trust_pem = PathBuf::from(format!("{name}-trust.pem"));
+
+                output.set_file_name(format!("{name}-config.toml"));
+            }
+
+            fs::write(&output, &to_toml(&config).into_diagnostic()?).into_diagnostic()?;
 
             println!("Configuration written to: {output:?}");
             Ok(())

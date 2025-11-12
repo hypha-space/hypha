@@ -38,6 +38,16 @@ pub enum Commands {
         /// Path where the configuration file will be written
         #[clap(short, long, default_value = "config.toml", verbatim_doc_comment)]
         output: PathBuf,
+
+        /// Name of this scheduler node.
+        #[clap(short, long)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+
+        // A job description
+        #[clap(short, long)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        job: Option<String>,
     },
 
     #[command(

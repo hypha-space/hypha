@@ -1,6 +1,6 @@
 //! Scheduler binary.
 
-use std::{fs, sync::Arc, time::Duration};
+use std::{fs, path::PathBuf, sync::Arc, time::Duration};
 
 use clap::Parser;
 use figment::providers::{Env, Format, Serialized, Toml};
@@ -467,8 +467,24 @@ async fn get_data_provider(
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     match &cli.command {
-        Commands::Init { output } => {
-            fs::write(output, &to_toml(&Config::default())?).into_diagnostic()?;
+        Commands::Init { output, name, job } => {
+            let mut config = Config::default();
+            let mut output = output.clone();
+
+            // Override config fields if values are provided.
+            if let Some(name) = name {
+                config.cert_pem = PathBuf::from(format!("{name}-cert.pem"));
+                config.key_pem = PathBuf::from(format!("{name}-key.pem"));
+                config.trust_pem = PathBuf::from(format!("{name}-trust.pem"));
+
+                output.set_file_name(format!("{name}-config.toml"));
+            }
+
+            if let Some(job) = job {
+                config.scheduler = serde_json::from_str(job).into_diagnostic()?;
+            }
+
+            fs::write(&output, &to_toml(&config)?).into_diagnostic()?;
 
             println!("Configuration written to: {output:?}");
             Ok(())
