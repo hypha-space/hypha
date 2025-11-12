@@ -1,28 +1,12 @@
 #!/bin/sh
-# Copyright (c) 2025 Hypha Space
+# Licensed under the MIT license
+# <LICENSE-MIT or https://opensource.org/licenses/MIT>, at your
+# option. This file may not be copied, modified, or distributed
+# except according to those terms.
 #
-# Permission is hereby granted, free of charge, to any person obtaining a copy
-# of this software and associated documentation files (the "Software"), to deal
-# in the Software without restriction, including without limitation the rights
-# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-# copies of the Software, and to permit persons to whom the Software is
-# furnished to do so, subject to the following conditions:
-#
-# The above copyright notice and this permission notice shall be included in all
-# copies or substantial portions of the Software.
-#
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-# SOFTWARE.
-#
-# NOTE: This installation script is inspired by the uv installer from Astral
-# (https://astral.sh/uv) and follows similar patterns for robust cross-platform
-# installation. We're grateful to the Astral team for their excellent work on
-# tooling for the OSS community.
+# This installation script is based on the install script from the uv project
+# by Astral (https://astral.sh/uv). We're grateful to the Astral team for
+# their excellent work on tooling for the OSS community.
 
 set -e
 
@@ -30,6 +14,9 @@ set -e
 REPO="hypha-space/hypha"
 INSTALL_DIR="${HYPHA_INSTALL_DIR:-$HOME/.local/bin}"
 BINARIES="hypha-gateway hypha-worker hypha-data hypha-scheduler hypha-certutil"
+
+# NOTE: RELEASE_VERSION will be replaced during the release process with the actual version tag
+RELEASE_VERSION=""
 
 # Detect platform
 detect_platform() {
@@ -69,11 +56,16 @@ detect_platform() {
     esac
 }
 
-# Get the latest release version or use specified version
+# Get the version to install
 get_version() {
     if [ -n "$HYPHA_VERSION" ]; then
+        # User-specified version takes precedence
         VERSION="$HYPHA_VERSION"
+    elif [ -n "$RELEASE_VERSION" ]; then
+        # Use the version this script was released with
+        VERSION="$RELEASE_VERSION"
     else
+        # Fall back to fetching the latest release
         echo "Fetching latest release version..."
         VERSION=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
         if [ -z "$VERSION" ]; then

@@ -113,6 +113,7 @@ jobs:
     runs-on: ubuntu-latest
     name: Create Github Release
     needs:
+      - get-next-version
       - validate-rust
       - validate-python
       - check-dependencies
@@ -144,7 +145,8 @@ jobs:
       - name: Prepare install script
         run: |
           mkdir -p ./artifacts/install-script
-          cp install.sh ./artifacts/install-script/install.sh
+          # Inject the release version into the install script
+          sed 's/^RELEASE_VERSION=""$/RELEASE_VERSION="${{ needs.get-next-version.outputs.new-release-version }}"/' install.sh > ./artifacts/install-script/install.sh
           chmod +x ./artifacts/install-script/install.sh
 
       - name: Invoke semantic-release
