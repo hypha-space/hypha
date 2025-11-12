@@ -115,6 +115,7 @@ jobs:
     runs-on: ubuntu-latest
     name: Create Github Release
     needs:
+      - get-next-version
       - validate-rust
       - validate-python
       - check-dependencies
@@ -140,6 +141,12 @@ jobs:
         with:
           pattern: build-output-*
           path: artifacts
+
+      - name: Prepare install script
+        run: |
+          # Inject the release version into the install script
+          sed 's/^VERSION=""$/VERSION="${{ needs.get-next-version.outputs.new-release-version }}"/' install.sh > ./artifacts/install.sh
+          chmod +x ./artifacts/install.sh
 
       - name: ls artifacts
         run: ls -R ./artifacts
