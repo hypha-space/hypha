@@ -1,6 +1,5 @@
 use std::{
     fs,
-    path::PathBuf,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -8,124 +7,27 @@ use std::{
     time::Duration,
 };
 
-use clap::{Parser, Subcommand};
+use clap::Parser;
 use figment::providers::{Env, Format, Serialized, Toml};
 use futures_util::future::join_all;
 use hypha_config::{ConfigWithMetadata, ConfigWithMetadataTLSExt, builder, to_toml};
 use hypha_gateway::{config::Config, network::Network};
 use hypha_messages::health;
 use hypha_network::{
-    IpNet, dial::DialInterface, external_address::ExternalAddressInterface,
-    listen::ListenInterface, request_response::RequestResponseInterfaceExt, swarm::SwarmDriver,
+    dial::DialInterface, external_address::ExternalAddressInterface, listen::ListenInterface,
+    request_response::RequestResponseInterfaceExt, swarm::SwarmDriver,
 };
 use hypha_telemetry as telemetry;
 use libp2p::Multiaddr;
 use miette::{IntoDiagnostic, Result};
-use serde::Serialize;
 use tokio::signal::unix::{SignalKind, signal};
 use tracing_subscriber::{
     EnvFilter, Layer, Registry, layer::SubscriberExt, util::SubscriberInitExt,
 };
 
-#[derive(Debug, Parser, Serialize)]
-#[command(
-    name = "hypha-gateway",
-    version,
-    about = "Hypha Gateway Node",
-    long_about = "Runs the Hypha Gateway facilitating network connectivity between peers.",
-    after_help = "For more information, see the project documentation."
-)]
-struct Cli {
-    #[command(subcommand)]
-    command: Commands,
-}
-
-#[derive(Debug, Subcommand, Serialize)]
-enum Commands {
-    Init {
-        /// Path where the configuration file will be written
-        #[clap(short, long, default_value = "config.toml")]
-        output: PathBuf,
-    },
-    /// Probe a target multiaddr for readiness and exit 0 if healthy.
-    #[serde(untagged)]
-    Probe {
-        /// Path to the configuration file.
-        #[clap(short, long("config"), default_value = "config.toml")]
-        config_file: PathBuf,
-
-        /// Path to the certificate pem.
-        #[clap(long("cert"))]
-        #[serde(skip_serializing_if = "Option::is_none")]
-        cert_pem: Option<PathBuf>,
-
-        /// Path to the private key pem.
-        #[clap(long("key"))]
-        #[serde(skip_serializing_if = "Option::is_none")]
-        key_pem: Option<PathBuf>,
-
-        /// Path to the trust pem (bundle).
-        #[clap(long("trust"))]
-        #[serde(skip_serializing_if = "Option::is_none")]
-        trust_pem: Option<PathBuf>,
-
-        /// Path to the certificate revocation list pem.
-        #[clap(long("crls"))]
-        #[serde(skip_serializing_if = "Option::is_none")]
-        crls_pem: Option<PathBuf>,
-
-        /// Timeout in milliseconds
-        #[clap(long, default_value_t = 2000)]
-        timeout: u64,
-
-        /// Target multiaddr to probe (e.g., /ip4/127.0.0.1/tcp/8080)
-        #[clap(index = 1)]
-        address: String,
-    },
-    #[serde(untagged)]
-    Run {
-        /// Path to the configuration file.
-        #[clap(short, long("config"), default_value = "config.toml")]
-        #[serde(skip)]
-        config_file: PathBuf,
-
-        /// Path to the certificate pem.
-        #[clap(long("cert"))]
-        #[serde(skip_serializing_if = "Option::is_none")]
-        cert_pem: Option<PathBuf>,
-
-        /// Path to the private key pem.
-        #[clap(long("key"))]
-        #[serde(skip_serializing_if = "Option::is_none")]
-        key_pem: Option<PathBuf>,
-
-        /// Path to the trust pem (bundle).
-        #[clap(long("trust"))]
-        #[serde(skip_serializing_if = "Option::is_none")]
-        trust_pem: Option<PathBuf>,
-
-        /// Path to the certificate revocation list pem.
-        #[clap(long("crls"))]
-        #[serde(skip_serializing_if = "Option::is_none")]
-        crls_pem: Option<PathBuf>,
-
-        /// Addresses to listen on (can be specified multiple times).
-        #[clap(long("listen"))]
-        #[serde(skip_serializing_if = "Option::is_none")]
-        listen_addresses: Option<Vec<Multiaddr>>,
-
-        /// External addresses to advertise (can be specified multiple times).
-        #[clap(long("external"))]
-        #[serde(skip_serializing_if = "Option::is_none")]
-        external_addresses: Option<Vec<Multiaddr>>,
-
-        /// CIDR exclusion (repeatable). Overrides config if provided.
-        /// Example: --exclude-cidr 10.0.0.0/8 --exclude-cidr fc00::/7
-        #[clap(long("exclude-cidr"))]
-        #[serde(skip_serializing_if = "Option::is_none")]
-        exclude_cidr: Option<Vec<IpNet>>,
-    },
-}
+#[path = "../cli.rs"]
+mod cli;
+use cli::{Cli, Commands};
 
 async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
     let tracing = telemetry::tracing(

@@ -4,6 +4,7 @@ version.workspace = true
 publish.workspace = true
 edition.workspace = true
 license = "Apache-2.0"
+build = "build.rs"
 
 [dependencies]
 ciborium.workspace = true
@@ -31,6 +32,13 @@ tokio-util.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
+
+[build-dependencies]
+clap.workspace = true
+hypha-network.workspace = true
+libp2p.workspace = true
+serde.workspace = true
+clap-markdown = "0.1.5"
 
 [dev-dependencies]
 tokio = { version = "1.43.0", features = [
