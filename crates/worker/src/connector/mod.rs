@@ -490,7 +490,7 @@ where
                             let item = ReadItem {
                                 meta: ItemMeta {
                                     kind: "peer",
-                                    name: data_provider.to_string(),
+                                    name: index.to_string(),
                                 },
                                 reader: Box::pin(stream),
                             };

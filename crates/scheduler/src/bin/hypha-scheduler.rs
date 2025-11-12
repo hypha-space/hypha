@@ -18,15 +18,15 @@ use hypha_network::{
 };
 use hypha_scheduler::{
     allocator::{Allocator, GreedyWorkerAllocator},
-    batch_scheduler::BatchScheduler,
     config::Config,
     metrics_bridge::{AimConnector, MetricsBridge, NoOpConnector},
     network::Network,
     scheduler_config::Job as SchedulerJob,
+    scheduling::{batch_scheduler::BatchScheduler, data_scheduler::DataScheduler},
     simulation::BasicSimulation,
     statistics::RunningMean,
     task::Task,
-    tracker::{progress::ProgressTracker, slice::SliceTracker},
+    tracker::progress::ProgressTracker,
 };
 use hypha_telemetry as telemetry;
 use libp2p::{Multiaddr, PeerId, multiaddr::Protocol};
@@ -251,22 +251,27 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
     let dataset = diloco_config.dataset.dataset.clone();
     let (data_provider, dataset_record) = get_data_provider(&network, dataset.as_str()).await?;
 
-    let slice_tracker = SliceTracker::new(
+    let data_scheduler = DataScheduler::new(
         network.clone(),
         data_provider,
         dataset.clone(),
         dataset_record.num_slices,
     );
 
-    let tracker_task = tokio::spawn(slice_tracker.run().await.expect("network ready"));
+    let tracker_task = tokio::spawn(
+        data_scheduler
+            .run(token.clone())
+            .await
+            .expect("network ready"),
+    );
 
     let status_handle = if allocated_workers.len() >= diloco_config.resources.num_workers as usize
         && allocated_parameter_servers.len() == 1
     {
         let job_id = Uuid::new_v4();
         let batch_sizes = [22, 12];
-        let samples_per_update = 220;
-        let diloco_rounds = 4;
+        let samples_per_update = 1200;
+        let diloco_rounds = 100;
 
         let worker1 = &allocated_workers[0];
         let worker2 = &allocated_workers[1];
@@ -318,7 +323,7 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
                         ),
                         results: Receive::peers(vec![parameter_server.peer_id()]),
                         optimizer: diloco_config.inner_optimizer.clone(),
-                        batch_size: 22,
+                        batch_size: 40,
                         preprocessor: diloco_config.preprocessor.clone().map(|p| p.into()),
                         scheduler: None,
                     })
@@ -343,7 +348,7 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
                         ),
                         results: Receive::peers(vec![parameter_server.peer_id()]),
                         optimizer: diloco_config.inner_optimizer.clone(),
-                        batch_size: 12,
+                        batch_size: 60,
                         preprocessor: diloco_config.preprocessor.clone().map(|p| p.into()),
                         scheduler: None,
                     })
