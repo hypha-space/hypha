@@ -77,6 +77,7 @@ jobs:
     name: Build Python
     needs:
       - get-next-version
+    if: needs.get-next-version.outputs.new-release-published == 'true'
     strategy:
       matrix:
         projects: ["executors/accelerate"]
@@ -92,6 +93,7 @@ jobs:
     name: Build Rust
     needs:
       - get-next-version
+    if: needs.get-next-version.outputs.new-release-published == 'true'
     strategy:
       matrix:
         include:
@@ -118,6 +120,7 @@ jobs:
       - check-dependencies
       - build-python
       - build-rust
+    if: needs.get-next-version.outputs.new-release-published == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 #v4.2.2
