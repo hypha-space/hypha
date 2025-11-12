@@ -260,3 +260,22 @@ impl TLSConfig for Config {
         self.crls_pem.as_deref()
     }
 }
+
+impl ValidatableConfig for Config {
+    fn validate(cfg: &ConfigWithMetadata<Self>) -> std::result::Result<(), ConfigError> {
+        // NOTE: Gateways MUST have external addresses for the network to function properly.
+        // Without them, peers cannot discover or connect to the gateway.
+        if cfg.external_addresses().is_empty() {
+            let metadata = cfg.find_metadata("external_addresses");
+            let message = "Gateway must have at least one external address configured. \
+                          External addresses are required for peers to discover and connect \
+                          to the gateway.";
+
+            return Err(ConfigError::with_metadata(&metadata)(ConfigError::Invalid(
+                message.to_string(),
+            )));
+        }
+
+        Ok(())
+    }
+}

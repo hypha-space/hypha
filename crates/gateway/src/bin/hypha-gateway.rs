@@ -173,7 +173,8 @@ async fn main() -> Result<()> {
                 .with_provider(Toml::file(config_file))
                 .with_provider(Env::prefixed("HYPHA_"))
                 .with_provider(Serialized::defaults(&args))
-                .build()?;
+                .build()?
+                .validate()?;
 
             let exclude_cidrs = config.exclude_cidr().clone();
             let (network, driver) = Network::create(
@@ -212,7 +213,8 @@ async fn main() -> Result<()> {
                 .with_provider(Env::prefixed("HYPHA_"))
                 .with_provider(Env::prefixed("OTEL_"))
                 .with_provider(Serialized::defaults(args))
-                .build()?;
+                .build()?
+                .validate()?;
 
             return run(config).await;
         }
