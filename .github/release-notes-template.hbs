@@ -1,0 +1,21 @@
+{{> header}}
+
+{{#each commitGroups}}
+{{#each commits}}
+{{> commit root=@root}}
+{{/each}}
+{{/each}}
+
+{{> footer}}
+
+---
+
+## Installation
+
+Use the standalone installer script to download and install the Hypha v{{nextRelease.version}} binaries. Use `curl` to download the script and execute it with sh:
+
+```sh
+curl -fsSL https://github.com/hypha-space/hypha/releases/download/v{{nextRelease.version}}/install.sh | sh
+```
+
+For alternative installation methods (GitHub releases, Cargo), see the [Installation Guide](https://github.com/hypha-space/hypha/blob/alpha/docs/installation.md).

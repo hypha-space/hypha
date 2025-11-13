@@ -7,7 +7,9 @@ branches:
     prerelease: true
 plugins:
   - "@semantic-release/commit-analyzer"
-  - "@semantic-release/release-notes-generator"
+  - - "@semantic-release/release-notes-generator"
+    - writerOpts:
+        mainTemplate: ".github/release-notes-template.hbs"
   - - "@semantic-release/github"
     - assets:
         # artifacts will be pushed to artifacts/**/* by the release workflow
