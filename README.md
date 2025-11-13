@@ -1,5 +1,11 @@
 # Hypha
 
+## Installation
+
+Hypha provides a standalone installer script for easy installation. Visit the [GitHub Releases](https://github.com/hypha-space/hypha/releases) page and select your desired version. Each release includes complete installation instructions with the version-specific download command pre-configured.
+
+Alternatively, you can build from source by following the instructions in [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## Goals
 
 ### Democratize Large-Scale ML
