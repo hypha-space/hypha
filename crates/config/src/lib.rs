@@ -547,7 +547,10 @@ where
 {
     let body = toml::to_string_pretty(config)?;
 
-    let mut header = format!("# Config\n# \n# {}\n# \n# Fields:\n", T::DOCS);
+    let mut header = format!(
+        "# Config\n# \n# {}\n# \n# Fields:\n",
+        T::DOCS.replace("\n", "\n# ")
+    );
     for field in T::FIELD_NAMES {
         if let Ok(docs) = T::get_field_docs(field) {
             let docs = docs.replace("\n", "\n#     ");
