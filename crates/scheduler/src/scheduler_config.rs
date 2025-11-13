@@ -36,20 +36,25 @@ impl Default for DiLoCo {
     fn default() -> Self {
         Self {
             model: ModelSource {
-                repository: "l45k/Resnet50".to_string(),
+                repository: "hypha-space/lenet".to_string(),
                 revision: None,
-                filenames: vec!["config.json".to_string(), "model.safetensors".to_string()],
-                token: Some("hf_1234token".to_string()),
+                filenames: vec![
+                    "config.json".to_string(),
+                    "model.safetensors".to_string(),
+                    "configuration_lenet.py".to_string(),
+                    "modeling_lenet.py".to_string(),
+                ],
+                token: None,
                 model_type: ModelType::VisionClassification,
             },
             preprocessor: Some(PreprocessorSource {
-                repository: "l45k/Resnet50".to_string(),
+                repository: "hypha-space/lenet".to_string(),
                 revision: None,
                 filenames: vec!["preprocessor_config.json".to_string()],
-                token: Some("hf_1234token".to_string()),
+                token: None,
             }),
             dataset: DataNodeSource {
-                dataset: "imagnet".to_string(),
+                dataset: "mnist".to_string(),
             },
             inner_optimizer: Adam {
                 learning_rate: 1e-3,
