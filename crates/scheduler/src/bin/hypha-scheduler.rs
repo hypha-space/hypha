@@ -35,7 +35,7 @@ use hypha_telemetry as telemetry;
 use libp2p::{Multiaddr, PeerId, multiaddr::Protocol};
 use miette::{IntoDiagnostic, Result};
 use serde_json::Value;
-use tokio::sync::Mutex;
+use tokio::{sync::Mutex, time::sleep};
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::{
@@ -231,6 +231,10 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
             Vec::new()
         }
     };
+
+    // NOTE: We need to wait to allow workers to release tmp reservations before requesting parameter servers.
+    // This will be fixed once we have introduced a proper worker pool with retry allocations.
+    sleep(Duration::from_millis(1000)).await;
 
     // Request multiple workers to increase chances of two distinct peers
     let allocated_parameter_servers = match allocator
