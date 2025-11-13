@@ -16,7 +16,7 @@ For alternative installation methods (GitHub releases, Cargo), see the [Installa
 
 ## Getting Started
 
-Follow the [Quick Start Guide](docs/quick-start.md) to set up your first end-to-end decentralized training system.
+Follow the [Quick Start Guide](docs/quickstart.md) to set up your first end-to-end decentralized training system.
 
 ## Goals
 
