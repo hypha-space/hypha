@@ -11,11 +11,11 @@ fn main() {
     println!("cargo:rerun-if-changed=src/cli.rs");
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR not set"));
-    let docs_path = out_dir.join(format!("{}.md", env!("CARGO_PKG_NAME")));
+    let docs_path = out_dir.join(format!("{}-cli.md", env!("CARGO_PKG_NAME")));
 
     let crate_name = env!("CARGO_PKG_NAME");
     let options = MarkdownOptions::new()
-        .title(crate_name.to_string())
+        .title(format!("{crate_name} CLI Reference"))
         .show_footer(false);
     let body = help_markdown_custom::<cli::Cli>(&options);
 
