@@ -34,6 +34,7 @@ pub enum Commands {
             IMPORTANT: If the output file exists, it will be overwritten without warning.
         "}
     )]
+    #[serde(untagged)]
     Init {
         /// Path where the configuration file will be written
         #[clap(short, long, default_value = "config.toml", verbatim_doc_comment)]
@@ -43,6 +44,60 @@ pub enum Commands {
         #[clap(short, long)]
         #[serde(skip_serializing_if = "Option::is_none")]
         name: Option<String>,
+
+        /// Path to the certificate PEM file (overrides config)
+        ///
+        /// Must be a valid X.509 certificate in PEM format.
+        #[arg(long("cert"), verbatim_doc_comment)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cert_pem: Option<PathBuf>,
+
+        /// Path to the private key PEM file (overrides config)
+        ///
+        /// Must correspond to the certificate. Security: restrict permissions (e.g., chmod 600).
+        #[arg(long("key"), verbatim_doc_comment)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        key_pem: Option<PathBuf>,
+
+        /// Path to the trust chain PEM file (overrides config)
+        ///
+        /// CA bundle containing certificates trusted by this node. If not provided,
+        /// uses trust_pem from the configuration file.
+        #[arg(long("trust"), verbatim_doc_comment)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        trust_pem: Option<PathBuf>,
+
+        /// Path to the certificate revocation list PEM (overrides config)
+        ///
+        /// Optional CRL for rejecting compromised certificates. If not provided,
+        /// uses crls_pem from the configuration file if present.
+        #[arg(long("crls"), verbatim_doc_comment)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        crls_pem: Option<PathBuf>,
+
+        /// Addresses to listen on (repeatable, overrides config)
+        ///
+        /// Where this gateway accepts incoming connections.
+        /// Examples: /ip4/0.0.0.0/tcp/8080, /ip4/0.0.0.0/udp/8080/quic-v1
+        #[arg(long("listen"), verbatim_doc_comment)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        listen_addresses: Option<Vec<Multiaddr>>,
+
+        /// External addresses to advertise (repeatable, overrides config)
+        ///
+        /// Publicly reachable addresses peers should use to connect.
+        /// Examples: /ip4/203.0.113.10/tcp/8080, /dns4/gateway.example.com/tcp/8080
+        #[arg(long("external"), verbatim_doc_comment)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        external_addresses: Option<Vec<Multiaddr>>,
+
+        /// CIDR ranges to exclude from DHT (repeatable, overrides config)
+        ///
+        /// Filters out peer addresses matching these ranges before adding to the DHT.
+        /// Examples: 10.0.0.0/8, fc00::/7
+        #[arg(long("exclude-cidr"), verbatim_doc_comment)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        exclude_cidr: Option<Vec<IpNet>>,
     },
 
     #[command(

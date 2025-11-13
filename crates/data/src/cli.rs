@@ -1,7 +1,9 @@
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
+use hypha_network::IpNet;
 use indoc::indoc;
+use libp2p::Multiaddr;
 use serde::Serialize;
 
 #[derive(Debug, Parser, Serialize)]
@@ -36,6 +38,7 @@ pub enum Commands {
             IMPORTANT: If the output file exists, it will be overwritten without warning.
         "}
     )]
+    #[serde(untagged)]
     Init {
         /// Path where the configuration file will be written
         #[clap(short, long, default_value = "config.toml", verbatim_doc_comment)]
@@ -50,6 +53,39 @@ pub enum Commands {
         #[clap(short, long("dataset-path"))]
         #[serde(skip_serializing_if = "Option::is_none")]
         dataset_path: Option<PathBuf>,
+
+        /// Gateway addresses to connect to (repeatable, overrides config)
+        ///
+        /// Gateways provide network bootstrapping, DHT access, and relay functionality.
+        /// Must include the peer ID in the multiaddr.
+        ///
+        /// Examples:
+        ///   --gateway /ip4/203.0.113.10/tcp/8080/p2p/12D3KooWAbc...
+        ///   --gateway /dns4/gateway.hypha.example/tcp/443/p2p/12D3KooWAbc...
+        /// Required: connect to at least one gateway.
+        #[arg(long("gateway"), verbatim_doc_comment)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        gateway_addresses: Option<Vec<Multiaddr>>,
+
+        /// Addresses to listen on (repeatable, overrides config)
+        ///
+        /// Where the data node accepts incoming connections.
+        ///
+        /// Examples:
+        ///   --listen /ip4/0.0.0.0/tcp/9092
+        ///   --listen /ip4/0.0.0.0/udp/9092/quic-v1
+        #[arg(long("listen"), verbatim_doc_comment)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        listen_addresses: Option<Vec<Multiaddr>>,
+
+        /// CIDR ranges to exclude from DHT (repeatable, overrides config)
+        ///
+        /// Filters out peer addresses matching these ranges before adding to the DHT.
+        ///
+        /// Examples: 10.0.0.0/8, fc00::/7
+        #[arg(long("exclude-cidr"), verbatim_doc_comment)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        exclude_cidr: Option<Vec<IpNet>>,
     },
 
     #[command(

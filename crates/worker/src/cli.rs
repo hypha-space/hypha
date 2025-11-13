@@ -41,6 +41,7 @@ pub enum Commands {
             IMPORTANT: If the output file exists, it will be overwritten without warning.
         "}
     )]
+    #[serde(untagged)]
     Init {
         /// Path where the configuration file will be written
         #[clap(short, long, default_value = "config.toml", verbatim_doc_comment)]
@@ -50,6 +51,75 @@ pub enum Commands {
         #[clap(short, long)]
         #[serde(skip_serializing_if = "Option::is_none")]
         name: Option<String>,
+
+        /// Gateway addresses to connect to (repeatable, overrides config)
+        ///
+        /// Gateways provide network bootstrapping, DHT access, and optional relay.
+        /// Must include the peer ID in the multiaddr.
+        ///
+        /// Examples:
+        ///   --gateway /ip4/203.0.113.10/tcp/8080/p2p/12D3KooWAbc...
+        ///   --gateway /dns4/gateway.hypha.example/tcp/443/p2p/12D3KooWAbc...
+        /// Required: connect to at least one gateway.
+        #[arg(long("gateway"), verbatim_doc_comment)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        gateway_addresses: Option<Vec<Multiaddr>>,
+
+        /// Addresses to listen on (repeatable, overrides config)
+        ///
+        /// Where the worker accepts incoming connections.
+        ///
+        /// Examples:
+        ///   --listen /ip4/0.0.0.0/tcp/9091
+        ///   --listen /ip4/0.0.0.0/udp/9091/quic-v1
+        #[arg(long("listen"), verbatim_doc_comment)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        listen_addresses: Option<Vec<Multiaddr>>,
+
+        /// External addresses to advertise (repeatable, overrides config)
+        ///
+        /// Publicly reachable addresses peers should use to connect.
+        ///
+        /// Examples:
+        ///   --external /ip4/203.0.113.30/tcp/9091
+        ///   --external /dns4/worker.example.com/tcp/9091
+        #[arg(long("external"), verbatim_doc_comment)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        external_addresses: Option<Vec<Multiaddr>>,
+
+        /// Enable relay circuit listening via gateway (overrides config)
+        ///
+        /// true = use relay (default), false = direct connections only.
+        #[arg(long("relay-circuit"), verbatim_doc_comment)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        relay_circuit: Option<bool>,
+
+        /// Socket path for driver communication (overrides config)
+        ///
+        /// Unix domain socket for worker-executor communication (optional).
+        #[arg(long("socket"), verbatim_doc_comment)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        socket_address: Option<PathBuf>,
+
+        /// Base directory for job working directories (overrides config)
+        ///
+        /// Where per-job working directories are created.
+        ///
+        /// Examples:
+        ///   --work-dir /tmp
+        ///   --work-dir /mnt/fast-ssd/hypha
+        #[arg(long("work-dir"), verbatim_doc_comment)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        work_dir: Option<PathBuf>,
+
+        /// CIDR ranges to exclude from DHT (repeatable, overrides config)
+        ///
+        /// Filters out peer addresses matching these ranges before adding to the DHT.
+        ///
+        /// Examples: 10.0.0.0/8, fc00::/7
+        #[arg(long("exclude-cidr"), verbatim_doc_comment)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        exclude_cidr: Option<Vec<IpNet>>,
     },
 
     #[command(
