@@ -1928,6 +1928,7 @@ version = "0.0.0"
 dependencies = [
  "clap",
  "clap-markdown",
+ "indoc",
  "rcgen",
  "rustls",
  "thiserror 2.0.17",
@@ -1961,6 +1962,7 @@ dependencies = [
  "hypha-messages",
  "hypha-network",
  "hypha-telemetry",
+ "indoc",
  "libp2p",
  "libp2p-stream",
  "miette",
@@ -1984,6 +1986,7 @@ dependencies = [
  "hypha-messages",
  "hypha-network",
  "hypha-telemetry",
+ "indoc",
  "libp2p",
  "miette",
  "serde",
@@ -2055,6 +2058,7 @@ dependencies = [
  "hypha-messages",
  "hypha-network",
  "hypha-telemetry",
+ "indoc",
  "itertools 0.14.0",
  "libp2p",
  "libp2p-stream",
@@ -2115,6 +2119,7 @@ dependencies = [
  "hypha-messages",
  "hypha-network",
  "hypha-telemetry",
+ "indoc",
  "libp2p",
  "libp2p-stream",
  "miette",
@@ -2319,6 +2324,15 @@ dependencies = [
  "portable-atomic",
  "unicode-width 0.2.2",
  "web-time",
+]
+
+[[package]]
+name = "indoc"
+version = "2.0.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "79cf5c93f93228cf8efb3ba362535fb11199ac548a09ce117c9b1adc3030d706"
+dependencies = [
+ "rustversion",
 ]
 
 [[package]]

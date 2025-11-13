@@ -20,6 +20,7 @@ hypha-leases.workspace = true
 hypha-messages.workspace = true
 hypha-network.workspace = true
 hypha-telemetry.workspace = true
+indoc.workspace = true
 libp2p.workspace = true
 libp2p-stream.workspace = true
 miette.workspace = true
@@ -41,6 +42,7 @@ utoipa.workspace = true
 uuid.workspace = true
 
 [build-dependencies]
+indoc.workspace = true
 clap.workspace = true
 hypha-network.workspace = true
 libp2p.workspace = true

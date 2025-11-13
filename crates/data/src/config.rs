@@ -12,44 +12,172 @@ use libp2p::Multiaddr;
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize, Serialize, Documented, DocumentedFieldsOpt)]
-/// Configure network settings, security certificates, and runtime parameters.
+/// Data node configuration for dataset serving and distribution.
+///
+/// The data node provides training datasets to workers via the P2P network. It must have
+/// fast storage access and sufficient network bandwidth for concurrent data transfers.
 pub struct Config {
-    /// Path to the certificate pem.
+    /// Path to the TLS certificate PEM file.
+    ///
+    /// Must be a valid X.509 certificate in PEM format that establishes this data node's
+    /// identity in the P2P network. The certificate must match the private key and be
+    /// trusted by all peers.
+    ///
+    /// SECURITY: Use certificates from a recognized CA or internal PKI for production deployments.
     cert_pem: PathBuf,
-    /// Path to the private key pem.
+
+    /// Path to the private key PEM file.
+    ///
+    /// Must correspond to cert_pem. This is the data node's cryptographic identity.
+    ///
+    /// SECURITY:
+    /// * Restrict file permissions (chmod 600 recommended)
+    /// * Never commit to version control
+    /// * Store securely using secrets management systems in production
+    /// * Keep backups in secure, encrypted storage
     key_pem: PathBuf,
-    /// Path to the trust pem (bundle).
+
+    /// Path to the trust chain PEM file (CA bundle).
+    ///
+    /// Contains root and intermediate certificates trusted by this data node. Peers presenting
+    /// certificates signed by these CAs will be accepted for network connections.
     trust_pem: PathBuf,
-    /// Path to the certificate revocation list pem.
+
+    /// Path to certificate revocation list PEM (optional).
+    ///
+    /// Specifies certificates that should no longer be trusted, even if they're in the trust
+    /// chain. Used for compromised certificates or decommissioned peers.
+    ///
+    /// SECURITY: Keep this updated with your certificate authority's latest CRL to maintain
+    /// network security. Automate CRL updates in production environments.
     crls_pem: Option<PathBuf>,
-    /// Addresses of the gateways.
+
+    /// Gateway addresses to connect to (required for network entry).
+    ///
+    /// Specifies one or more gateways for network bootstrapping and relay functionality.
+    ///
+    /// Multiple gateways provide redundancy; the data node attempts to connect to all
+    /// and succeeds if any are reachable.
+    ///
+    /// Examples:
+    /// *  "/ip4/203.0.113.10/tcp/8080/"
+    /// * "/dns4/gateway.hypha.example/tcp/443/"
     gateway_addresses: Vec<Multiaddr>,
-    /// Addresses to listen on.
+
+    /// Network addresses to listen on for incoming connections.
+    ///
+    /// Supports TCP and QUIC protocols. Use port 0 to let the OS assign available ports.
+    ///
+    /// Examples:
+    /// * "/ip4/0.0.0.0/tcp/0" - TCP on all interfaces, OS-assigned port
+    /// * "/ip4/0.0.0.0/udp/0/quic-v1" - QUIC on all interfaces, OS-assigned port
     listen_addresses: Vec<Multiaddr>,
-    /// Path or file providing a dataset.
+
+    /// Path to the dataset directory.
+    ///
+    /// Directory containing dataset files (slices) to serve to workers. Each file in the
+    /// directory is treated as an independent dataset slice that can be fetched by workers.
+    ///
+    /// REQUIREMENTS:
+    /// * Must be a valid directory path
+    /// * Must contain at least one data file
+    /// * Directory name becomes the dataset identifier in the DHT
+    /// * Files should be consistently formatted for worker consumption
+    ///
+    /// DIRECTORY STRUCTURE:
+    ///
+    /// ```ignore
+    ///   dataset-name/
+    ///     slice-0000.bin
+    ///     slice-0001.bin
+    ///     slice-0002.bin
+    ///     ...
+    /// ```
+    ///
+    /// The directory is scanned at startup and dataset metadata is announced via DHT.
     dataset_path: PathBuf,
-    /// CIDR address filters applied before adding Identify-reported listen addresses to Kademlia.
-    /// Use standard CIDR notation (e.g., "10.0.0.0/8", "fc00::/7").
+
+    /// CIDR address filters for DHT routing table management.
+    ///
+    /// Peer addresses matching these CIDR ranges are excluded from the Kademlia DHT before
+    /// being added. This prevents routing to non-routable or private addresses.
+    ///
+    /// Defaults to reserved/private ranges (loopback, RFC1918, etc.).
+    ///
+    /// Add additional ranges to filter internal addresses specific to your network topology.
+    ///
+    /// NOTE: This only affects DHT address filtering, not direct peer connections.
     #[serde(default = "reserved_cidrs")]
     exclude_cidr: Vec<IpNet>,
+
+    /// OpenTelemetry Protocol (OTLP) endpoint for exporting telemetry data.
+    ///
+    /// Sends metrics, traces, and logs to an OpenTelemetry collector or compatible backend
+    /// (e.g., Jaeger, Prometheus, Grafana Cloud, ...).
+    ///
+    /// If unset, telemetry export is disabled (local logging only).
     #[serde(alias = "exporter_otlp_endpoint")]
-    /// OTLP Exporter endpoint for telemetry data. If unset, telemetry is disabled.
     telemetry_endpoint: Option<Endpoint>,
+
+    /// Resource attributes included in all telemetry data.
+    ///
+    /// Key-value pairs that identify this data node instance in your observability platform.
+    /// Useful for filtering and grouping metrics across multiple data nodes.
+    ///
+    /// Example Attributes:
+    /// * service.name: "hypha-data"
+    /// * service.version: "0.1.0"
+    /// * deployment.environment: "production"
+    /// * host.name: "data-01"
+    /// * dataset.name: "imagenet-train"
+    /// * storage.type: "ssd"
+    ///
+    /// These attributes appear in all exported metrics, traces, and logs.
     #[serde(alias = "resource_attributes")]
-    /// Attributes to be included in telemetry.
     telemetry_attributes: Option<Attributes>,
+
+    /// HTTP/gRPC headers for OTLP endpoint authentication.
+    ///
+    /// Used to authenticate with your telemetry backend. Common use cases:
+    /// * API keys: {"Authorization": "Bearer YOUR_API_KEY"}
+    /// * Custom headers: {"X-API-Key": "secret"}
+    ///
+    /// SECURITY: Protect these credentials. Use environment variables or secrets management
+    /// instead of hardcoding in config files. Never commit credentials to version control.
     #[serde(alias = "exporter_otlp_headers")]
-    /// Headers for OTLP telemetry endpoint request used for authentication.
     telemetry_headers: Option<Headers>,
+
+    /// Protocol for OTLP telemetry endpoint communication.
+    ///
+    /// Choose based on your collector's supported protocols.
     #[serde(alias = "exporter_otlp_protocol")]
-    /// Protocol for OTLP telemetry endpoint request.
     telemetry_protocol: Option<Protocol>,
+
+    /// Trace sampling strategy to control volume and costs.
+    ///
+    /// Options:
+    /// * "always_on" - Sample every trace (high volume, expensive)
+    /// * "always_off" - Disable tracing (metrics and logs only)
+    /// * "traceidratio" - Sample traces by probability (cost-effective)
+    /// * "parentbased_traceidratio" - Honor parent trace decisions with fallback ratio
+    ///
+    /// RECOMMENDATION: Use "traceidratio" with sample_ratio for production to balance
+    /// observability with costs. Start with 0.1 (10%) and adjust based on data volume.
     #[serde(alias = "traces_sampler")]
-    /// Traces sampler: one of "always_on", "always_off", "traceidratio", or "parentbased_traceidratio".
     telemetry_sampler: Option<SamplerKind>,
+
+    /// Sampling probability for ratio-based trace samplers.
+    ///
+    /// Valid range: 0.0 to 1.0
+    /// * 1.0 = 100% sampling (sample every trace)
+    /// * 0.1 = 10% sampling (sample 1 in 10 traces)
+    /// * 0.01 = 1% sampling (sample 1 in 100 traces)
+    ///
+    /// Only applies to "traceidratio" and "parentbased_traceidratio" samplers.
+    ///
+    /// NOTE: Lower ratios reduce telemetry costs while maintaining statistical
+    /// significance. For high-throughput data nodes, 0.01-0.1 is probably sufficient.
     #[serde(alias = "traces_sampler_arg")]
-    /// For `traceidratio` and `parentbased_traceidratio` samplers: Sampling probability in [0..1],
-    /// e.g. "0.25". Default is 1.0.
     telemetry_sample_ratio: Option<f64>,
 }
 

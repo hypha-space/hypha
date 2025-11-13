@@ -15,6 +15,7 @@ hypha-config.workspace = true
 hypha-messages.workspace = true
 hypha-network.workspace = true
 hypha-telemetry.workspace = true
+indoc.workspace = true
 libp2p.workspace = true
 libp2p-stream.workspace = true
 miette.workspace = true
@@ -25,6 +26,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [build-dependencies]
+indoc.workspace = true
 clap.workspace = true
 serde.workspace = true
 clap-markdown = "0.1.5"
