@@ -227,7 +227,7 @@ impl Default for Config {
             telemetry_protocol: None,
             telemetry_sampler: None,
             telemetry_sample_ratio: None,
-            status_bridge: Some("0.0.0.0:61000".to_string()),
+            status_bridge: None,
             scheduler: SchedulerConfig::default(),
         }
     }

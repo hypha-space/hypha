@@ -333,6 +333,8 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
+        let version = env!("CARGO_PKG_VERSION");
+
         Self {
             cert_pem: PathBuf::from("worker-cert.pem"),
             key_pem: PathBuf::from("worker-key.pem"),
@@ -363,7 +365,47 @@ impl Default for Config {
             // NOTE: Default work directory base. Jobs create subdirs `hypha-{uuid}` under this path.
             work_dir: PathBuf::from("/tmp"),
             resources: ResourceConfig::default(),
-            executors: Vec::new(),
+            executors: vec![
+                ExecutorConfig {
+                    descriptor: ExecutorDescriptor::Train(
+                        hypha_messages::TrainExecutorDescriptor::new("diloco-transformer"),
+                    ),
+                    runtime: ExecutorRuntime::Process {
+                        cmd: "uv".to_string(),
+                        args: vec![
+                            "run".to_string(),
+                            "--python".to_string(),
+                            "3.12".to_string(),
+                            "--no-project".to_string(),
+                            "--with".to_string(),
+                            format!(
+                                "https://github.com/hypha-space/hypha/releases/download/v{}/hypha_accelerate_executor-{}-py3-none-any.whl",
+                                version,
+                                to_pyver(version)
+                            ),
+                            "--".to_string(),
+                            "accelerate".to_string(),
+                            "launch".to_string(),
+                            "--config_file".to_string(),
+                            "<path/to/accelerate.yaml>".to_string(),
+                            "-m".to_string(),
+                            "hypha.accelerate_executor.training".to_string(),
+                            "--socket".to_string(),
+                            "{SOCKET_PATH}".to_string(),
+                            "--work-dir".to_string(),
+                            "{WORK_DIR}".to_string(),
+                            "--job".to_string(),
+                            "{JOB_JSON}".to_string(),
+                        ],
+                    },
+                },
+                ExecutorConfig {
+                    descriptor: ExecutorDescriptor::Aggregate(
+                        hypha_messages::AggregateExecutorDescriptor::new("parameter-server"),
+                    ),
+                    runtime: ExecutorRuntime::ParameterServer,
+                },
+            ],
             telemetry_attributes: None,
             telemetry_endpoint: None,
             telemetry_headers: None,
@@ -486,5 +528,61 @@ impl ValidatableConfig for Config {
         }
 
         Ok(())
+    }
+}
+
+/// Converts a semantic version string to a Python PEP 440-ish version string
+/// aligning it with the respective CI action.
+fn to_pyver(input: &str) -> String {
+    if let Some((base, rest)) = input.split_once("-alpha.") {
+        return format!("{base}a{rest}");
+    }
+
+    if let Some((base, rest)) = input.split_once("-beta.") {
+        return format!("{base}b{rest}");
+    }
+
+    if let Some((base, rest)) = input.split_once("-rc.") {
+        return format!("{base}rc{rest}");
+    }
+
+    match input.split_once('-') {
+        Some((base, _suffix)) => base.to_string(),
+        None => input.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_to_pyver_alpha() {
+        assert_eq!(to_pyver("1.2.3-alpha.1"), "1.2.3a1");
+        assert_eq!(to_pyver("0.1.0-alpha.5"), "0.1.0a5");
+    }
+
+    #[test]
+    fn test_to_pyver_beta() {
+        assert_eq!(to_pyver("1.2.3-beta.1"), "1.2.3b1");
+        assert_eq!(to_pyver("2.0.0-beta.10"), "2.0.0b10");
+    }
+
+    #[test]
+    fn test_to_pyver_rc() {
+        assert_eq!(to_pyver("1.2.3-rc.1"), "1.2.3rc1");
+        assert_eq!(to_pyver("3.5.7-rc.2"), "3.5.7rc2");
+    }
+
+    #[test]
+    fn test_to_pyver_standard() {
+        assert_eq!(to_pyver("1.2.3"), "1.2.3");
+        assert_eq!(to_pyver("0.1.0"), "0.1.0");
+    }
+
+    #[test]
+    fn test_to_pyver_other_suffix() {
+        assert_eq!(to_pyver("1.2.3-dev"), "1.2.3");
+        assert_eq!(to_pyver("1.2.3-custom.suffix"), "1.2.3");
     }
 }
