@@ -25,7 +25,7 @@ runs:
       shell: bash
       run: |
         # Convert semver (1.2.3-alpha.1) to Python version (1.2.3a1), also truncate metadata other prerelease types (its broken then :shrug:)
-        PYVER=$(echo "${{ inputs.version }}" | sed -E 's/-alpha\./-a/;s/-beta\./-b/;s/-rc\./-rc/;s/-[0-9A-Za-z.-]+$//')
+        PYVER=$(echo "${{ inputs.version }}" | sed -E 's/-alpha\./a/;s/-beta\./b/;s/-rc\./rc/;s/-[0-9A-Za-z.-]+$//')
         uv version "${PYVER}"
       working-directory: ${{ inputs.project-path }}
 
