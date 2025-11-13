@@ -1,0 +1,25 @@
+{{> header}}
+
+{{> commit-list}}
+
+{{> footer}}
+
+---
+
+## Installation
+
+### Standalone installer
+
+Hypha provides a standalone installer script to download and install the Hypha binaries. Use `curl` to download the script and execute it with sh:
+
+```sh
+curl -fsSL https://github.com/hypha-space/hypha/releases/download/v{{nextRelease.version}}/install.sh | sh
+```
+
+> [!TIP]
+> To inspect the installer script before use, download it using `curl` and inspect it using `less`:
+> ```sh
+> curl -LsSf https://github.com/hypha-space/hypha/releases/download/v{{nextRelease.version}}/install.sh | less
+> ```
+
+For a list of available versions, visit the [GitHub Releases](https://github.com/hypha-space/hypha/releases) page.
