@@ -149,7 +149,7 @@ pub struct Config {
     /// trusted by all peers.
     ///
     /// SECURITY: Use certificates from a recognized CA or internal PKI for production deployments.
-    pub cert_pem: PathBuf,
+    cert_pem: PathBuf,
 
     /// Path to the private key PEM file.
     ///
@@ -160,13 +160,13 @@ pub struct Config {
     ///   * Never commit to version control
     ///   * Store securely using secrets management systems in production
     ///   * Keep backups in secure, encrypted storage
-    pub key_pem: PathBuf,
+    key_pem: PathBuf,
 
     /// Path to the trust chain PEM file (CA bundle).
     ///
     /// Contains root and intermediate certificates trusted by this worker. Peers presenting
     /// certificates signed by these CAs will be accepted for network connections.
-    pub trust_pem: PathBuf,
+    trust_pem: PathBuf,
 
     /// Path to certificate revocation list PEM (optional).
     ///
@@ -175,7 +175,7 @@ pub struct Config {
     ///
     /// SECURITY: Keep this updated with your certificate authority's latest CRL to maintain
     /// network security. Automate CRL updates in production environments.
-    pub crls_pem: Option<PathBuf>,
+    crls_pem: Option<PathBuf>,
 
     /// Gateway addresses to connect to (required for network entry).
     ///
@@ -187,7 +187,7 @@ pub struct Config {
     /// Examples:
     /// * "/ip4/203.0.113.10/tcp/8080/"
     /// * "/dns4/gateway.hypha.example/tcp/443/"
-    pub gateway_addresses: Vec<Multiaddr>,
+    gateway_addresses: Vec<Multiaddr>,
 
     /// Network addresses to listen on for incoming connections.
     ///
@@ -196,7 +196,7 @@ pub struct Config {
     /// Examples:
     /// * "/ip4/0.0.0.0/tcp/0" - TCP on all interfaces, OS-assigned port
     /// * "/ip4/0.0.0.0/udp/0/quic-v1" - QUIC on all interfaces, OS-assigned port
-    pub listen_addresses: Vec<Multiaddr>,
+    listen_addresses: Vec<Multiaddr>,
 
     /// External addresses to advertise for peer discovery (optional).
     ///
@@ -206,7 +206,7 @@ pub struct Config {
     /// Examples:
     /// * "/ip4/203.0.113.30/tcp/9091"
     /// * "/dns4/worker.example.com/tcp/9091"
-    pub external_addresses: Vec<Multiaddr>,
+    external_addresses: Vec<Multiaddr>,
 
     /// CIDR address filters for DHT routing table management.
     ///
@@ -219,7 +219,7 @@ pub struct Config {
     ///
     /// NOTE: This only affects DHT address filtering, not direct peer connections.
     #[serde(default = "reserved_cidrs")]
-    pub exclude_cidr: Vec<IpNet>,
+    exclude_cidr: Vec<IpNet>,
 
     /// Enable listening via relay circuit through the gateway.
     ///
@@ -229,7 +229,7 @@ pub struct Config {
     ///
     /// RECOMMENDATION: Keep enabled (true) unless the worker has public IP and external
     /// addresses configured for direct connectivity.
-    pub relay_circuit: bool,
+    relay_circuit: bool,
 
     /// Base directory for per-job working directories.
     ///
@@ -244,13 +244,13 @@ pub struct Config {
     ///
     /// Jobs clean up their directories on successful completion, but failures may leave
     /// artifacts for debugging.
-    pub work_dir: PathBuf,
+    work_dir: PathBuf,
 
     /// Available compute resources advertised to schedulers.
     ///
     /// Accurately configure resources to enable proper job allocation. Resources are
     /// reserved during job allocation and jobs exceeding available resources will be rejected.
-    pub resources: ResourceConfig,
+    resources: ResourceConfig,
 
     /// Available executors for different job types.
     ///
@@ -258,7 +258,7 @@ pub struct Config {
     /// executors for training, inference, parameter serving, or custom workloads.
     ///
     /// Workers with no executors configured cannot accept jobs.
-    pub executors: Vec<ExecutorConfig>,
+    executors: Vec<ExecutorConfig>,
 
     /// OpenTelemetry Protocol (OTLP) endpoint for exporting telemetry data.
     ///
@@ -267,7 +267,7 @@ pub struct Config {
     ///
     /// If unset, telemetry export is disabled (local logging only).
     #[serde(alias = "exporter_otlp_endpoint")]
-    pub telemetry_endpoint: Option<Endpoint>,
+    telemetry_endpoint: Option<Endpoint>,
 
     /// Resource attributes included in all telemetry data.
     ///
@@ -284,7 +284,7 @@ pub struct Config {
     ///
     /// These attributes appear in all exported metrics, traces, and logs.
     #[serde(alias = "resource_attributes")]
-    pub telemetry_attributes: Option<Attributes>,
+    telemetry_attributes: Option<Attributes>,
 
     /// HTTP/gRPC headers for OTLP endpoint authentication.
     ///
@@ -295,13 +295,13 @@ pub struct Config {
     /// SECURITY: Protect these credentials. Use environment variables or secrets management
     /// instead of hardcoding in config files. Never commit credentials to version control.
     #[serde(alias = "exporter_otlp_headers")]
-    pub telemetry_headers: Option<Headers>,
+    telemetry_headers: Option<Headers>,
 
     /// Protocol for OTLP telemetry endpoint communication.
     ///
     /// Choose based on your collector's supported protocols.
     #[serde(alias = "exporter_otlp_protocol")]
-    pub telemetry_protocol: Option<Protocol>,
+    telemetry_protocol: Option<Protocol>,
 
     /// Trace sampling strategy to control volume and costs.
     ///
@@ -314,7 +314,7 @@ pub struct Config {
     /// RECOMMENDATION: Use "traceidratio" with sample_ratio for production to balance
     /// observability with costs. Start with 0.1 (10%) and adjust based on job volume.
     #[serde(alias = "traces_sampler")]
-    pub telemetry_sampler: Option<SamplerKind>,
+    telemetry_sampler: Option<SamplerKind>,
 
     /// Sampling probability for ratio-based trace samplers.
     ///
@@ -328,7 +328,7 @@ pub struct Config {
     /// NOTE: Lower ratios reduce telemetry costs while maintaining statistical
     /// significance. For high-throughput workers, 0.01-0.1 is probably sufficient.
     #[serde(alias = "traces_sampler_arg")]
-    pub telemetry_sample_ratio: Option<f64>,
+    telemetry_sample_ratio: Option<f64>,
 }
 
 impl Default for Config {

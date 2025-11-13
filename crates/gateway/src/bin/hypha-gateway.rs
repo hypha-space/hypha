@@ -1,6 +1,5 @@
 use std::{
     fs,
-    path::PathBuf,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -9,7 +8,10 @@ use std::{
 };
 
 use clap::Parser;
-use figment::providers::{Env, Format, Serialized, Toml};
+use figment::{
+    providers::{Env, Format, Serialized, Toml},
+    value::Map,
+};
 use futures_util::future::join_all;
 use hypha_config::{ConfigWithMetadata, ConfigWithMetadataTLSExt, builder, to_toml};
 use hypha_gateway::{config::Config, network::Network};
@@ -159,19 +161,21 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     match &cli.command {
         Commands::Init { output, name } => {
-            let mut config = Config::default();
-            let mut output = output.clone();
+            let mut config_builder =
+                builder::<Config>().with_provider(Serialized::defaults(&Config::default()));
 
             // Override config fields if values are provided.
             if let Some(name) = name {
-                config.cert_pem = PathBuf::from(format!("{name}-cert.pem"));
-                config.key_pem = PathBuf::from(format!("{name}-key.pem"));
-                config.trust_pem = PathBuf::from(format!("{name}-trust.pem"));
-
-                output.set_file_name(format!("{name}-config.toml"));
+                config_builder = config_builder.with_provider(Serialized::defaults(Map::from([
+                    ("cert_pem", format!("{name}-cert.pem")),
+                    ("key_pem", format!("{name}-key.pem")),
+                    ("trust_pem", format!("{name}-trust.pem")),
+                ])));
             }
 
-            fs::write(&output, &to_toml(&config).into_diagnostic()?).into_diagnostic()?;
+            let config = config_builder.build()?.validate()?;
+
+            fs::write(output, &to_toml(&config.config).into_diagnostic()?).into_diagnostic()?;
 
             println!("Configuration written to: {output:?}");
             Ok(())
