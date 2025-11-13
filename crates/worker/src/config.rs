@@ -387,7 +387,7 @@ impl Default for Config {
                             "accelerate".to_string(),
                             "launch".to_string(),
                             "--config_file".to_string(),
-                            "<path/to/accelerate.yaml>".to_string(),
+                            "accelerate.yaml".to_string(),
                             "-m".to_string(),
                             "hypha.accelerate_executor.training".to_string(),
                             "--socket".to_string(),
