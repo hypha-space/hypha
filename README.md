@@ -1,5 +1,23 @@
 # Hypha
 
+Hypha is a self-managing "Kubernetes for AI" designed for distributed machine learning training and inference. Built on libp2p for decentralized networking, Hypha enables organizations to train and serve massive models across heterogeneous, poorly-connected infrastructure—from HPC GPU farms to commodity hardware—without requiring centralized coordination.
+
+The system implements DiLoCo (Distributed Low-Communication) style training, reducing network communication by approximately 500x compared to traditional data-parallel approaches. With automatic resource discovery, workload distribution, and fault tolerance, Hypha maintains enterprise-grade security and reliability while eliminating single points of failure.
+
+## Installation
+
+Install Hypha using the standalone installer script:
+
+```sh
+curl -fsSL https://github.com/hypha-space/hypha/releases/download/v<VERSION>/install.sh | sh
+```
+
+For alternative installation methods (GitHub releases, Cargo), see the [Installation Guide](docs/installation.md).
+
+## Getting Started
+
+Follow the [Quick Start Guide](docs/quick-start.md) to set up your first end-to-end decentralized training system.
+
 ## Goals
 
 ### Democratize Large-Scale ML
