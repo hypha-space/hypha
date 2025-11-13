@@ -229,7 +229,7 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
 async fn main() -> miette::Result<()> {
     let cli = Cli::parse();
     match &cli.command {
-        Commands::Init {
+        args @ Commands::Init {
             output,
             name,
             dataset_path,
@@ -251,7 +251,10 @@ async fn main() -> miette::Result<()> {
                     .with_provider(Serialized::default("dataset_path", dataset_path.clone()));
             }
 
-            let config = config_builder.build()?.validate()?;
+            let config = config_builder
+                .with_provider(Serialized::defaults(&args))
+                .build()?
+                .validate()?;
 
             fs::write(output, &to_toml(&config.config).into_diagnostic()?)
                 .await

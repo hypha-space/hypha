@@ -277,7 +277,7 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
 async fn main() -> miette::Result<()> {
     let cli = Cli::parse();
     match &cli.command {
-        Commands::Init { output, name } => {
+        args @ Commands::Init { output, name, .. } => {
             let mut config_builder =
                 builder::<Config>().with_provider(Serialized::defaults(&Config::default()));
 
@@ -290,7 +290,10 @@ async fn main() -> miette::Result<()> {
                 ])));
             }
 
-            let config = config_builder.build()?.validate()?;
+            let config = config_builder
+                .with_provider(Serialized::defaults(&args))
+                .build()?
+                .validate()?;
 
             fs::write(output, &to_toml(&config.config).into_diagnostic()?).into_diagnostic()?;
 

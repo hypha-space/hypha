@@ -471,7 +471,9 @@ async fn get_data_provider(
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     match &cli.command {
-        Commands::Init { output, name, job } => {
+        args @ Commands::Init {
+            output, name, job, ..
+        } => {
             let mut config_builder =
                 builder::<Config>().with_provider(Serialized::defaults(&Config::default()));
 
@@ -490,7 +492,10 @@ async fn main() -> Result<()> {
                     config_builder.with_provider(Serialized::default("scheduler", job));
             }
 
-            let config = config_builder.build()?.validate()?;
+            let config = config_builder
+                .with_provider(Serialized::defaults(&args))
+                .build()?
+                .validate()?;
 
             fs::write(output, &to_toml(&config.config)?).into_diagnostic()?;
 
