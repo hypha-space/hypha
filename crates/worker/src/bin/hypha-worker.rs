@@ -9,7 +9,10 @@ use std::{
 };
 
 use clap::Parser;
-use figment::providers::{Env, Format, Serialized, Toml};
+use figment::{
+    providers::{Env, Format, Serialized, Toml},
+    value::Map,
+};
 use futures_util::future::join_all;
 use hypha_config::{ConfigWithMetadata, ConfigWithMetadataTLSExt, builder, to_toml};
 use hypha_messages::health;
@@ -274,8 +277,22 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
 async fn main() -> miette::Result<()> {
     let cli = Cli::parse();
     match &cli.command {
-        Commands::Init { output } => {
-            fs::write(output, &to_toml(&Config::default()).into_diagnostic()?).into_diagnostic()?;
+        Commands::Init { output, name } => {
+            let mut config_builder =
+                builder::<Config>().with_provider(Serialized::defaults(&Config::default()));
+
+            // Override config fields if values are provided.
+            if let Some(name) = name {
+                config_builder = config_builder.with_provider(Serialized::defaults(Map::from([
+                    ("cert_pem", format!("{name}-cert.pem")),
+                    ("key_pem", format!("{name}-key.pem")),
+                    ("trust_pem", format!("{name}-trust.pem")),
+                ])));
+            }
+
+            let config = config_builder.build()?.validate()?;
+
+            fs::write(output, &to_toml(&config.config).into_diagnostic()?).into_diagnostic()?;
 
             println!("Configuration written to: {output:?}");
             Ok(())

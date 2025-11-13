@@ -1,7 +1,10 @@
 use std::time::Duration;
 
 use clap::Parser;
-use figment::providers::{Env, Format, Serialized, Toml};
+use figment::{
+    providers::{Env, Format, Serialized, Toml},
+    value::Map,
+};
 use futures_util::{StreamExt, future::join_all};
 use hypha_config::{ConfigWithMetadata, ConfigWithMetadataTLSExt, builder, to_toml};
 use hypha_data::{config::Config, network::Network, tensor_data::serialize_file};
@@ -226,8 +229,31 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
 async fn main() -> miette::Result<()> {
     let cli = Cli::parse();
     match &cli.command {
-        Commands::Init { output } => {
-            fs::write(output, &to_toml(&Config::default()).into_diagnostic()?)
+        Commands::Init {
+            output,
+            name,
+            dataset_path,
+            ..
+        } => {
+            let mut config_builder =
+                builder::<Config>().with_provider(Serialized::defaults(&Config::default()));
+
+            // Override config fields if values are provided.
+            if let Some(name) = name {
+                config_builder = config_builder.with_provider(Serialized::defaults(Map::from([
+                    ("cert_pem", format!("{name}-cert.pem")),
+                    ("key_pem", format!("{name}-key.pem")),
+                    ("trust_pem", format!("{name}-trust.pem")),
+                ])));
+            }
+            if let Some(dataset_path) = dataset_path {
+                config_builder = config_builder
+                    .with_provider(Serialized::default("dataset_path", dataset_path.clone()));
+            }
+
+            let config = config_builder.build()?.validate()?;
+
+            fs::write(output, &to_toml(&config.config).into_diagnostic()?)
                 .await
                 .into_diagnostic()?;
 
