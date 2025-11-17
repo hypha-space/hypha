@@ -16,6 +16,7 @@ Make sure you have the following installed:
 | ----------- | ------- | ---------------- | ------------------------------------------------------------------------------------------------------------------ |
 | uv          | ≥ 0.9.7 | `uv --version`   | [https://docs.astral.sh/uv/getting-started/installation/](https://docs.astral.sh/uv/getting-started/installation/) |
 | git         | any     | `git --version`  | https://git-scm.com/book/en/v2/Getting-Started-Installing-Git                                                      |
+| git-lfs     | any     | `git-lfs --version` | https://git-lfs.github.com/                                                                                       |
 | curl        | any     | `curl --version` | https://curl.se/docs/install.html                                                                                  |
 
 Also if you want to build from source, you need your rust toolchain.
