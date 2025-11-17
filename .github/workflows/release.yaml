@@ -89,6 +89,19 @@ jobs:
           version: ${{ needs.get-next-version.outputs.new-release-version }}
           project-path: ${{ matrix.projects }}
 
+  package-aim-driver:
+    runs-on: ubuntu-latest
+    name: Package AIM Driver
+    needs:
+      - get-next-version
+    if: needs.get-next-version.outputs.new-release-published == 'true'
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 #v4.2.2
+      - uses: ./.github/actions/zip-and-upload
+        with:
+          paths: "drivers/aim-driver/main.py drivers/aim-driver/pyproject.toml drivers/aim-driver/uv.lock drivers/aim-driver/README.md"
+          zip-name: "aim-driver-${{ needs.get-next-version.outputs.new-release-version }}"
+
   build-rust:
     name: Build Rust
     needs:
@@ -121,6 +134,7 @@ jobs:
       - check-dependencies
       - build-python
       - build-rust
+      - package-aim-driver
     if: needs.get-next-version.outputs.new-release-published == 'true'
     steps:
       - name: Checkout

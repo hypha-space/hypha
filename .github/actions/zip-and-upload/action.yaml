@@ -1,0 +1,31 @@
+name: "Zip and Upload"
+description: "Zips given files/folders and uploads them as artifacts"
+
+inputs:
+  paths:
+    description: "Space-separated list of paths to zip"
+    required: true
+  zip-name:
+    description: "Name for the zip file (without extension)"
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - name: Create zip file
+      shell: bash
+      run: |
+        mkdir -p artifacts
+        zip -r "artifacts/${{ inputs.zip-name }}.zip" ${{ inputs.paths }}
+
+    - name: Generate checksum
+      shell: bash
+      run: |
+        cd artifacts
+        sha256sum "${{ inputs.zip-name }}.zip" > "${{ inputs.zip-name }}.zip.sha256"
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.zip-name }}
+        path: artifacts/*
