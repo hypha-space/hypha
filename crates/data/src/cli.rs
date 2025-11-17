@@ -58,6 +58,18 @@ pub enum Commands {
         #[serde(skip_serializing_if = "Option::is_none")]
         dataset_glob: Option<String>,
 
+        /// Dataset name for DHT identification (optional)
+        ///
+        /// If not provided, the name is extracted from the parent directory
+        /// of the glob pattern.
+        ///
+        /// Examples:
+        ///   --dataset-name "imagenet-train"
+        ///   --dataset-name "custom-dataset-v2"
+        #[clap(long("dataset-name"), verbatim_doc_comment)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        dataset_name: Option<String>,
+
         /// Gateway addresses to connect to (repeatable, overrides config)
         ///
         /// Gateways provide network bootstrapping, DHT access, and relay functionality.

@@ -81,7 +81,6 @@ pub struct Config {
     /// REQUIREMENTS:
     /// * Must be a valid glob pattern
     /// * Must match at least one file (not directories)
-    /// * Parent directory name becomes the dataset identifier in the DHT
     /// * Files should be consistently formatted for worker consumption (e.g., SafeTensors)
     ///
     /// EXAMPLES:
@@ -95,6 +94,21 @@ pub struct Config {
     /// The glob pattern is evaluated at startup, matched files are validated, and dataset
     /// metadata is announced via DHT.
     dataset_glob: String,
+
+    /// Optional dataset name for DHT identification.
+    ///
+    /// Specifies the name used to identify this dataset in the DHT. If not provided,
+    /// the dataset name is extracted from the parent directory of the glob pattern.
+    ///
+    /// EXAMPLES:
+    /// * dataset_name = "imagenet-train"
+    /// * dataset_name = "custom-dataset-v2"
+    ///
+    /// This allows flexibility when the parent directory name doesn't match the desired
+    /// dataset identifier, or when serving multiple datasets from the same directory with
+    /// different glob patterns.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dataset_name: Option<String>,
 
     /// CIDR address filters for DHT routing table management.
     ///
@@ -204,6 +218,7 @@ impl Default for Config {
                     .expect("default address parses into a Multiaddr"),
             ],
             dataset_glob: String::new(),
+            dataset_name: None,
             exclude_cidr: reserved_cidrs(),
             telemetry_attributes: None,
             telemetry_endpoint: None,
@@ -227,6 +242,11 @@ impl Config {
     /// Glob pattern for dataset slice files.
     pub fn dataset_glob(&self) -> &str {
         &self.dataset_glob
+    }
+
+    /// Optional dataset name for DHT identification.
+    pub fn dataset_name(&self) -> Option<&str> {
+        self.dataset_name.as_deref()
     }
 
     pub fn exclude_cidr(&self) -> &Vec<IpNet> {

@@ -152,12 +152,18 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
         return Err(miette::miette!("Dataset glob pattern is not configured"));
     }
 
-    // Extract dataset name from the glob pattern's parent directory
-    let dataset_name = Path::new(dataset_glob_pattern)
-        .parent()
-        .and_then(|p| p.file_name())
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| miette::miette!("Cannot extract dataset name from glob pattern: {}", dataset_glob_pattern))?;
+    // Use configured dataset name, or extract from the glob pattern's parent directory
+    let dataset_name = match config.dataset_name() {
+        Some(name) => name.to_string(),
+        None => {
+            Path::new(dataset_glob_pattern)
+                .parent()
+                .and_then(|p| p.file_name())
+                .and_then(|name| name.to_str())
+                .map(|s| s.to_string())
+                .ok_or_else(|| miette::miette!("Cannot extract dataset name from glob pattern: {}. Consider setting dataset_name explicitly.", dataset_glob_pattern))?
+        }
+    };
 
     // Match files using glob pattern and filter to only include files (not directories)
     let dataset_files: Vec<_> = glob(dataset_glob_pattern)
@@ -183,8 +189,10 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
         .await;
 
     let stream_pulls = network.streams_pull().expect("an unregistered pull stream").for_each_concurrent(None, {
-        |(peer_id, resource, mut stream)| {
+        let dataset_name = dataset_name.clone();
+        move |(peer_id, resource, mut stream)| {
             let dataset_files = dataset_files.clone();
+            let dataset_name = dataset_name.clone();
             async move {
                 tracing::info!(peer_id = %peer_id, dataset = resource.dataset, slice= resource.index, "Sending tensor to peer");
 
@@ -238,6 +246,7 @@ async fn main() -> miette::Result<()> {
             output,
             name,
             dataset_glob,
+            dataset_name,
             ..
         } => {
             let mut config_builder =
@@ -254,6 +263,10 @@ async fn main() -> miette::Result<()> {
             if let Some(dataset_glob) = dataset_glob {
                 config_builder = config_builder
                     .with_provider(Serialized::default("dataset_glob", dataset_glob.clone()));
+            }
+            if let Some(dataset_name) = dataset_name {
+                config_builder = config_builder
+                    .with_provider(Serialized::default("dataset_name", dataset_name.clone()));
             }
 
             let config = config_builder
