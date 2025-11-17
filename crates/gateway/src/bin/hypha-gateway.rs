@@ -123,6 +123,45 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
     )
     .await;
 
+    // NOTE: Dial each gateway address (if any provided). The gateway attempts to connect
+    // to all addresses and succeeds if any are reachable. Empty gateway_addresses is valid.
+    let gateway_results = join_all(
+        config
+            .gateway_addresses()
+            .iter()
+            .map(|address| {
+                let address = address.clone();
+                let network = network.clone();
+                async move {
+                    match network.dial(address.clone()).await {
+                        Ok(peer_id) => {
+                            tracing::info!(address=%address, peer_id=%peer_id, "Connected to gateway");
+                            Ok(peer_id)
+                        }
+                        Err(e) => {
+                            tracing::warn!(address=%address, error=%e, "Failed to connect to gateway");
+                            Err(e)
+                        }
+                    }
+                }
+            })
+            .collect::<Vec<_>>(),
+    )
+    .await;
+
+    let gateway_peer_ids: Vec<_> = gateway_results
+        .into_iter()
+        .filter_map(|result| result.ok())
+        .collect();
+
+    if !config.gateway_addresses().is_empty() && gateway_peer_ids.is_empty() {
+        return Err(miette::miette!("Failed to connect to any gateway"));
+    }
+
+    if !gateway_peer_ids.is_empty() {
+        tracing::info!(gateway_ids = ?gateway_peer_ids, "Connected to gateway(s)");
+    }
+
     let mut sigterm = signal(SignalKind::terminate()).into_diagnostic()?;
 
     tokio::select! {
