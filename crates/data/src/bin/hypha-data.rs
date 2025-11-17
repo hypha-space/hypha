@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{path::Path, time::Duration};
 
 use clap::Parser;
 use figment::{
@@ -6,6 +6,7 @@ use figment::{
     value::Map,
 };
 use futures_util::{StreamExt, future::join_all};
+use glob::glob;
 use hypha_config::{ConfigWithMetadata, ConfigWithMetadataTLSExt, builder, to_toml};
 use hypha_data::{config::Config, network::Network, tensor_data::serialize_file};
 use hypha_messages::{DataRecord, health};
@@ -143,26 +144,30 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
     // NOTE: Wait until DHT bootstrapping is done.
     network.wait_for_bootstrap().await.into_diagnostic()?;
 
-    // Treat each file in the directory as a subset of the dataset.
-    // TODO: determine subset ordering by, e.g., a naming convention of the files in the dataset folder.
-    let dataset_path = config.dataset_path();
-    if !dataset_path.is_dir() {
-        return Err(miette::miette!("Dataset path is not a directory"));
+    // NOTE: Match dataset slice files using glob pattern and filter to ensure only files are included.
+    // TODO: determine subset ordering by, e.g., a naming convention of the matched files.
+    let dataset_glob_pattern = config.dataset_glob();
+
+    if dataset_glob_pattern.is_empty() {
+        return Err(miette::miette!("Dataset glob pattern is not configured"));
     }
 
-    let dataset_name = match dataset_path.file_name().and_then(|name| name.to_str()) {
-        Some(name) => Ok(name),
-        None => Err(miette::miette!("Dataset path is not a directory")),
-    }?;
-    let dataset_files = match dataset_path.read_dir() {
-        Ok(dir) => Ok(dir
-            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-            .collect::<Vec<_>>()),
-        Err(err) => Err(miette::miette!("Failed to read dataset directory: {}", err)),
-    }?;
+    // Extract dataset name from the glob pattern's parent directory
+    let dataset_name = Path::new(dataset_glob_pattern)
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| miette::miette!("Cannot extract dataset name from glob pattern: {}", dataset_glob_pattern))?;
+
+    // Match files using glob pattern and filter to only include files (not directories)
+    let dataset_files: Vec<_> = glob(dataset_glob_pattern)
+        .into_diagnostic()?
+        .filter_map(|entry| entry.ok())
+        .filter(|path| path.is_file())
+        .collect();
 
     if dataset_files.is_empty() {
-        return Err(miette::miette!("Dataset directory is empty"));
+        return Err(miette::miette!("No files matched by glob pattern: {}", dataset_glob_pattern));
     }
 
     // Announce our dataset
@@ -232,7 +237,7 @@ async fn main() -> miette::Result<()> {
         args @ Commands::Init {
             output,
             name,
-            dataset_path,
+            dataset_glob,
             ..
         } => {
             let mut config_builder =
@@ -246,9 +251,9 @@ async fn main() -> miette::Result<()> {
                     ("trust_pem", format!("{name}-trust.pem")),
                 ])));
             }
-            if let Some(dataset_path) = dataset_path {
+            if let Some(dataset_glob) = dataset_glob {
                 config_builder = config_builder
-                    .with_provider(Serialized::default("dataset_path", dataset_path.clone()));
+                    .with_provider(Serialized::default("dataset_glob", dataset_glob.clone()));
             }
 
             let config = config_builder

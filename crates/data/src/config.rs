@@ -73,29 +73,28 @@ pub struct Config {
     /// * "/ip4/0.0.0.0/udp/0/quic-v1" - QUIC on all interfaces, OS-assigned port
     listen_addresses: Vec<Multiaddr>,
 
-    /// Path to the dataset directory.
+    /// Glob pattern matching dataset slice files.
     ///
-    /// Directory containing dataset files (slices) to serve to workers. Each file in the
-    /// directory is treated as an independent dataset slice that can be fetched by workers.
+    /// A glob pattern that matches dataset slice files to serve to workers. Each matched
+    /// file is treated as an independent dataset slice that can be fetched by workers.
     ///
     /// REQUIREMENTS:
-    /// * Must be a valid directory path
-    /// * Must contain at least one data file
-    /// * Directory name becomes the dataset identifier in the DHT
-    /// * Files should be consistently formatted for worker consumption
+    /// * Must be a valid glob pattern
+    /// * Must match at least one file (not directories)
+    /// * Parent directory name becomes the dataset identifier in the DHT
+    /// * Files should be consistently formatted for worker consumption (e.g., SafeTensors)
     ///
-    /// DIRECTORY STRUCTURE:
+    /// EXAMPLES:
     ///
     /// ```ignore
-    ///   dataset-name/
-    ///     slice-0000.bin
-    ///     slice-0001.bin
-    ///     slice-0002.bin
-    ///     ...
+    ///   "/data/imagenet/train_*.safetensors"  - matches train_0001.safetensors, train_0002.safetensors, etc.
+    ///   "/datasets/cifar10/slice-[0-9]*.bin"  - matches slice-001.bin, slice-123.bin, etc.
+    ///   "dataset/*.safetensors"               - matches all .safetensors files in dataset/
     /// ```
     ///
-    /// The directory is scanned at startup and dataset metadata is announced via DHT.
-    dataset_path: PathBuf,
+    /// The glob pattern is evaluated at startup, matched files are validated, and dataset
+    /// metadata is announced via DHT.
+    dataset_glob: String,
 
     /// CIDR address filters for DHT routing table management.
     ///
@@ -204,7 +203,7 @@ impl Default for Config {
                     .parse()
                     .expect("default address parses into a Multiaddr"),
             ],
-            dataset_path: PathBuf::new(),
+            dataset_glob: String::new(),
             exclude_cidr: reserved_cidrs(),
             telemetry_attributes: None,
             telemetry_endpoint: None,
@@ -225,9 +224,9 @@ impl Config {
         &self.listen_addresses
     }
 
-    /// Base directory for per-job working directories.
-    pub fn dataset_path(&self) -> &PathBuf {
-        &self.dataset_path
+    /// Glob pattern for dataset slice files.
+    pub fn dataset_glob(&self) -> &str {
+        &self.dataset_glob
     }
 
     pub fn exclude_cidr(&self) -> &Vec<IpNet> {

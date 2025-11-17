@@ -49,10 +49,14 @@ pub enum Commands {
         #[serde(skip_serializing_if = "Option::is_none")]
         name: Option<String>,
 
-        /// Path or file providing a dataset
-        #[clap(short, long("dataset-path"))]
+        /// Glob pattern matching dataset slice files
+        ///
+        /// Examples:
+        ///   --dataset-glob "/data/imagenet/train_*.safetensors"
+        ///   --dataset-glob "dataset/slice-*.bin"
+        #[clap(short, long("dataset-glob"), verbatim_doc_comment)]
         #[serde(skip_serializing_if = "Option::is_none")]
-        dataset_path: Option<PathBuf>,
+        dataset_glob: Option<String>,
 
         /// Gateway addresses to connect to (repeatable, overrides config)
         ///

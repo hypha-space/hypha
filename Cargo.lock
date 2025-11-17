@@ -1958,6 +1958,7 @@ dependencies = [
  "documented",
  "figment",
  "futures-util",
+ "glob",
  "hypha-config",
  "hypha-messages",
  "hypha-network",

@@ -11,6 +11,7 @@ clap.workspace = true
 documented.workspace = true
 figment.workspace = true
 futures-util.workspace = true
+glob.workspace = true
 hypha-config.workspace = true
 hypha-messages.workspace = true
 hypha-network.workspace = true
