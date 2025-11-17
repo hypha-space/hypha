@@ -5,6 +5,7 @@ use hypha_network::{
     request_response::{RequestResponseError, RequestResponseInterfaceExt},
     utils::Batched,
 };
+use hypha_resources::ResourceEvaluator;
 use libp2p::PeerId;
 use ordered_float::OrderedFloat;
 use thiserror::Error;
@@ -15,7 +16,6 @@ use crate::{
     job_manager::{JobManager, JobManagerError},
     lease_manager::{LeaseError, LeaseManager},
     network::Network,
-    request_evaluator::RequestEvaluator,
 };
 
 const WORKER_TOPIC: &str = "hypha/worker";
@@ -45,11 +45,11 @@ pub enum ArbiterError {
 pub struct Arbiter<L, R>
 where
     L: LeaseManager<Leasable = crate::lease_manager::ResourceLease> + 'static,
-    R: RequestEvaluator,
+    R: ResourceEvaluator,
 {
     network: Network,
     lease_manager: L,
-    request_evaluator: R,
+    resource_evaluator: R,
     supported_executors: Vec<ExecutorDescriptor>,
     job_manager: JobManager,
     tasks: JoinSet<()>,
@@ -58,12 +58,12 @@ where
 impl<L, R> Arbiter<L, R>
 where
     L: LeaseManager<Leasable = crate::lease_manager::ResourceLease> + 'static,
-    R: RequestEvaluator,
+    R: ResourceEvaluator,
 {
     /// Create a new Arbiter with default strategy and system clock
     pub fn new(
         lease_manager: L,
-        request_evaluator: R,
+        resource_evaluator: R,
         network: Network,
         supported_executors: Vec<ExecutorDescriptor>,
         job_manager: JobManager,
@@ -71,7 +71,7 @@ where
         Self {
             network,
             lease_manager,
-            request_evaluator,
+            resource_evaluator,
             supported_executors,
             job_manager,
             tasks: JoinSet::new(),
@@ -342,7 +342,9 @@ where
                     return None;
                 }
 
-                let score = self.request_evaluator.score(&request);
+                let score = self
+                    .resource_evaluator
+                    .score(request.bid, &request.spec.resources);
 
                 Some((score, peer_id, request))
             })

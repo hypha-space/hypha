@@ -153,3 +153,47 @@ impl<'a> Sum<&'a Resources> for Resources {
         iter.fold(Resources::default(), |acc, x| acc + *x)
     }
 }
+
+#[derive(Debug, Clone, Copy)]
+pub struct WeightedResourceEvaluator {
+    pub cpu: f64,
+    pub gpu: f64,
+    pub memory: f64,
+    pub storage: f64,
+}
+
+impl WeightedResourceEvaluator {
+    pub fn evaluate(&self, price: f64, resources: &Resources) -> f64 {
+        let weight_units = self.gpu * resources.gpu()
+            + self.cpu * resources.cpu()
+            + self.memory * resources.memory()
+            + self.storage * resources.storage();
+
+        if weight_units > 0.0 {
+            return price / weight_units;
+        }
+
+        0.0
+    }
+}
+
+impl Default for WeightedResourceEvaluator {
+    fn default() -> Self {
+        Self {
+            cpu: 1.0,
+            gpu: 25.0,
+            memory: 0.1,
+            storage: 0.01,
+        }
+    }
+}
+
+pub trait ResourceEvaluator {
+    fn score(&self, price: f64, resources: &Resources) -> f64;
+}
+
+impl ResourceEvaluator for WeightedResourceEvaluator {
+    fn score(&self, price: f64, resources: &Resources) -> f64 {
+        self.evaluate(price, resources)
+    }
+}

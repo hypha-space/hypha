@@ -20,11 +20,11 @@ use hypha_network::{
     dial::DialInterface, external_address::ExternalAddressInterface, kad::KademliaInterface,
     listen::ListenInterface, request_response::RequestResponseInterfaceExt, swarm::SwarmDriver,
 };
+use hypha_resources::WeightedResourceEvaluator;
 use hypha_telemetry as telemetry;
 use hypha_worker::{
     arbiter::Arbiter, config::Config, connector::Connector, job_manager::JobManager,
-    lease_manager::ResourceLeaseManager, network::Network,
-    request_evaluator::WeightedResourceRequestEvaluator, resources::StaticResourceManager,
+    lease_manager::ResourceLeaseManager, network::Network, resources::StaticResourceManager,
 };
 use libp2p::{Multiaddr, multiaddr::Protocol};
 use miette::{IntoDiagnostic, Result};
@@ -218,7 +218,7 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
 
     let arbiter = Arbiter::new(
         ResourceLeaseManager::new(StaticResourceManager::new(config.resources())),
-        WeightedResourceRequestEvaluator::default(),
+        WeightedResourceEvaluator::default(),
         network.clone(),
         supported_executors,
         JobManager::new(
