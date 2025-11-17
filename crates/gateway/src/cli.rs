@@ -75,6 +75,19 @@ pub enum Commands {
         #[serde(skip_serializing_if = "Option::is_none")]
         crls_pem: Option<PathBuf>,
 
+        /// Gateway addresses to connect to (repeatable, overrides config)
+        ///
+        /// Gateways provide network bootstrapping, DHT access, and relay functionality.
+        /// Must include the peer ID in the multiaddr.
+        ///
+        /// Examples:
+        ///   --gateway /ip4/203.0.113.10/tcp/8080/p2p/12D3KooWAbc...
+        ///   --gateway /dns4/gateway.hypha.example/tcp/443/p2p/12D3KooWAbc...
+        /// Required: connect to at least one gateway.
+        #[arg(long("gateway"), verbatim_doc_comment)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        gateway_addresses: Option<Vec<Multiaddr>>,
+
         /// Addresses to listen on (repeatable, overrides config)
         ///
         /// Where this gateway accepts incoming connections.
@@ -229,6 +242,19 @@ pub enum Commands {
         #[arg(long("crls"), verbatim_doc_comment)]
         #[serde(skip_serializing_if = "Option::is_none")]
         crls_pem: Option<PathBuf>,
+
+        /// Gateway addresses to connect to (repeatable, overrides config)
+        ///
+        /// Gateways provide network bootstrapping, DHT access, and relay functionality.
+        /// Must include the peer ID in the multiaddr.
+        ///
+        /// Examples:
+        ///   --gateway /ip4/203.0.113.10/tcp/8080/p2p/12D3KooWAbc...
+        ///   --gateway /dns4/gateway.hypha.example/tcp/443/p2p/12D3KooWAbc...
+        /// Required: connect to at least one gateway.
+        #[arg(long("gateway"), verbatim_doc_comment)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        gateway_addresses: Option<Vec<Multiaddr>>,
 
         /// Addresses to listen on (repeatable, overrides config)
         ///
