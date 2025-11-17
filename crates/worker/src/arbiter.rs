@@ -1,5 +1,5 @@
 use futures_util::StreamExt;
-use hypha_messages::{self, api, dispatch_job, renew_lease};
+use hypha_messages::{self, ExecutorDescriptor, api, dispatch_job, renew_lease};
 use hypha_network::{
     gossipsub::{self, GossipsubInterface},
     request_response::{RequestResponseError, RequestResponseInterfaceExt},
@@ -50,6 +50,7 @@ where
     network: Network,
     lease_manager: L,
     request_evaluator: R,
+    supported_executors: Vec<ExecutorDescriptor>,
     job_manager: JobManager,
     tasks: JoinSet<()>,
 }
@@ -64,12 +65,14 @@ where
         lease_manager: L,
         request_evaluator: R,
         network: Network,
+        supported_executors: Vec<ExecutorDescriptor>,
         job_manager: JobManager,
     ) -> Self {
         Self {
             network,
             lease_manager,
             request_evaluator,
+            supported_executors,
             job_manager,
             tasks: JoinSet::new(),
         }
@@ -323,11 +326,25 @@ where
         // Offers will have a short lifetime and the offer must be accepted within the time frame
         // to extend the lease.
         let mut scored_requests: Vec<_> = requests
-            .iter()
-            .map(|(peer_id, request)| {
-                let score = self.request_evaluator.score(request);
+            .into_iter()
+            .filter_map(|(peer_id, request)| {
+                if !request
+                    .spec
+                    .executor
+                    .iter()
+                    .all(|required| self.supported_executors.contains(required))
+                {
+                    tracing::debug!(
+                        scheduler_id = %peer_id,
+                        request_id = %request.id,
+                        "Rejecting request due to unsupported executor"
+                    );
+                    return None;
+                }
 
-                (score, *peer_id, request.clone())
+                let score = self.request_evaluator.score(&request);
+
+                Some((score, peer_id, request))
             })
             .collect();
 

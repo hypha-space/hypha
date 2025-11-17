@@ -1,25 +1,10 @@
 use std::{collections::HashMap, future::Future, sync::Arc};
 
-use hypha_messages::ExecutorDescriptor;
 use hypha_resources::Resources;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::sync::RwLock;
 use uuid::Uuid;
-
-fn executor_matches(required: &ExecutorDescriptor, available: &ExecutorDescriptor) -> bool {
-    match (required, available) {
-        (
-            ExecutorDescriptor::Train(required_descriptor),
-            ExecutorDescriptor::Train(available_descriptor),
-        ) => required_descriptor.name() == available_descriptor.name(),
-        (
-            ExecutorDescriptor::Aggregate(required_descriptor),
-            ExecutorDescriptor::Aggregate(available_descriptor),
-        ) => required_descriptor.name() == available_descriptor.name(),
-        _ => false,
-    }
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Error)]
 #[error("Resource manager error")]
@@ -33,11 +18,9 @@ pub enum ResourceManagerError {
 pub trait ResourceManager: Send + Sync {
     /// Returns a reference to the current available resources.
     fn compute_resources(&self) -> impl Future<Output = Resources> + Send;
-    fn executors(&self) -> impl Future<Output = Vec<ExecutorDescriptor>> + Send;
     fn reserve(
         &self,
         compute_resources: Resources,
-        required_executors: Vec<ExecutorDescriptor>,
     ) -> impl Future<Output = Result<Uuid, ResourceManagerError>> + Send;
     fn release(
         &self,
@@ -48,7 +31,6 @@ pub trait ResourceManager: Send + Sync {
 #[derive(Debug)]
 struct StaticResourceManagerState {
     compute_resources: Resources,
-    executors: Vec<ExecutorDescriptor>,
     reservations: HashMap<Uuid, Resources>,
 }
 
@@ -58,11 +40,10 @@ pub struct StaticResourceManager {
 }
 
 impl StaticResourceManager {
-    pub fn new(compute_resources: Resources, executors: Vec<ExecutorDescriptor>) -> Self {
+    pub fn new(compute_resources: Resources) -> Self {
         StaticResourceManager {
             state: Arc::new(RwLock::new(StaticResourceManagerState {
                 compute_resources,
-                executors,
                 reservations: HashMap::default(),
             })),
         }
@@ -75,33 +56,15 @@ impl ResourceManager for StaticResourceManager {
         state.compute_resources - state.reservations.values().sum()
     }
 
-    async fn executors(&self) -> Vec<ExecutorDescriptor> {
-        let state = self.state.read().await;
-        state.executors.clone()
-    }
-
-    async fn reserve(
-        &self,
-        compute_resources: Resources,
-        required_executors: Vec<ExecutorDescriptor>,
-    ) -> Result<Uuid, ResourceManagerError> {
+    async fn reserve(&self, compute_resources: Resources) -> Result<Uuid, ResourceManagerError> {
         let available = self.compute_resources().await;
-        let advertised = self.executors().await;
         tracing::info!(
-            "Reserving resources: {:?} of {:?} and {:?} of {:?}",
+            "Reserving resources: {:?} of {:?}",
             compute_resources,
             available,
-            required_executors,
-            advertised
         );
 
-        let mismatch = required_executors.iter().any(|required| {
-            !advertised
-                .iter()
-                .any(|candidate| executor_matches(required, candidate))
-        });
-
-        if available >= compute_resources && !mismatch {
+        if available >= compute_resources {
             let mut state = self.state.write().await;
             // Re-check after acquiring write lock
             let current_available = state.compute_resources - state.reservations.values().sum();

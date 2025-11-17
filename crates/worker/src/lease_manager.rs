@@ -99,10 +99,7 @@ where
         spec: &WorkerSpec,
         duration: Duration,
     ) -> Result<Lease<ResourceLease>, LeaseError> {
-        let reservation = self
-            .resource_manager
-            .reserve(spec.resources.clone(), spec.executor.clone())
-            .await?;
+        let reservation = self.resource_manager.reserve(spec.resources).await?;
 
         let result = self
             .ledger
