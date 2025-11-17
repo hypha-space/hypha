@@ -1,4 +1,4 @@
-use hypha_messages::{Adam, Fetch, Model, Nesterov};
+use hypha_messages::{Adam, Fetch, Model, ModelType, Nesterov, Preprocessor, PreprocessorType};
 use hypha_resources::Resources;
 use serde::{Deserialize, Serialize};
 
@@ -62,13 +62,16 @@ impl Default for DiLoCo {
                     "modeling_lenet.py".to_string(),
                 ],
                 token: None,
-                model_type: ModelType::VisionClassification,
+                model_type: ModelType::ImageClassification,
+                input_names: vec!["pixel_values".into(), "labels".into()],
             },
             preprocessor: Some(PreprocessorSource {
                 repository: "hypha-space/lenet".to_string(),
                 revision: None,
                 filenames: vec!["preprocessor_config.json".to_string()],
                 token: None,
+                preprocessor_type: PreprocessorType::Image,
+                input_names: vec!["images".into()],
             }),
             dataset: DataNodeSource {
                 dataset: "mnist".to_string(),
@@ -108,42 +111,22 @@ pub struct ModelSource {
     pub token: Option<String>,
     #[serde(rename = "type")]
     pub model_type: ModelType,
+    pub input_names: Vec<String>,
 }
 
 impl From<ModelSource> for Model {
     fn from(source: ModelSource) -> Model {
-        let artifact = Fetch::huggingface(
-            source.repository.clone(),
-            source.revision.clone(),
-            source.filenames.clone(),
-            source.token.clone(),
-        );
-
-        match source.model_type {
-            ModelType::VisionClassification => Model::VisionClassification { artifact },
-            ModelType::CausalLm => Model::CausalLm { artifact },
-            ModelType::Torch => Model::Torch { artifact },
+        Model {
+            task: source.model_type,
+            artifact: Fetch::huggingface(
+                source.repository.clone(),
+                source.revision.clone(),
+                source.filenames.clone(),
+                source.token.clone(),
+            ),
+            input_names: source.input_names,
         }
     }
-}
-
-impl From<PreprocessorSource> for Fetch {
-    fn from(source: PreprocessorSource) -> Fetch {
-        Fetch::huggingface(
-            source.repository.clone(),
-            source.revision.clone(),
-            source.filenames.clone(),
-            source.token.clone(),
-        )
-    }
-}
-
-#[derive(Deserialize, Serialize, Debug, Clone)]
-#[serde(rename_all = "kebab-case")]
-pub enum ModelType {
-    VisionClassification,
-    CausalLm,
-    Torch,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
@@ -152,6 +135,24 @@ pub struct PreprocessorSource {
     pub revision: Option<String>,
     pub filenames: Vec<String>,
     pub token: Option<String>,
+    #[serde(rename = "type")]
+    pub preprocessor_type: PreprocessorType,
+    pub input_names: Vec<String>,
+}
+
+impl From<PreprocessorSource> for Preprocessor {
+    fn from(source: PreprocessorSource) -> Preprocessor {
+        Preprocessor {
+            task: source.preprocessor_type,
+            artifact: Fetch::huggingface(
+                source.repository.clone(),
+                source.revision.clone(),
+                source.filenames.clone(),
+                source.token.clone(),
+            ),
+            input_names: source.input_names,
+        }
+    }
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]

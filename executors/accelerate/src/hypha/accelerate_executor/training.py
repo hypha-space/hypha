@@ -2,161 +2,27 @@ import argparse
 import datetime
 import json
 import os
-from collections.abc import Iterable, Iterator
-from typing import Any, cast
 
 import numpy as np
 import torch
 import torch.utils.data
 from accelerate import Accelerator
-from safetensors import safe_open
 from safetensors.torch import save_file, save_model
-from torch.nn import Module
-from torch.optim import Optimizer
-
-# from torch.optim.lr_scheduler import LRScheduler
-from transformers import AutoImageProcessor, AutoModelForCausalLM, AutoModelForImageClassification
-from transformers.optimization import (
-    get_constant_schedule,
-    get_cosine_schedule_with_warmup,
-    get_linear_schedule_with_warmup,
-    get_wsd_schedule,
-)
 
 from .api import Session
+from .dataset import IterableStreamDataSet, dataset_wrapper
+from .model import get_model
+from .utils import (
+    extract_gradients,
+    fetch_data,
+    get_adam,
+    get_preprocessor,
+    get_scheduler,
+    merge_models,
+    prepare_files,
+)
 
 FETCH_PATH = "artifacts"
-
-
-def prepare_files(config: dict[str, Any], session: Session) -> None:
-    session.fetch(config["model"]["artifact"])
-
-    preprocessor = config.get("preprocessor")
-    if preprocessor:
-        session.fetch(preprocessor)
-
-
-def get_model(model_config: str, model_type: str) -> Module:
-    # Initializing a model from a Hugging Face configuration
-    if model_type == "causal-lm":
-        return AutoModelForCausalLM.from_pretrained(model_config, trust_remote_code=True)
-    if model_type == "vision-classification":
-        return cast(Module, AutoModelForImageClassification.from_pretrained(model_config, trust_remote_code=True))
-    # if model_type == "Torch":
-    # ...
-    raise RuntimeError(f"Model type {model_type} not supported.")
-
-
-def get_preprocessor(preprocessor_file: str, model_type: str) -> Any:
-    if model_type == "vision-classification":
-        return AutoImageProcessor.from_pretrained(preprocessor_file, trust_remote_code=True)  # type: ignore[no-untyped-call]
-    raise RuntimeError(f"Pre-Processor for model type {model_type} not found")
-
-
-def get_adam(optimizer: dict[str, Any], parameters: Iterable[torch.Tensor]) -> Optimizer:
-    lr = optimizer["learning-rate"]
-    if optimizer.get("betas") and optimizer.get("epsilon"):
-        return torch.optim.AdamW(parameters, lr=lr, betas=optimizer["betas"], eps=optimizer["epsilon"])
-    if optimizer.get("betas"):
-        return torch.optim.AdamW(parameters, lr=lr, betas=optimizer["betas"])
-    if optimizer.get("epsilon"):
-        return torch.optim.AdamW(parameters, lr=lr, eps=optimizer["epsilon"])
-    return torch.optim.AdamW(parameters, lr=lr)
-
-
-def fetch_data(session: Session, data: str, work_dir: str) -> Iterator[str]:
-    def wrap() -> Iterator[str]:
-        while True:
-            tensor_data = session.fetch(data)
-            yield os.path.join(work_dir, tensor_data[0]["path"])
-
-    return iter(wrap())
-
-
-def get_data_loader(
-    data_file_iter: Iterator[str],
-    model_type: str,
-    preprocessor: Any,
-    batch_size: int,
-) -> torch.utils.data.DataLoader:  # type: ignore[type-arg]
-    if model_type == "causal-lm":
-        data_set_path = next(data_file_iter)
-        with safe_open(data_set_path, framework="pt", device="cpu") as data:  # type: ignore
-            ds = data.get_tensor(data.keys()[0])
-            return torch.utils.data.DataLoader(ds, batch_size=batch_size)
-    if model_type == "vision-classification":
-
-        class VisionDs(torch.utils.data.IterableDataset):  # type: ignore[type-arg]
-            def __init__(self) -> None:
-                super(VisionDs).__init__()  # type: ignore[misc]
-
-                if not preprocessor:
-                    raise RuntimeError("Vision classification requires a preprocessor")
-
-                self.processor = preprocessor
-
-            def __iter__(self):  # type: ignore[no-untyped-def]
-                for path in data_file_iter:
-                    with safe_open(path, framework="pt", device="cpu") as data:  # type: ignore
-                        processed = self.processor(data.get_tensor("inputs"))
-                        for pixel, label in zip(iter(processed["pixel_values"]), iter(data.get_tensor("targets"))):
-                            yield ({"pixel_values": pixel, "labels": label})
-
-        return torch.utils.data.DataLoader(VisionDs(), batch_size=batch_size)
-    raise RuntimeError(f"Dataset for {model_type} not supported")
-
-
-def get_loss_fn(loss_fn: str) -> Module:
-    if loss_fn == "l1":
-        return torch.nn.L1Loss()
-    if loss_fn == "mse":
-        return torch.nn.MSELoss()
-    if loss_fn == "cross-entropy":
-        return torch.nn.CrossEntropyLoss()
-    if loss_fn == "bce-with-logits":
-        return torch.nn.BCEWithLogitsLoss()
-    if loss_fn == "kl-div":
-        return torch.nn.KLDivLoss()
-    raise RuntimeError(f"Loss Function {loss_fn} not supported.")
-
-
-def get_scheduler(type: str, args: dict[str, float], optmizer: Optimizer) -> torch.optim.lr_scheduler.LambdaLR:
-    if type == "cosine-with-warmup":
-        return get_cosine_schedule_with_warmup(optmizer, int(args["warmup_steps"]), int(args["training_steps"]))  # type: ignore[no-any-return]
-    if type == "linear-with-warmup":
-        return get_linear_schedule_with_warmup(optmizer, args["warmup_steps"], args["training_steps"])  # type: ignore[no-any-return, no-untyped-call]
-    if type == "wsd":
-        return get_wsd_schedule(optmizer, int(args["warmup_steps"]), int(args["decay_step"]))  # type: ignore[no-any-return]
-    raise RuntimeError(f"Learning rate Scheduler {type} not supported")
-
-
-def merge_models(old_model: str, weight_path: str) -> dict[str, torch.Tensor]:
-    state_dict: dict[str, torch.Tensor] = {}
-    with (
-        safe_open(weight_path, framework="pt", device="cpu") as g,  # type: ignore[no-untyped-call]
-        safe_open(old_model, framework="pt", device="cpu") as m,  # type: ignore[no-untyped-call]
-    ):
-        for name in m.keys():  # noqa: SIM118
-            # state_dict[name] += (alpha * (b.get_tensor(name) - state_dict[name])).to(state_dict[name].dtype)
-            # The gradient from 'extract_gradients' is negative. Thus, add instead of subtract.
-            state_dict[name] = m.get_tensor(name) + g.get_tensor(name)
-    return state_dict
-
-
-def extract_gradients(state_dict: dict[str, torch.Tensor], previous_model_path: str) -> dict[str, torch.Tensor]:
-    with safe_open(previous_model_path, framework="pt", device="cpu") as p:  # type: ignore[no-untyped-call]
-        for name in p.keys():  # noqa: SIM118
-            # This results in \theta_{t} - \theta_{t-1} = -\nabla
-            state_dict[name] -= p.get_tensor(name).to(state_dict[name].dtype)
-    return state_dict
-
-
-def dataset_wrapper(dataset: torch.utils.data.DataLoader) -> Iterator[dict[str, torch.Tensor]]:  # type: ignore[type-arg]
-    def wrap() -> Iterator[dict[str, torch.Tensor]]:
-        while True:
-            yield from dataset
-
-    return iter(wrap())
 
 
 def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR0915, PLR0912
@@ -175,31 +41,19 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR09
         prepare_files(config, session)
         local_fetch_path = f"{work_dir}/{FETCH_PATH}"
         print(os.listdir(local_fetch_path))
-        model_type = config["model"]["task"]
-        model = get_model(local_fetch_path, model_type)
+
+        model = get_model(local_fetch_path, config["model"]["task"])
         optimizer = get_adam(config["optimizer"], model.parameters())
-        epoch_counter = 0
-
-        scheduler_config = config.get("scheduler")
-        if not scheduler_config or not scheduler_config.get("type"):
-            scheduler = get_constant_schedule(optimizer)
-        else:
-            scheduler_type = scheduler_config["type"]
-            scheduler_args = {k: v for k, v in scheduler_config.items() if k != "type"}
-            scheduler = get_scheduler(scheduler_type, scheduler_args, optimizer)
-
+        scheduler = get_scheduler(config.get("scheduler"), optimizer)
         preprocessor_config = config.get("preprocessor")
-        preprocessor: Any | None = None
-        if preprocessor_config:
-            filenames = preprocessor_config.get("filenames")
-            if filenames:
-                preprocessor = get_preprocessor(f"{local_fetch_path}/{filenames[0]}", model_type)
-
-        data_loader = get_data_loader(
-            fetch_data(session, config["data"], work_dir),
-            model_type,
-            preprocessor,
-            config["batch_size"],
+        data_loader = torch.utils.data.DataLoader(
+            IterableStreamDataSet(
+                fetch_data(session, config["data"], work_dir),
+                config["model"]["input-names"],
+                preprocessor_config["input-names"] if preprocessor_config else [],
+                get_preprocessor(preprocessor_config, local_fetch_path),
+            ),
+            batch_size=config["batch_size"],
         )
 
         # Serialize the model to disk
@@ -209,6 +63,7 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR09
         model, optimizer, training_dataloader, scheduler = accelerator.prepare(model, optimizer, data_loader, scheduler)
         training_data_iter = dataset_wrapper(training_dataloader)
 
+        epoch_counter = 1
         # Start receiver immediately, but do not consume until we've sent once
         with session.receive(config["results"], "incoming") as receiver:
             updates_iter = iter(receiver)
@@ -290,10 +145,12 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR09
                     # Mark that before the next training epoch we must wait for an update
                     await_update = True
 
-                session.send_status({"metrics": {"round": epoch_counter, "metrics": {"loss": float(np.mean(losses))}}})
-                epoch_counter += 1
+                    session.send_status(
+                        {"metrics": {"round": epoch_counter, "metrics": {"loss": float(np.mean(losses))}}}
+                    )
+                    epoch_counter += 1
 
-            print(f"Finished training of {epoch_counter} DiLoCo update rounds", flush=True)
+            print(f"Finished training of {epoch_counter - 1} DiLoCo update rounds", flush=True)
 
 
 if __name__ == "__main__":

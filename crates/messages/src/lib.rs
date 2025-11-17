@@ -416,13 +416,75 @@ impl AsRef<Reference> for Receive {
     }
 }
 
+#[derive(Deserialize, Serialize, Debug, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub enum ModelType {
+    Auto,
+    Pretraining,
+    CausalLm,
+    MaskedLm,
+    MaskGeneration,
+    Seq2SeqLm,
+    SequenceClassification,
+    MultipleChoice,
+    NextSentencePrediction,
+    TokenClassification,
+    QuestionAnswering,
+    TextEncoding,
+    DepthEstimation,
+    ImageClassification,
+    VideoClassification,
+    KeypointDetection,
+    KeypointMatching,
+    ObjectDetection,
+    ImageSegmentation,
+    ImageToImage,
+    SemanticSegmentation,
+    InstanceSegmentation,
+    UniversalSegmentation,
+    ZeroShotImageClassification,
+    ZeroShotObjectDetection,
+    AudioClassification,
+    AudioFrameClassification,
+    Ctc,
+    SpeechSeq2Seq,
+    AudioXVector,
+    TextToSpectrogram,
+    TextToWaveform,
+    AudioTokenization,
+    TableQuestionAnswering,
+    DocumentQuestionAnswering,
+    Vison2Seq,
+    ImageTextToText,
+    TimeSeriesPrediction,
+}
+
 /// Executor configuration payload keyed off the executor class.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(tag = "task", rename_all = "kebab-case")]
-pub enum Model {
-    VisionClassification { artifact: Fetch },
-    CausalLm { artifact: Fetch },
-    Torch { artifact: Fetch },
+#[serde(rename_all = "kebab-case")]
+pub struct Model {
+    pub task: ModelType,
+    pub artifact: Fetch,
+    pub input_names: Vec<String>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub enum PreprocessorType {
+    Tokenizer,
+    Feature,
+    Image,
+    Video,
+    Auto,
+}
+
+/// Executor configuration payload keyed off the executor class.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct Preprocessor {
+    pub task: PreprocessorType,
+    pub artifact: Fetch,
+    pub input_names: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -437,7 +499,7 @@ pub struct TrainExecutorConfig {
     pub optimizer: Adam,
     pub batch_size: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub preprocessor: Option<Fetch>,
+    pub preprocessor: Option<Preprocessor>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scheduler: Option<Scheduler>,
 }
