@@ -4,6 +4,7 @@ use documented::{Documented, DocumentedFieldsOpt};
 use hypha_config::{ConfigError, ConfigWithMetadata, TLSConfig, ValidatableConfig};
 use hypha_messages::ExecutorDescriptor;
 use hypha_network::{IpNet, find_containing_cidr, reserved_cidrs};
+use hypha_resources::Resources;
 use hypha_telemetry::{
     attributes::Attributes,
     otlp::{Endpoint, Headers, Protocol},
@@ -11,8 +12,6 @@ use hypha_telemetry::{
 };
 use libp2p::Multiaddr;
 use serde::{Deserialize, Serialize};
-
-use crate::resources::ComputeResources;
 
 #[derive(Deserialize, Serialize, Documented, DocumentedFieldsOpt)]
 /// Available compute resources advertised to schedulers for job allocation.
@@ -449,13 +448,12 @@ impl Config {
         self.relay_circuit
     }
 
-    pub fn resources(&self) -> ComputeResources {
-        ComputeResources {
-            cpu: self.resources.cpu.into(),
-            gpu: self.resources.gpu.into(),
-            memory: self.resources.memory.into(),
-            storage: self.resources.storage.into(),
-        }
+    pub fn resources(&self) -> Resources {
+        Resources::default()
+            .with_cpu(self.resources.cpu.into())
+            .with_gpu(self.resources.gpu.into())
+            .with_memory(self.resources.memory.into())
+            .with_storage(self.resources.storage.into())
     }
 
     pub fn executors(&self) -> &[ExecutorConfig] {

@@ -1,4 +1,5 @@
-use hypha_messages::{Adam, Fetch, Model, Nesterov, Requirement, Resources};
+use hypha_messages::{Adam, Fetch, Model, Nesterov};
+use hypha_resources::Resources;
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
@@ -72,15 +73,11 @@ impl Default for DiLoCo {
             },
             resources: DiLoCoResources {
                 num_workers: 2,
-                worker: vec![
-                    Requirement::Resource(Resources::Gpu { min: 10.0 }),
-                    Requirement::Resource(Resources::Cpu { min: 1.0 }),
-                    Requirement::Resource(Resources::Memory { min: 1.0 }),
-                ],
-                parameter_server: vec![
-                    Requirement::Resource(Resources::Cpu { min: 1.0 }),
-                    Requirement::Resource(Resources::Memory { min: 1.0 }),
-                ],
+                worker: Resources::default()
+                    .with_gpu(10.0)
+                    .with_cpu(1.0)
+                    .with_memory(1.0),
+                parameter_server: Resources::default().with_cpu(1.0).with_memory(1.0),
             },
         }
     }
@@ -154,6 +151,6 @@ pub struct DiLoCoRounds {
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct DiLoCoResources {
     pub num_workers: u32,
-    pub worker: Vec<Requirement>,
-    pub parameter_server: Vec<Requirement>,
+    pub worker: Resources,
+    pub parameter_server: Resources,
 }

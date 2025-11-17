@@ -2009,6 +2009,7 @@ name = "hypha-messages"
 version = "0.0.0"
 dependencies = [
  "hypha-network",
+ "hypha-resources",
  "libp2p",
  "serde",
  "uuid",
@@ -2043,6 +2044,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "hypha-resources"
+version = "0.0.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "hypha-scheduler"
 version = "0.0.0"
 dependencies = [
@@ -2056,6 +2064,7 @@ dependencies = [
  "hypha-leases",
  "hypha-messages",
  "hypha-network",
+ "hypha-resources",
  "hypha-telemetry",
  "indoc",
  "itertools 0.14.0",
@@ -2117,6 +2126,7 @@ dependencies = [
  "hypha-leases",
  "hypha-messages",
  "hypha-network",
+ "hypha-resources",
  "hypha-telemetry",
  "indoc",
  "libp2p",

@@ -11,8 +11,7 @@ use futures_util::future::{join_all, select_all};
 use hypha_config::{ConfigWithMetadata, ConfigWithMetadataTLSExt, builder, to_toml};
 use hypha_messages::{
     AggregateExecutorConfig, AggregateExecutorDescriptor, DataRecord, Fetch, JobSpec, Receive,
-    Requirement, SelectionStrategy, Send, TrainExecutorConfig, TrainExecutorDescriptor, WorkerSpec,
-    health,
+    SelectionStrategy, Send, TrainExecutorConfig, TrainExecutorDescriptor, WorkerSpec, health,
 };
 use hypha_network::{
     cert::identity_from_private_key, dial::DialInterface,
@@ -198,21 +197,13 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
     tracing::info!("Starting worker allocation and job creation process");
 
     let worker_spec = WorkerSpec {
-        requirements: vec![Requirement::Executor(
-            TrainExecutorDescriptor::new(TRAIN_EXECUTOR_NAME).into(),
-        )]
-        .into_iter()
-        .chain(diloco_config.resources.worker.clone())
-        .collect(),
+        resources: diloco_config.resources.worker,
+        executor: vec![TrainExecutorDescriptor::new(TRAIN_EXECUTOR_NAME).into()],
     };
 
     let parameter_server_spec = WorkerSpec {
-        requirements: vec![Requirement::Executor(
-            AggregateExecutorDescriptor::new(PARAMETER_SERVER_EXECUTOR_NAME).into(),
-        )]
-        .into_iter()
-        .chain(diloco_config.resources.parameter_server.clone())
-        .collect(),
+        resources: diloco_config.resources.parameter_server,
+        executor: vec![AggregateExecutorDescriptor::new(PARAMETER_SERVER_EXECUTOR_NAME).into()],
     };
 
     // NOTE: Phase 1 - Allocate workers using the new allocator/arbiter protocol

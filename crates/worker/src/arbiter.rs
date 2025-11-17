@@ -338,7 +338,7 @@ where
             if let Ok(lease) = LeaseManager::request(
                 &mut self.lease_manager,
                 peer_id,
-                request.spec.requirements.clone(),
+                &request.spec,
                 OFFER_TIMEOUT,
             )
             .await

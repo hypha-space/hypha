@@ -10,3 +10,4 @@ libp2p.workspace = true
 serde.workspace = true
 uuid.workspace = true
 hypha-network.workspace = true
+hypha-resources.workspace = true
