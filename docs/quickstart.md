@@ -82,6 +82,10 @@ Generate the necessary configuration using `hypha-scheduler init`:
 hypha-scheduler init -n scheduler -o scheduler-config.toml --exclude-cidr 192.0.2.0/24 --gateway /ip4/127.0.0.1/tcp/8080
 ```
 
+##### Send metrics to AIM
+
+If you want the Scheduler to send metrics to AIM, you can download and set up our AIM Driver Connector from our [releases page](https://github.com/hypha-space/hypha/releases). Please follow its instructions to set up the connector and scheduler.
+
 #### Worker Nodes
 
 Generate worker configuration using `hypha-worker init`:
