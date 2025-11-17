@@ -24,6 +24,7 @@ use hypha_telemetry as telemetry;
 use libp2p::Multiaddr;
 use miette::{IntoDiagnostic, Result};
 use tokio::signal::unix::{SignalKind, signal};
+use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{
     EnvFilter, Layer, Registry, layer::SubscriberExt, util::SubscriberInitExt,
 };
@@ -63,7 +64,13 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
     telemetry::metrics::global::set_provider(metrics.provider());
 
     Registry::default()
-        .with(tracing_subscriber::fmt::layer().with_filter(EnvFilter::from_default_env()))
+        .with(
+            tracing_subscriber::fmt::layer().with_filter(
+                EnvFilter::builder()
+                    .with_default_directive(LevelFilter::INFO.into())
+                    .from_env_lossy(),
+            ),
+        )
         .with(tracing.layer())
         .with(logging.layer())
         .init();
