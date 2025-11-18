@@ -284,9 +284,7 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
         && allocated_parameter_servers.len() == 1
     {
         let job_id = Uuid::new_v4();
-        let batch_sizes = [22, 12];
-        let samples_per_update = 1200;
-        let diloco_rounds = 100;
+        let batch_sizes = [40, 60];
 
         let worker1 = &allocated_workers[0];
         let worker2 = &allocated_workers[1];
@@ -299,8 +297,8 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
         // TODO compute true batch sizes
         let run_tracker = Arc::new(Mutex::new(ProgressTracker::<RunningMean>::new(
             allocated_parameter_servers[0].peer_id(),
-            samples_per_update,
-            diloco_rounds,
+            diloco_config.rounds.avg_samples_between_updates,
+            diloco_config.rounds.update_rounds,
         )));
         run_tracker
             .lock()
@@ -338,7 +336,7 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
                         ),
                         results: Receive::peers(vec![parameter_server.peer_id()]),
                         optimizer: diloco_config.inner_optimizer.clone(),
-                        batch_size: 40,
+                        batch_size: batch_sizes[0],
                         preprocessor: diloco_config.preprocessor.clone().map(|p| p.into()),
                         scheduler: None,
                     })
@@ -363,7 +361,7 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
                         ),
                         results: Receive::peers(vec![parameter_server.peer_id()]),
                         optimizer: diloco_config.inner_optimizer.clone(),
-                        batch_size: 60,
+                        batch_size: batch_sizes[1],
                         preprocessor: diloco_config.preprocessor.clone().map(|p| p.into()),
                         scheduler: None,
                     })

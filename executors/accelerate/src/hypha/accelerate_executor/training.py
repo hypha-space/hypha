@@ -293,7 +293,7 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR09
                 session.send_status({"metrics": {"round": epoch_counter, "metrics": {"loss": float(np.mean(losses))}}})
                 epoch_counter += 1
 
-            print(f"Finished training of {epoch_counter - 1} epochs", flush=True)
+            print(f"Finished training of {epoch_counter} DiLoCo update rounds", flush=True)
 
 
 if __name__ == "__main__":

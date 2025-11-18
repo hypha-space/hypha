@@ -25,6 +25,7 @@ pub struct DiLoCo {
     pub model: ModelSource,
     pub preprocessor: Option<PreprocessorSource>,
     pub dataset: DataNodeSource,
+    pub rounds: DiLoCoRounds,
     #[serde(rename = "inner_optimizer")]
     pub inner_optimizer: Adam,
     #[serde(rename = "outer_optimizer")]
@@ -55,6 +56,10 @@ impl Default for DiLoCo {
             }),
             dataset: DataNodeSource {
                 dataset: "mnist".to_string(),
+            },
+            rounds: DiLoCoRounds {
+                update_rounds: 100,
+                avg_samples_between_updates: 1200,
             },
             inner_optimizer: Adam {
                 learning_rate: 1e-3,
@@ -138,6 +143,12 @@ pub struct PreprocessorSource {
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct DataNodeSource {
     pub dataset: String,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct DiLoCoRounds {
+    pub avg_samples_between_updates: u32,
+    pub update_rounds: u32,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
