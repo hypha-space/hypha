@@ -14,7 +14,8 @@ clap.workspace = true
 documented.workspace = true
 figment.workspace = true
 futures-util.workspace = true
-hf-hub = { version = "0.4", default-features = false, features = ["tokio", "rustls-tls"] }
+# Use a pre-relase of v0.4.3 because older versions depend on `number_prefix` which is unmaintained
+hf-hub = { git = "https://github.com/huggingface/hf-hub.git", rev = "94b8385", default-features = false, features = ["tokio", "rustls-tls"] }
 hypha-config.workspace = true
 hypha-leases.workspace = true
 hypha-messages.workspace = true
