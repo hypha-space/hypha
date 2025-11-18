@@ -9,6 +9,17 @@ plugins:
   - "@semantic-release/commit-analyzer"
   - "@semantic-release/release-notes-generator"
   - - "@semantic-release/github"
-    - assets:
+    - releaseBodyTemplate: |
+        # Installation
+
+        ```
+        curl -fsSL https://github.com/hypha-space/hypha/releases/download/v${nextRelease.version}/install.sh | sh
+        ```
+        Also check out the [README](https://github.com/hypha-space/hypha/blob/v${nextRelease.version}/README.md) and [Getting Started Guide](https://github.com/hypha-space/hypha/blob/v${nextRelease.version}/docs/quickstart.md)
+
+        ---
+
+        ${nextRelease.notes}
+      assets:
         # artifacts will be pushed to artifacts/**/* by the release workflow
         - path: artifacts/**/*
