@@ -55,6 +55,29 @@ gpu = 24        # GB (vram)
 
 These values advertise capacity to schedulers. Actual resource limiting is planned but not yet implemented.
 
+### Offer Strategies and Pricing
+
+Workers expose their bidding policy through the `[offer]` section:
+
+```toml
+[offer]
+price = 150.0           # Preferred whole-worker price
+floor = 120.0           # Ignore bids below this value
+strategy = "whole"
+```
+
+- `price` represents the worker's ask. Bids below this value are rejected unless the floor is
+  higher.
+- `floor` is the hard minimum bid. Requests below the floor are dropped without a response.
+- `strategy` selects how resources are bundled:
+  - `flexible` mirrors the scheduler's bid as long as it meets the pricing thresholds and only
+    reserves the resources requested by the scheduler. 
+  - `whole` offers all configured resources as a single unit and responds at the higher of
+    the scheduler's bid or the configured `price`.
+
+The strategy and pricing configuration allow a single worker to operate either like today's
+flexible node or as a dedicated “whole box” bidder suitable for exclusive GPU hosts.
+
 ### Work Directory
 
 ```toml

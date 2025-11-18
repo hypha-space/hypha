@@ -145,6 +145,8 @@ pub mod worker_offer {
         pub request_id: Uuid,
         /// Worker's _counter-offer_ price
         pub price: f64,
+        /// Resources reserved for this offer
+        pub resources: Resources,
         /// Accept the offer within the timeout otherwise it's going to expire.
         pub timeout: SystemTime,
     }

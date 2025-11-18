@@ -18,6 +18,7 @@ use hypha_network::{
     external_address::ExternalAddressInterface, kad::KademliaInterface, listen::ListenInterface,
     request_response::RequestResponseInterfaceExt, swarm::SwarmDriver,
 };
+use hypha_resources::WeightedResourceEvaluator;
 use hypha_scheduler::{
     allocator::{Allocator, GreedyWorkerAllocator},
     config::Config,
@@ -192,7 +193,9 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
     let SchedulerJob::Diloco(diloco_config) = &config.scheduler_config().job;
 
     // NOTE: Create allocator for resource allocation alongside existing job management
-    let allocator = GreedyWorkerAllocator::new(network.clone());
+    // TODO: Create `WeightedResourceEvaluator` for config so that the weights can be adjusted based on the job requirements.
+    let allocator =
+        GreedyWorkerAllocator::new(network.clone(), WeightedResourceEvaluator::default());
 
     tracing::info!("Starting worker allocation and job creation process");
 
@@ -206,12 +209,15 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
         executor: vec![AggregateExecutorDescriptor::new(PARAMETER_SERVER_EXECUTOR_NAME).into()],
     };
 
+    let worker_price = diloco_config.resources.worker_price;
+    let parameter_server_price = diloco_config.resources.parameter_server_price;
+
     // NOTE: Phase 1 - Allocate workers using the new allocator/arbiter protocol
     // First, request worker nodes for job execution
     let allocated_workers = match allocator
         .request(
             worker_spec.clone(),
-            100.0,
+            worker_price,
             None,
             diloco_config.resources.num_workers as usize,
         )
@@ -236,7 +242,12 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
 
     // Request multiple workers to increase chances of two distinct peers
     let allocated_parameter_servers = match allocator
-        .request(parameter_server_spec.clone(), 100.0, None, 1)
+        .request(
+            parameter_server_spec.clone(),
+            parameter_server_price,
+            None,
+            1,
+        )
         .await
     {
         Ok(allocated_parameter_servers) => {

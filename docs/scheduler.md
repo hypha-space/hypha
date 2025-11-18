@@ -10,7 +10,7 @@ The scheduler serves as the coordination point for distributed training:
 
 **Task Advertisement**: Publishing resource requirements to workers via Gossipsub. Workers subscribe to the `hypha/worker` topic and evaluate incoming advertisements against their capabilities.
 
-**Worker Selection**: Collecting offers from workers and selecting optimal matches. The scheduler implements greedy selection (lowest price first) to allocate resources efficiently.
+**Worker Selection**: Collecting offers from workers and selecting optimal matches. The scheduler evaluates offers based on a configurable price range and picks the best price/performance ratio rather than simply the lowest absolute bid.
 
 **Lease Management**: Maintaining resource reservations through periodic renewal. Leases prevent resource double-booking while ensuring automatic cleanup if schedulers fail.
 
@@ -135,6 +135,20 @@ min = 16.0
 kind = "parameter-server"
 ```
 Each `[[...worker]]` or `[[...parameter_server]]` table serializes directly into a woreker`Requirement`.
+
+**Price Ranges**: Configure bid/maximum pairs for workers and parameter servers to express how far the scheduler is willing to counter-offer without revealing the cap to workers:
+
+```toml
+[scheduler.job.resources.worker_price]
+bid = 110.0   # published bid workers see
+max = 160.0   # private cap used for filtering
+
+[scheduler.job.resources.parameter_server_price]
+bid = 80.0
+max = 120.0
+```
+
+The bid is broadcast to workers, while the max remains local to the scheduler. Received offers whose price exceeds the configured `max` are ignored. Within that range, offers are ranked by the scheduler's resource evaluator to prioritize the most capacity per token spent.
 
 ### OpenTelemetry
 

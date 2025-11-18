@@ -13,6 +13,7 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
+    config::{OfferConfig, OfferStrategy},
     job_manager::{JobManager, JobManagerError},
     lease_manager::{LeaseError, LeaseManager},
     network::Network,
@@ -53,6 +54,8 @@ where
     supported_executors: Vec<ExecutorDescriptor>,
     job_manager: JobManager,
     tasks: JoinSet<()>,
+    worker_resources: hypha_resources::Resources,
+    offer: OfferConfig,
 }
 
 impl<L, R> Arbiter<L, R>
@@ -67,6 +70,8 @@ where
         network: Network,
         supported_executors: Vec<ExecutorDescriptor>,
         job_manager: JobManager,
+        worker_resources: hypha_resources::Resources,
+        offer: OfferConfig,
     ) -> Self {
         Self {
             network,
@@ -75,6 +80,8 @@ where
             supported_executors,
             job_manager,
             tasks: JoinSet::new(),
+            worker_resources,
+            offer,
         }
     }
 
@@ -325,49 +332,79 @@ where
         // NOTE: Score and sort requests, then greedily request a lease and offer it to the peer.
         // Offers will have a short lifetime and the offer must be accepted within the time frame
         // to extend the lease.
-        let mut scored_requests: Vec<_> = requests
-            .into_iter()
-            .filter_map(|(peer_id, request)| {
-                if !request
-                    .spec
-                    .executor
-                    .iter()
-                    .all(|required| self.supported_executors.contains(required))
-                {
-                    tracing::debug!(
-                        scheduler_id = %peer_id,
-                        request_id = %request.id,
-                        "Rejecting request due to unsupported executor"
-                    );
-                    return None;
-                }
+        let mut scored_requests = Vec::with_capacity(requests.len());
 
-                let score = self
-                    .resource_evaluator
-                    .score(request.bid, &request.spec.resources);
+        for (peer_id, request) in requests.into_iter() {
+            if !request
+                .spec
+                .executor
+                .iter()
+                .all(|required| self.supported_executors.contains(required))
+            {
+                tracing::debug!(
+                    scheduler_id = %peer_id,
+                    request_id = %request.id,
+                    "Rejecting request due to unsupported executor"
+                );
+                continue;
+            }
 
-                Some((score, peer_id, request))
-            })
-            .collect();
+            let floor = self.offer.floor();
+            if request.bid < floor {
+                tracing::debug!(
+                    scheduler_id = %peer_id,
+                    request_id = %request.id,
+                    bid = %request.bid,
+                    floor,
+                    "Rejecting request due to insufficient bid"
+                );
+                continue;
+            }
+
+            if request.spec.resources > self.worker_resources {
+                tracing::debug!(
+                    scheduler_id = %peer_id,
+                    request_id = %request.id,
+                    requested = ?request.spec.resources,
+                    available = ?self.worker_resources,
+                    "Rejecting request exceeding worker resources"
+                );
+                continue;
+            }
+
+            let score = self
+                .resource_evaluator
+                .score(request.bid, &request.spec.resources);
+            scored_requests.push((score, peer_id, request));
+        }
 
         scored_requests.sort_by_key(|(score, _, _)| OrderedFloat(-score));
 
         for (_, peer_id, request) in scored_requests {
-            tracing::info!("Processing request from peer {}", peer_id);
-            if let Ok(lease) = LeaseManager::request(
-                &mut self.lease_manager,
-                peer_id,
-                &request.spec,
-                OFFER_TIMEOUT,
-            )
-            .await
+            tracing::debug!("Processing request from peer {}", peer_id);
+
+            let mut resources = request.spec.resources;
+            let mut price = request.bid;
+
+            if matches!(self.offer.strategy(), OfferStrategy::Whole) {
+                resources = self.worker_resources;
+                price = self.offer.price().max(request.bid);
+            }
+
+            let lease_spec = hypha_messages::WorkerSpec {
+                resources,
+                executor: request.spec.executor.clone(),
+            };
+
+            if let Ok(lease) =
+                LeaseManager::request(&mut self.lease_manager, peer_id, &lease_spec, OFFER_TIMEOUT)
+                    .await
             {
                 let offer = hypha_messages::worker_offer::Request {
                     id: lease.id,
                     request_id: request.id,
-                    // TODO: Implement price calculation based on resource requirements and
-                    // current utilization.
-                    price: request.bid,
+                    price,
+                    resources,
                     timeout: lease.timeout,
                 };
 

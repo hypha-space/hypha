@@ -34,6 +34,21 @@ pub struct DiLoCo {
     pub resources: DiLoCoResources,
 }
 
+#[derive(Deserialize, Serialize, Debug, Clone, Copy)]
+pub struct PriceRange {
+    pub bid: f64,
+    pub max: f64,
+}
+
+impl Default for PriceRange {
+    fn default() -> Self {
+        Self {
+            bid: 100.0,
+            max: 100.0,
+        }
+    }
+}
+
 impl Default for DiLoCo {
     fn default() -> Self {
         Self {
@@ -78,6 +93,8 @@ impl Default for DiLoCo {
                     .with_cpu(1.0)
                     .with_memory(1.0),
                 parameter_server: Resources::default().with_cpu(1.0).with_memory(1.0),
+                worker_price: PriceRange::default(),
+                parameter_server_price: PriceRange::default(),
             },
         }
     }
@@ -153,4 +170,8 @@ pub struct DiLoCoResources {
     pub num_workers: u32,
     pub worker: Resources,
     pub parameter_server: Resources,
+    #[serde(default)]
+    pub worker_price: PriceRange,
+    #[serde(default)]
+    pub parameter_server_price: PriceRange,
 }

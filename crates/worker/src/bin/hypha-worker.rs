@@ -216,8 +216,9 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
             .join(config.work_dir())
     };
 
+    let worker_resources = config.resources();
     let arbiter = Arbiter::new(
-        ResourceLeaseManager::new(StaticResourceManager::new(config.resources())),
+        ResourceLeaseManager::new(StaticResourceManager::new(worker_resources)),
         WeightedResourceEvaluator::default(),
         network.clone(),
         supported_executors,
@@ -227,6 +228,8 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
             work_dir_base,
             executor_configs,
         ),
+        worker_resources,
+        *config.offer(),
     );
 
     let arbiter_handle = tokio::spawn({
