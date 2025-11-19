@@ -12,7 +12,7 @@ plugins:
     - releaseBodyTemplate: |
         # Installation
 
-        Use the standalone installer script to download and install the Hypha v{{nextRelease.version}} binaries. Use `curl` to download the script and execute it with sh:
+        Use the standalone installer script to download and install the Hypha v${nextRelease.version} binaries. Use `curl` to download the script and execute it with sh:
 
         ```
         curl -fsSL https://github.com/hypha-space/hypha/releases/download/v${nextRelease.version}/install.sh | sh
