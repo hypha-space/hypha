@@ -136,6 +136,9 @@ kind = "parameter-server"
 ```
 Each `[[...worker]]` or `[[...parameter_server]]` table serializes directly into a woreker`Requirement`.
 
+> [!NOTE]
+> Make sure that the GPU requirements for the worker match the required GPU memory for training with a batch size of 1 on a GPU. A good estimat in GB is #number of parameters * 24 * 9e-10. This is equal to the model memory (1 fp32) + AdamW state (4 fp32) + gradient (1 fp32) and activation (1 fp32). For a better estimation consult [Transformer math](https://blog.eleuther.ai/transformer-math/). The number of paramters can be easily computed in `torch` with `sum(v.shape.numel() for v in model.state_dict().values())`.
+
 **Price Ranges**: Configure bid/maximum pairs for workers and parameter servers to express how far the scheduler is willing to counter-offer without revealing the cap to workers:
 
 ```toml

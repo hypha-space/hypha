@@ -286,10 +286,23 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
         && allocated_parameter_servers.len() == 1
     {
         let job_id = Uuid::new_v4();
-        let batch_sizes = [40, 60];
-
         let worker1 = &allocated_workers[0];
         let worker2 = &allocated_workers[1];
+
+        // Need a way to control the max allowed batch size.
+        let max_batch_size = match diloco_config.rounds.max_batch_size {
+            Some(bs) => bs as f64,
+            _ => f64::MAX,
+        };
+
+        let batch_sizes: Vec<u32> = allocated_workers
+            .iter()
+            .map(|w| {
+                (w.resources().gpu() / worker_spec.resources.gpu())
+                    .floor()
+                    .min(max_batch_size) as u32
+            })
+            .collect();
 
         let worker_ids = allocated_workers
             .iter()
