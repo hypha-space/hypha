@@ -9,6 +9,19 @@ plugins:
   - "@semantic-release/commit-analyzer"
   - "@semantic-release/release-notes-generator"
   - - "@semantic-release/github"
-    - assets:
+    - releaseBodyTemplate: |
+        # Installation
+
+        Use the standalone installer script to download and install the Hypha v{{nextRelease.version}} binaries. Use `curl` to download the script and execute it with sh:
+
+        ```
+        curl -fsSL https://github.com/hypha-space/hypha/releases/download/v${nextRelease.version}/install.sh | sh
+        ```
+        For alternative installation methods (GitHub releases, Cargo), see the [Installation Guide](https://github.com/hypha-space/hypha/blob/alpha/docs/installation.md).
+
+        ---
+
+        ${nextRelease.notes}
+      assets:
         # artifacts will be pushed to artifacts/**/* by the release workflow
         - path: artifacts/**/*
