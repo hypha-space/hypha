@@ -20,11 +20,11 @@ use hypha_network::{
     dial::DialInterface, external_address::ExternalAddressInterface, kad::KademliaInterface,
     listen::ListenInterface, request_response::RequestResponseInterfaceExt, swarm::SwarmDriver,
 };
+use hypha_resources::WeightedResourceEvaluator;
 use hypha_telemetry as telemetry;
 use hypha_worker::{
     arbiter::Arbiter, config::Config, connector::Connector, job_manager::JobManager,
-    lease_manager::ResourceLeaseManager, network::Network,
-    request_evaluator::WeightedResourceRequestEvaluator, resources::StaticResourceManager,
+    lease_manager::ResourceLeaseManager, network::Network, resources::StaticResourceManager,
 };
 use libp2p::{Multiaddr, multiaddr::Protocol};
 use miette::{IntoDiagnostic, Result};
@@ -200,7 +200,11 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
     ready.store(true, Ordering::Relaxed);
 
     let token = CancellationToken::new();
-    let executors = config.executors().to_vec();
+    let executor_configs = config.executors().to_vec();
+    let supported_executors = executor_configs
+        .iter()
+        .map(|cfg| cfg.descriptor())
+        .collect::<Vec<_>>();
 
     // NOTE: Create arbiter for resource allocation - this is the primary worker allocation mechanism
     let work_dir_base = if config.work_dir().is_absolute() {
@@ -212,22 +216,20 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
             .join(config.work_dir())
     };
 
+    let worker_resources = config.resources();
     let arbiter = Arbiter::new(
-        ResourceLeaseManager::new(StaticResourceManager::new(
-            config.resources(),
-            executors
-                .iter()
-                .map(|cfg| cfg.descriptor())
-                .collect::<Vec<_>>(),
-        )),
-        WeightedResourceRequestEvaluator::default(),
+        ResourceLeaseManager::new(StaticResourceManager::new(worker_resources)),
+        WeightedResourceEvaluator::default(),
         network.clone(),
+        supported_executors,
         JobManager::new(
             Connector::new(network.clone()),
             network.clone(),
             work_dir_base,
-            executors,
+            executor_configs,
         ),
+        worker_resources,
+        *config.offer(),
     );
 
     let arbiter_handle = tokio::spawn({

@@ -1,16 +1,13 @@
 use std::{future::Future, time::Duration};
 
 use hypha_leases::{Lease, Ledger, LedgerError};
-use hypha_messages::Requirement;
+use hypha_messages::WorkerSpec;
 use libp2p::PeerId;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::resources::{
-    ResourceManager, ResourceManagerError, extract_compute_resource_requirements,
-    extract_executor_requirements,
-};
+use crate::resources::{ResourceManager, ResourceManagerError};
 
 #[derive(Debug, Clone, Error)]
 #[error("lease error")]
@@ -35,7 +32,7 @@ pub trait LeaseManager: Send + Sync + Clone {
     fn request(
         &mut self,
         peer_id: PeerId,
-        requirements: Vec<Requirement>,
+        spec: &WorkerSpec,
         duration: Duration,
     ) -> impl Future<Output = Result<Lease<Self::Leasable>, LeaseError>> + Send;
 
@@ -99,15 +96,10 @@ where
     async fn request(
         &mut self,
         peer_id: PeerId,
-        requirements: Vec<Requirement>,
+        spec: &WorkerSpec,
         duration: Duration,
     ) -> Result<Lease<ResourceLease>, LeaseError> {
-        let compute_resources = extract_compute_resource_requirements(&requirements);
-        let required_executors = extract_executor_requirements(&requirements);
-        let reservation = self
-            .resource_manager
-            .reserve(compute_resources, required_executors)
-            .await?;
+        let reservation = self.resource_manager.reserve(spec.resources).await?;
 
         let result = self
             .ledger

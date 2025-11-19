@@ -16,6 +16,7 @@ hypha-config.workspace = true
 hypha-leases.workspace = true
 hypha-messages.workspace = true
 hypha-network.workspace = true
+hypha-resources.workspace = true
 hypha-telemetry.workspace = true
 indoc.workspace = true
 itertools = "0.14.0"

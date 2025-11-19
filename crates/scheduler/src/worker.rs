@@ -7,6 +7,7 @@ use std::{
 use futures_util::FutureExt;
 use hypha_messages::{JobSpec, WorkerSpec, api, renew_lease};
 use hypha_network::request_response::{RequestResponseError, RequestResponseInterfaceExt};
+use hypha_resources::Resources;
 use libp2p::PeerId;
 use thiserror::Error;
 use tokio::{task::JoinHandle, time::sleep};
@@ -61,9 +62,12 @@ pub struct Worker {
     // NOTE: We'll need the spec and price to re-allocate a worker in case of failure.
     #[allow(dead_code)]
     spec: WorkerSpec,
+    // NOTE: When reallocating a worker, we'll need to know the price to determine the cost of the new worker.
     #[allow(dead_code)]
     price: f64,
-
+    // NOTE: We will need the resources to determine the capacity of the new worker and adjust the batch size accordingly.
+    #[allow(dead_code)]
+    resources: Resources,
     lease_handler: JoinHandle<Result<(), WorkerError>>,
 }
 
@@ -72,6 +76,7 @@ impl Worker {
         lease_id: Uuid,
         peer_id: PeerId,
         spec: WorkerSpec,
+        resources: Resources,
         price: f64,
         network: Network,
     ) -> Self {
@@ -134,6 +139,7 @@ impl Worker {
             lease_id,
             peer_id,
             spec,
+            resources,
             price,
             lease_handler,
         }
@@ -145,6 +151,18 @@ impl Worker {
 
     pub fn lease_id(&self) -> Uuid {
         self.lease_id
+    }
+
+    pub fn price(&self) -> f64 {
+        self.price
+    }
+
+    pub fn spec(&self) -> &WorkerSpec {
+        &self.spec
+    }
+
+    pub fn resources(&self) -> &Resources {
+        &self.resources
     }
 }
 

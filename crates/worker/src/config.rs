@@ -4,6 +4,7 @@ use documented::{Documented, DocumentedFieldsOpt};
 use hypha_config::{ConfigError, ConfigWithMetadata, TLSConfig, ValidatableConfig};
 use hypha_messages::ExecutorDescriptor;
 use hypha_network::{IpNet, find_containing_cidr, reserved_cidrs};
+use hypha_resources::Resources;
 use hypha_telemetry::{
     attributes::Attributes,
     otlp::{Endpoint, Headers, Protocol},
@@ -11,8 +12,6 @@ use hypha_telemetry::{
 };
 use libp2p::Multiaddr;
 use serde::{Deserialize, Serialize};
-
-use crate::resources::ComputeResources;
 
 #[derive(Deserialize, Serialize, Documented, DocumentedFieldsOpt)]
 /// Available compute resources advertised to schedulers for job allocation.
@@ -47,6 +46,63 @@ pub struct ResourceConfig {
     /// NOTE: Current implementation treats this as aggregate GPU memory. Future versions
     /// may support per-GPU resource tracking for heterogeneous GPU clusters.
     gpu: u32,
+}
+
+#[derive(Clone, Copy, Deserialize, Serialize, Default, Documented, DocumentedFieldsOpt)]
+#[serde(tag = "type", rename_all = "kebab-case")]
+/// Strategy used when generating offers for schedulers.
+pub enum OfferStrategy {
+    /// Offer exactly what the scheduler requested if the bid meets the floor price.
+    Flexible,
+    #[default]
+    /// Offer the entire worker as an indivisible unit.
+    Whole,
+}
+
+#[derive(Clone, Copy, Deserialize, Serialize, Documented, DocumentedFieldsOpt)]
+/// Offer configuration controlling pricing and strategy.
+pub struct OfferConfig {
+    /// Preferred price for the worker's resources.
+    #[serde(default = "OfferConfig::default_price")]
+    price: f64,
+    /// Minimum bid accepted from the scheduler.
+    #[serde(default = "OfferConfig::default_floor")]
+    floor: f64,
+    /// Offering strategy determining which resources are reserved.
+    #[serde(default)]
+    strategy: OfferStrategy,
+}
+
+impl OfferConfig {
+    fn default_price() -> f64 {
+        100.0
+    }
+
+    fn default_floor() -> f64 {
+        100.0
+    }
+
+    pub fn price(&self) -> f64 {
+        self.price
+    }
+
+    pub fn floor(&self) -> f64 {
+        self.floor
+    }
+
+    pub fn strategy(&self) -> OfferStrategy {
+        self.strategy
+    }
+}
+
+impl Default for OfferConfig {
+    fn default() -> Self {
+        Self {
+            price: Self::default_price(),
+            floor: Self::default_floor(),
+            strategy: OfferStrategy::default(),
+        }
+    }
 }
 
 #[derive(Clone, Deserialize, Serialize, Documented, DocumentedFieldsOpt)]
@@ -251,6 +307,9 @@ pub struct Config {
     /// Accurately configure resources to enable proper job allocation. Resources are
     /// reserved during job allocation and jobs exceeding available resources will be rejected.
     resources: ResourceConfig,
+    #[serde(default)]
+    /// Offer configuration controlling pricing and strategy.
+    offer: OfferConfig,
 
     /// Available executors for different job types.
     ///
@@ -412,6 +471,7 @@ impl Default for Config {
             telemetry_protocol: None,
             telemetry_sampler: None,
             telemetry_sample_ratio: None,
+            offer: OfferConfig::default(),
         }
     }
 }
@@ -449,13 +509,16 @@ impl Config {
         self.relay_circuit
     }
 
-    pub fn resources(&self) -> ComputeResources {
-        ComputeResources {
-            cpu: self.resources.cpu.into(),
-            gpu: self.resources.gpu.into(),
-            memory: self.resources.memory.into(),
-            storage: self.resources.storage.into(),
-        }
+    pub fn resources(&self) -> Resources {
+        Resources::default()
+            .with_cpu(self.resources.cpu.into())
+            .with_gpu(self.resources.gpu.into())
+            .with_memory(self.resources.memory.into())
+            .with_storage(self.resources.storage.into())
+    }
+
+    pub fn offer(&self) -> &OfferConfig {
+        &self.offer
     }
 
     pub fn executors(&self) -> &[ExecutorConfig] {

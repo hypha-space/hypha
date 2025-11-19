@@ -1,5 +1,6 @@
 use std::{collections::HashMap, time::SystemTime};
 
+use hypha_resources::Resources;
 use libp2p::{PeerId, request_response::cbor::codec::Codec as CborCodec};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -144,6 +145,8 @@ pub mod worker_offer {
         pub request_id: Uuid,
         /// Worker's _counter-offer_ price
         pub price: f64,
+        /// Resources reserved for this offer
+        pub resources: Resources,
         /// Accept the offer within the timeout otherwise it's going to expire.
         pub timeout: SystemTime,
     }
@@ -220,18 +223,10 @@ pub struct JobSpec {
 /// Worker specification
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WorkerSpec {
-    /// List of requirements for job execution (ALL must match)
-    pub requirements: Vec<Requirement>,
-}
-
-/// A single requirement that a worker must fulfill to execute a job
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(untagged)]
-pub enum Requirement {
-    /// Hardware requirement
-    Resource(Resources),
-    /// Executor requirement advertised by the worker
-    Executor(ExecutorDescriptor),
+    /// Definition of the resources required (minimum) by the worker
+    pub resources: Resources,
+    /// Executor configuration
+    pub executor: Vec<ExecutorDescriptor>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -626,26 +621,6 @@ pub enum Scheduler {
     Wsd {
         warmup_steps: i32,
         decay_steps: i32,
-    },
-}
-
-/// Hardware resource requirements
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(tag = "type")]
-pub enum Resources {
-    #[serde(rename = "GPU")]
-    Gpu {
-        min: f64,
-    },
-    #[serde(rename = "CPU")]
-    Cpu {
-        min: f64,
-    },
-    Storage {
-        min: f64,
-    },
-    Memory {
-        min: f64,
     },
 }
 

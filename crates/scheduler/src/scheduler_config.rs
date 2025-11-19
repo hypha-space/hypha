@@ -1,4 +1,5 @@
-use hypha_messages::{Adam, Fetch, Model, Nesterov, Requirement, Resources};
+use hypha_messages::{Adam, Fetch, Model, Nesterov};
+use hypha_resources::Resources;
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
@@ -31,6 +32,21 @@ pub struct DiLoCo {
     #[serde(rename = "outer_optimizer")]
     pub outer_optimizer: Nesterov,
     pub resources: DiLoCoResources,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Copy)]
+pub struct PriceRange {
+    pub bid: f64,
+    pub max: f64,
+}
+
+impl Default for PriceRange {
+    fn default() -> Self {
+        Self {
+            bid: 100.0,
+            max: 100.0,
+        }
+    }
 }
 
 impl Default for DiLoCo {
@@ -72,15 +88,13 @@ impl Default for DiLoCo {
             },
             resources: DiLoCoResources {
                 num_workers: 2,
-                worker: vec![
-                    Requirement::Resource(Resources::Gpu { min: 10.0 }),
-                    Requirement::Resource(Resources::Cpu { min: 1.0 }),
-                    Requirement::Resource(Resources::Memory { min: 1.0 }),
-                ],
-                parameter_server: vec![
-                    Requirement::Resource(Resources::Cpu { min: 1.0 }),
-                    Requirement::Resource(Resources::Memory { min: 1.0 }),
-                ],
+                worker: Resources::default()
+                    .with_gpu(10.0)
+                    .with_cpu(1.0)
+                    .with_memory(1.0),
+                parameter_server: Resources::default().with_cpu(1.0).with_memory(1.0),
+                worker_price: PriceRange::default(),
+                parameter_server_price: PriceRange::default(),
             },
         }
     }
@@ -154,6 +168,10 @@ pub struct DiLoCoRounds {
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct DiLoCoResources {
     pub num_workers: u32,
-    pub worker: Vec<Requirement>,
-    pub parameter_server: Vec<Requirement>,
+    pub worker: Resources,
+    pub parameter_server: Resources,
+    #[serde(default)]
+    pub worker_price: PriceRange,
+    #[serde(default)]
+    pub parameter_server_price: PriceRange,
 }

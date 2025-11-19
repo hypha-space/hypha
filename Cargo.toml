@@ -11,16 +11,15 @@ members = [
     "crates/scheduler",
     "crates/worker",
     "crates/telemetry",
+    "crates/resources",
 ]
 default-members = [
     "crates/certutil",
-    "crates/config",
     "crates/data",
     "crates/gateway",
-    "crates/network",
     "crates/scheduler",
     "crates/worker",
-    "crates/telemetry",
+
 ]
 
 [workspace.package]
@@ -43,6 +42,7 @@ hypha-leases = { path = "crates/leases" }
 hypha-messages = { path = "crates/messages" }
 hypha-network = { path = "crates/network" }
 hypha-telemetry = { path = "crates/telemetry" }
+hypha-resources = { path = "crates/resources" }
 libp2p = { version = "0.56.0", features = [
     "cbor",
     "dcutr",
