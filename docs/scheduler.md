@@ -54,7 +54,7 @@ Scheduler configuration uses TOML format with network, security, and job specifi
 
 **AIM Integration**:
 
-- `status_bridge`: Endpoint for AIM metrics bridge (e.g., `0.0.0.0:61000`)
+- `status_bridge`: Endpoint for AIM metrics bridge (e.g., `127.0.0.1:61000`)
 
 ### Job Specification
 

@@ -253,7 +253,7 @@ After that, configure the scheduler to expose metrics for AIM:
 
 ```toml
 [scheduler]
-status_bridge = "0.0.0.0:61000"
+status_bridge = "127.0.0.1:61000"
 ```
 
 Once set up and running, **access dashboard** at `http://localhost:43800` (default) to view:
