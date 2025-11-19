@@ -16,6 +16,7 @@ Make sure you have the following installed:
 | ----------- | ------- | ---------------- | ------------------------------------------------------------------------------------------------------------------ |
 | uv          | ≥ 0.9.7 | `uv --version`   | [https://docs.astral.sh/uv/getting-started/installation/](https://docs.astral.sh/uv/getting-started/installation/) |
 | git         | any     | `git --version`  | https://git-scm.com/book/en/v2/Getting-Started-Installing-Git                                                      |
+| git-lfs     | any     | `git-lfs --version` | https://git-lfs.github.com/                                                                                       |
 | curl        | any     | `curl --version` | https://curl.se/docs/install.html                                                                                  |
 
 Also if you want to build from source, you need your rust toolchain.
@@ -80,6 +81,10 @@ Generate the necessary configuration using `hypha-scheduler init`:
 ```bash
 hypha-scheduler init -n scheduler -o scheduler-config.toml --exclude-cidr 192.0.2.0/24 --gateway /ip4/127.0.0.1/tcp/8080
 ```
+
+##### Send metrics to AIM
+
+If you want the Scheduler to send metrics to AIM, you can download and set up our AIM Driver Connector from our [releases page](https://github.com/hypha-space/hypha/releases). Please follow its instructions to set up the connector and scheduler.
 
 #### Worker Nodes
 

@@ -24,7 +24,6 @@ The scheduler serves as the coordination point for distributed training:
 
 **Metrics Aggregation**: Optionally forwarding training metrics to AIM for visualization and analysis.
 
-
 ## Installation
 
 Install the data node binary following the [Installation](installation.md) guide.
@@ -36,28 +35,33 @@ Scheduler configuration uses TOML format with network, security, and job specifi
 ### Network and Security Settings
 
 **TLS Certificates** (required for mTLS):
+
 - `cert_pem`: Path to scheduler's certificate (PEM format)
 - `key_pem`: Path to scheduler's private key (PKCS#8 format)
 - `trust_pem`: Path to CA certificate bundle
 - `crls_pem`: Optional certificate revocation list
 
 **Network Addresses**:
+
 - `gateway_addresses`: List of gateway nodes for bootstrap (Multiaddr format)
 - `listen_addresses`: Local addresses to bind (e.g., `/ip4/0.0.0.0/tcp/0`)
 - `external_addresses`: Publicly reachable addresses to advertise
 - `exclude_cidr`: CIDR ranges to exclude from peer discovery (defaults to reserved ranges)
 
 **Relay Configuration**:
+
 - `relay_circuit`: Enable relay via gateways (default: `true`)
 
 **AIM Integration**:
-- `status_bridge`: Endpoint for AIM metrics bridge (e.g., `0.0.0.0:61000`)
+
+- `status_bridge`: Endpoint for AIM metrics bridge (e.g., `127.0.0.1:61000`)
 
 ### Job Specification
 
 The `[scheduler.job]` section defines the training job:
 
 **Model Configuration**:
+
 ```toml
 [scheduler.job.model]
 repository = "owner/repo"                  # HuggingFace repository
@@ -68,6 +72,7 @@ type = "vision-classification"             # Model type
 ```
 
 Supported model types:
+
 - `vision-classification`: Image classification models (AutoModelForImageClassification)
 - `causal-lm`: Causal language models (AutoModelForCausalLM)
 - `torch`: Generic PyTorch models
@@ -89,6 +94,7 @@ dataset = "imagenet"  # Name advertised by data nodes
 ```
 
 **Inner Optimizer (AdamW)**:
+
 ```toml
 [scheduler.job.inner_optimizer]
 learning_rate = 0.001
@@ -97,6 +103,7 @@ learning_rate = 0.001
 ```
 
 **Outer Optimizer (Nesterov Momentum)**:
+
 ```toml
 [scheduler.job.outer_optimizer]
 learning_rate = 0.7
@@ -104,6 +111,7 @@ momentum = 0.9
 ```
 
 **Resource Requirements**:
+
 ```toml
 [scheduler.job.resources]
 num_workers = 4
@@ -134,6 +142,7 @@ min = 16.0
 [[scheduler.job.resources.parameter_server]]
 kind = "parameter-server"
 ```
+
 Each `[[...worker]]` or `[[...parameter_server]]` table serializes directly into a woreker`Requirement`.
 
 **Price Ranges**: Configure bid/maximum pairs for workers and parameter servers to express how far the scheduler is willing to counter-offer without revealing the cap to workers:
@@ -179,10 +188,9 @@ hypha-scheduler run --config /etc/hypha/scheduler.toml
 
 Environment variables take precedence over configuration file settings, allowing flexible per-deployment customization.
 
-
 ## AIM Integration
 
-AIM (Aim Integration Module) provides visualization and tracking for training metrics.
+AIM (Aim Integration Module) provides visualization and tracking for training metrics. If you want the Scheduler to send metrics to AIM, you can download and set up our AIM Driver Connector from our [releases page](https://github.com/hypha-space/hypha/releases). Please follow its instructions to set up the connector and scheduler.
 
 ### Configuring Status Bridge
 
@@ -192,11 +200,4 @@ Set `status_bridge` to the HTTP endpoint that should receive worker metrics:
 status_bridge = "aim-bridge.internal:61000"
 ```
 
-The scheduler **pushes** JSON payloads (`POST http://<status_bridge>/status`) using the configured address. Point this at the provided AIM bridge (`drivers/aim-driver`) or any service that can accept the `AimMetrics` schema. The scheduler itself does not start an HTTP listener.
-
-
-### Connecting to AIM Dashboard
-
-1. Start an AIM server (`aim server --host 0.0.0.0 --port 43800`).
-2. Run the AIM bridge so it listens on `status_bridge` and forwards incoming metrics to AIM.
-3. Visit `http://localhost:43800` to explore runs (loss curves, throughput, worker utilization, etc.).
+The scheduler **pushes** JSON payloads (`POST http://<status_bridge>/status`) using the configured address. Point this at the provided AIM bridge or any service that can accept the `AimMetrics` schema. The scheduler itself does not start an HTTP listener.

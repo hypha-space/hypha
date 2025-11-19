@@ -9,6 +9,7 @@ DiLoCo is an approach that enables efficient training across geographically dist
 ### What You'll Do
 
 To run a training job, you will:
+
 1. Start a **data node** to serve your dataset
 2. Launch **training workers** that perform local optimization steps
 3. Start a **parameter server worker** that aggregates updates
@@ -17,6 +18,7 @@ To run a training job, you will:
 ### How It Works
 
 DiLoCo uses a two-level optimization strategy:
+
 - **Inner loop (local)**: Each worker performs k local training steps using standard gradient descent (AdamW)
 - **Outer loop (global)**: A parameter server aggregates pseudo-gradients (weight deltas) from all workers and applies Nesterov momentum to update the global model
 
@@ -29,22 +31,26 @@ Understanding each component's role helps diagnose issues and optimize performan
 ### Components
 
 **Data Node** ([docs/data.md](data.md))
+
 - Serves dataset slices in SafeTensors format
 - Announces dataset availability via DHT provider records
 - Streams data to workers on demand
 
 **Training Workers** ([docs/worker.md](worker.md))
+
 - Run the `diloco-transformer` executor
 - Perform k local optimization steps
 - Report metrics and send pseudo-gradients to parameter server
 
 **Parameter Server Worker** ([docs/worker.md](worker.md))
+
 - Runs the `parameter-server` executor
 - Aggregates pseudo-gradients from training workers
 - Applies outer optimizer (Nesterov momentum)
 - Broadcasts updated model weights
 
 **Scheduler** ([docs/scheduler.md](scheduler.md))
+
 - Advertises job requirements via pub/sub
 - Matches workers to tasks based on resources and pricing
 - Coordinates synchronization timing
@@ -224,6 +230,7 @@ gpu_type = "nvidia"  # or "amd", "any"
 ### Model Types
 
 **Vision Classification**:
+
 ```toml
 [scheduler.job.model]
 repository = "microsoft/resnet-50"
@@ -240,19 +247,17 @@ See [docs/scheduler.md](scheduler.md) for complete configuration reference.
 
 ### AIM Integration
 
-Configure the scheduler to expose metrics for AIM:
+If you want the Scheduler to send metrics to AIM, you can download and set up our AIM Driver Connector from our [releases page](https://github.com/hypha-space/hypha/releases). Please follow its instructions to set up the connector and scheduler.
+
+After that, configure the scheduler to expose metrics for AIM:
 
 ```toml
 [scheduler]
-status_bridge = "0.0.0.0:61000"
+status_bridge = "127.0.0.1:61000"
 ```
 
-**Start AIM server**:
-```bash
-aim server --host 0.0.0.0 --port 43800
-```
+Once set up and running, **access dashboard** at `http://localhost:43800` (default) to view:
 
-**Access dashboard** at `http://localhost:43800` to view:
 - Loss curves over time
 - Throughput (samples/second)
 - Synchronization frequency
@@ -286,6 +291,7 @@ send_to_parameter_server(Δθ)
 ```
 
 **Key Points**:
+
 - Each worker maintains its own model copy
 - Inner optimizer (AdamW) applies standard gradient descent
 - Workers process different data slices (data-parallel)
@@ -314,6 +320,7 @@ broadcast_to_workers(θ_global)
 ```
 
 **Key Points**:
+
 - Simple averaging provides unweighted aggregation
 - Nesterov momentum accelerates convergence
 - Updated model becomes starting point for next inner loop
@@ -354,6 +361,7 @@ def should_schedule_sync(workers, target_remaining):
 ```
 
 **Benefits**:
+
 - Minimizes idle time for fast workers
 - Better utilization of heterogeneous resources
 - Automatic adaptation to changing conditions
