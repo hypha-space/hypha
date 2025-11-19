@@ -470,3 +470,282 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_resources() -> Resources {
+        Resources::new()
+            .with_cpu(4.0)
+            .with_memory(32.0)
+            .with_gpu(1.0)
+            .with_storage(250.0)
+    }
+
+    mod resources {
+        use super::*;
+
+        #[test]
+        fn default_is_zeroed() {
+            let resources = Resources::new();
+
+            assert_eq!(resources.cpu(), 0.0);
+            assert_eq!(resources.memory(), 0.0);
+            assert_eq!(resources.gpu(), 0.0);
+            assert_eq!(resources.storage(), 0.0);
+        }
+
+        mod setters {
+            use super::*;
+
+            #[test]
+            fn with_cpu_updates_cpu_only() {
+                let resources = Resources::new().with_cpu(4.5);
+
+                assert_eq!(resources.cpu(), 4.5);
+                assert_eq!(resources.memory(), 0.0);
+                assert_eq!(resources.gpu(), 0.0);
+                assert_eq!(resources.storage(), 0.0);
+            }
+
+            #[test]
+            fn with_memory_updates_memory_only() {
+                let resources = Resources::new().with_memory(64.0);
+
+                assert_eq!(resources.cpu(), 0.0);
+                assert_eq!(resources.memory(), 64.0);
+                assert_eq!(resources.gpu(), 0.0);
+                assert_eq!(resources.storage(), 0.0);
+            }
+
+            #[test]
+            fn with_gpu_updates_gpu_only() {
+                let resources = Resources::new().with_gpu(2.0);
+
+                assert_eq!(resources.cpu(), 0.0);
+                assert_eq!(resources.memory(), 0.0);
+                assert_eq!(resources.gpu(), 2.0);
+                assert_eq!(resources.storage(), 0.0);
+            }
+
+            #[test]
+            fn with_storage_updates_storage_only() {
+                let resources = Resources::new().with_storage(512.0);
+
+                assert_eq!(resources.cpu(), 0.0);
+                assert_eq!(resources.memory(), 0.0);
+                assert_eq!(resources.gpu(), 0.0);
+                assert_eq!(resources.storage(), 512.0);
+            }
+        }
+
+        mod arithmetic {
+            use super::*;
+
+            #[test]
+            fn add_combines_each_field() {
+                let base = sample_resources();
+                let increment = Resources::new()
+                    .with_cpu(1.0)
+                    .with_memory(2.0)
+                    .with_gpu(3.0)
+                    .with_storage(4.0);
+
+                let summed = base + increment;
+                assert_eq!(summed.cpu(), 5.0);
+                assert_eq!(summed.memory(), 34.0);
+                assert_eq!(summed.gpu(), 4.0);
+                assert_eq!(summed.storage(), 254.0);
+            }
+
+            #[test]
+            fn add_assign_combines_each_field() {
+                let base = sample_resources();
+                let increment = Resources::new()
+                    .with_cpu(1.0)
+                    .with_memory(2.0)
+                    .with_gpu(3.0)
+                    .with_storage(4.0);
+
+                let mut assign_target = base;
+                assign_target += increment;
+                assert_eq!(assign_target.cpu(), 5.0);
+                assert_eq!(assign_target.memory(), 34.0);
+                assert_eq!(assign_target.gpu(), 4.0);
+                assert_eq!(assign_target.storage(), 254.0);
+            }
+
+            #[test]
+            fn sub_reduces_each_field() {
+                let base = sample_resources();
+                let decrement = Resources::new()
+                    .with_cpu(2.0)
+                    .with_memory(8.0)
+                    .with_gpu(0.25)
+                    .with_storage(50.0);
+
+                let diff = base - decrement;
+                assert_eq!(diff.cpu(), 2.0);
+                assert_eq!(diff.memory(), 24.0);
+                assert!((diff.gpu() - 0.75).abs() < f64::EPSILON);
+                assert_eq!(diff.storage(), 200.0);
+            }
+
+            #[test]
+            fn sub_assign_reduces_each_field() {
+                let base = sample_resources();
+                let decrement = Resources::new()
+                    .with_cpu(2.0)
+                    .with_memory(8.0)
+                    .with_gpu(0.25)
+                    .with_storage(50.0);
+
+                let mut assign_target = base;
+                assign_target -= decrement;
+                assert_eq!(assign_target.cpu(), 2.0);
+                assert_eq!(assign_target.memory(), 24.0);
+                assert!((assign_target.gpu() - 0.75).abs() < f64::EPSILON);
+                assert_eq!(assign_target.storage(), 200.0);
+            }
+        }
+
+        mod comparisons {
+            use std::cmp::Ordering;
+
+            use super::*;
+
+            #[test]
+            fn partial_eq_respects_each_field() {
+                let base = sample_resources();
+                let mut changed = base;
+                changed = changed.with_cpu(5.0);
+
+                assert_eq!(base, sample_resources());
+                assert_ne!(base, changed);
+            }
+
+            #[test]
+            fn partial_cmp_equal_returns_equal() {
+                let base = sample_resources();
+
+                assert_eq!(base.partial_cmp(&base), Some(Ordering::Equal));
+            }
+
+            #[test]
+            fn partial_cmp_smaller_returns_less() {
+                let base = sample_resources();
+                let smaller = Resources::new()
+                    .with_cpu(3.0)
+                    .with_memory(16.0)
+                    .with_gpu(0.5)
+                    .with_storage(125.0);
+
+                assert_eq!(smaller.partial_cmp(&base), Some(Ordering::Less));
+            }
+
+            #[test]
+            fn partial_cmp_larger_returns_greater() {
+                let base = sample_resources();
+                let larger = Resources::new()
+                    .with_cpu(5.0)
+                    .with_memory(64.0)
+                    .with_gpu(2.0)
+                    .with_storage(500.0);
+
+                assert_eq!(larger.partial_cmp(&base), Some(Ordering::Greater));
+            }
+
+            #[test]
+            fn partial_cmp_conflicting_returns_none() {
+                let base = sample_resources();
+                let conflicting = Resources::new()
+                    .with_cpu(5.0)
+                    .with_memory(16.0)
+                    .with_gpu(2.0)
+                    .with_storage(125.0);
+
+                assert_eq!(base.partial_cmp(&conflicting), None);
+            }
+
+            #[test]
+            fn partial_cmp_with_nan_returns_none() {
+                let base = sample_resources();
+                let mut with_nan = base;
+                with_nan = with_nan.with_gpu(f64::NAN);
+
+                assert_eq!(with_nan.partial_cmp(&base), None);
+            }
+        }
+
+        mod iteration {
+            use super::*;
+
+            #[test]
+            fn sum_accumulates_owned_and_borrowed_iterators() {
+                let resources = [
+                    Resources::new().with_cpu(1.0).with_memory(2.0),
+                    Resources::new()
+                        .with_cpu(3.0)
+                        .with_memory(4.0)
+                        .with_gpu(1.0)
+                        .with_storage(10.0),
+                ];
+
+                let owned_sum: Resources = resources.into_iter().sum();
+                assert_eq!(owned_sum.cpu(), 4.0);
+                assert_eq!(owned_sum.memory(), 6.0);
+                assert_eq!(owned_sum.gpu(), 1.0);
+                assert_eq!(owned_sum.storage(), 10.0);
+
+                let borrowed_sum: Resources = resources.iter().sum();
+                assert_eq!(borrowed_sum.cpu(), 4.0);
+                assert_eq!(borrowed_sum.memory(), 6.0);
+                assert_eq!(borrowed_sum.gpu(), 1.0);
+                assert_eq!(borrowed_sum.storage(), 10.0);
+            }
+        }
+    }
+
+    mod weighted_evaluator {
+        use super::*;
+
+        #[test]
+        fn scrores_price_per_weighted_unit() {
+            let evaluator = WeightedResourceEvaluator {
+                cpu: 2.0,
+                gpu: 1.0,
+                memory: 0.5,
+                storage: 0.0,
+            };
+            let resources = Resources::new()
+                .with_cpu(4.0)
+                .with_gpu(2.0)
+                .with_memory(8.0);
+
+            let weight_units = 2.0 * 4.0 + 1.0 * 2.0 + 0.5 * 8.0;
+            let expected = 10.0 / weight_units;
+            assert_eq!(evaluator.score(10.0, &resources), expected);
+        }
+
+        #[test]
+        fn zero_or_negative_weight_units_returns_zero() {
+            let evaluator = WeightedResourceEvaluator {
+                cpu: 0.0,
+                gpu: 0.0,
+                memory: 0.0,
+                storage: 0.0,
+            };
+            let resources = sample_resources();
+            assert_eq!(evaluator.score(10.0, &resources), 0.0);
+
+            let evaluator = WeightedResourceEvaluator {
+                cpu: -1.0,
+                gpu: 0.0,
+                memory: 0.0,
+                storage: 0.0,
+            };
+            assert_eq!(evaluator.score(10.0, &resources), 0.0);
+        }
+    }
+}
