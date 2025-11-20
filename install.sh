@@ -22,6 +22,7 @@ set -u
 APP_NAME="hypha"
 VERSION=""
 BINARIES="hypha-gateway hypha-worker hypha-data hypha-scheduler hypha-certutil"
+BINARIES_TO_INSTALL=""
 
 if [ -n "${HYPHA_INSTALLER_BASE_URL:-}" ]; then
     INSTALLER_BASE_URL="$HYPHA_INSTALLER_BASE_URL"
@@ -57,10 +58,14 @@ USAGE:
     install.sh [OPTIONS]
 
 OPTIONS:
-    -v, --verbose          Enable verbose output
-    -q, --quiet            Disable progress output
-        --no-modify-path   Don't update shell profiles
-    -h, --help             Print this help
+    -v, --verbose              Enable verbose output
+    -q, --quiet                Disable progress output
+        --no-modify-path       Don't update shell profiles
+        --binaries <BINARIES>  Comma-separated list of binaries to install
+                               (default: all)
+                               Available: hypha-gateway, hypha-worker, hypha-data,
+                               hypha-scheduler, hypha-certutil
+    -h, --help                 Print this help
 EOF
 }
 
@@ -379,6 +384,35 @@ check_for_shadowed_bins() {
     echo "$_shadowed"
 }
 
+validate_binaries() {
+    local _requested="$1"
+    local _available="$2"
+    local _invalid=""
+
+    # Convert comma-separated list to space-separated
+    _requested="$(echo "$_requested" | tr ',' ' ')"
+
+    for _bin in $_requested; do
+        local _found=0
+        for _available_bin in $_available; do
+            if [ "$_bin" = "$_available_bin" ]; then
+                _found=1
+                break
+            fi
+        done
+        if [ "$_found" = "0" ]; then
+            _invalid="$_invalid $_bin"
+        fi
+    done
+
+    if [ -n "$_invalid" ]; then
+        err "invalid binary names:$_invalid
+Available binaries: $_available"
+    fi
+
+    echo "$_requested"
+}
+
 get_architecture() {
     local _ostype
     local _cputype
@@ -561,6 +595,13 @@ download_binary_and_run_installer() {
             --no-modify-path)
                 NO_MODIFY_PATH=1
                 ;;
+            --binaries)
+                if [ $# -lt 2 ]; then
+                    err "--binaries requires an argument"
+                fi
+                BINARIES_TO_INSTALL="$2"
+                shift
+                ;;
             *)
                 err "unknown option $1"
                 ;;
@@ -570,6 +611,18 @@ download_binary_and_run_installer() {
 
     if [ -z "$VERSION" ]; then
         err "installer version missing; use the script bundled with an official release"
+    fi
+
+    # Validate and set binaries to install
+    if [ -z "$BINARIES_TO_INSTALL" ]; then
+        BINARIES_TO_INSTALL="$BINARIES"
+        say_verbose "installing all binaries (default)"
+    elif [ "$BINARIES_TO_INSTALL" = "all" ]; then
+        BINARIES_TO_INSTALL="$BINARIES"
+        say_verbose "installing all binaries"
+    else
+        BINARIES_TO_INSTALL="$(validate_binaries "$BINARIES_TO_INSTALL" "$BINARIES")"
+        say_verbose "installing selected binaries: $BINARIES_TO_INSTALL"
     fi
 
     if [ -n "${HYPHA_DOWNLOAD_URL:-}" ]; then
@@ -586,13 +639,13 @@ download_binary_and_run_installer() {
     local _dir
     _dir="$(ensure mktemp -d)"
 
-    for _bin in $BINARIES; do
+    for _bin in $BINARIES_TO_INSTALL; do
         local _artifact="$_bin-$_target"
         local _dest="$_dir/$_bin"
         download_artifact "$_artifact" "$_dest"
     done
 
-    install "$_dir" "$BINARIES" "$_target"
+    install "$_dir" "$BINARIES_TO_INSTALL" "$_target"
     local _retval=$?
     ignore rm -rf "$_dir"
     return "$_retval"
