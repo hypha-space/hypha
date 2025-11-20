@@ -79,6 +79,7 @@ impl Default for DiLoCo {
             rounds: DiLoCoRounds {
                 update_rounds: 100,
                 avg_samples_between_updates: 1200,
+                max_batch_size: Some(600),
             },
             inner_optimizer: Adam {
                 learning_rate: 1e-3,
@@ -164,6 +165,7 @@ pub struct DataNodeSource {
 pub struct DiLoCoRounds {
     pub avg_samples_between_updates: u32,
     pub update_rounds: u32,
+    pub max_batch_size: Option<u32>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]

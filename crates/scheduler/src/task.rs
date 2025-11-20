@@ -20,7 +20,7 @@ use crate::{
 pub struct Task {
     id: Uuid,
     status_rx: mpsc::Receiver<(PeerId, JobStatus)>,
-    status_handler: JoinHandle<()>,
+    pub status_handler: JoinHandle<()>,
 }
 
 impl Task {

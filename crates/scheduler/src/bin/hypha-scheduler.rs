@@ -286,32 +286,23 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
         && allocated_parameter_servers.len() == 1
     {
         let job_id = Uuid::new_v4();
-        let batch_sizes = [40, 60];
 
-        let worker1 = &allocated_workers[0];
-        let worker2 = &allocated_workers[1];
+        // Control the max allowed batch size.
+        let max_batch_size = match diloco_config.rounds.max_batch_size {
+            Some(bs) => bs as f64,
+            _ => f64::MAX,
+        };
 
         let worker_ids = allocated_workers
             .iter()
             .map(|w| w.peer_id())
             .collect::<Vec<_>>();
 
-        // TODO compute true batch sizes
         let run_tracker = Arc::new(Mutex::new(ProgressTracker::<RunningMean>::new(
             allocated_parameter_servers[0].peer_id(),
             diloco_config.rounds.avg_samples_between_updates,
             diloco_config.rounds.update_rounds,
         )));
-        run_tracker
-            .lock()
-            .await
-            .worker_tracker
-            .add_worker(allocated_workers[0].peer_id(), batch_sizes[0]);
-        run_tracker
-            .lock()
-            .await
-            .worker_tracker
-            .add_worker(allocated_workers[1].peer_id(), batch_sizes[1]);
 
         let (metrics_rx, batch_scheduler_handle) = BatchScheduler::run::<
             RunningMean,
@@ -324,55 +315,42 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
 
         let parameter_server = &allocated_parameter_servers[0];
 
-        let _w1_task = Task::try_new(
-            network.clone(),
-            JobSpec {
-                job_id,
-                executor: TrainExecutorDescriptor::new(TRAIN_EXECUTOR_NAME)
-                    .into_executor(TrainExecutorConfig {
-                        model: diloco_config.model.clone().into(),
-                        data: Fetch::scheduler(peer_id, dataset.to_string()),
-                        updates: Send::peers(
-                            vec![parameter_server.peer_id()],
-                            SelectionStrategy::All,
-                        ),
-                        results: Receive::peers(vec![parameter_server.peer_id()]),
-                        optimizer: diloco_config.inner_optimizer.clone(),
-                        batch_size: batch_sizes[0],
-                        preprocessor: diloco_config.preprocessor.clone().map(|p| p.into()),
-                        scheduler: None,
-                    })
-                    .into(),
-            },
-            &[worker1],
-        )
-        .await
-        .into_diagnostic()?;
-
-        let _w2_task = Task::try_new(
-            network.clone(),
-            JobSpec {
-                job_id,
-                executor: TrainExecutorDescriptor::new(TRAIN_EXECUTOR_NAME)
-                    .into_executor(TrainExecutorConfig {
-                        model: diloco_config.model.clone().into(),
-                        data: Fetch::scheduler(peer_id, dataset.to_string()),
-                        updates: Send::peers(
-                            vec![parameter_server.peer_id()],
-                            SelectionStrategy::All,
-                        ),
-                        results: Receive::peers(vec![parameter_server.peer_id()]),
-                        optimizer: diloco_config.inner_optimizer.clone(),
-                        batch_size: batch_sizes[1],
-                        preprocessor: diloco_config.preprocessor.clone().map(|p| p.into()),
-                        scheduler: None,
-                    })
-                    .into(),
-            },
-            &[worker2],
-        )
-        .await
-        .into_diagnostic()?;
+        let mut worker_tasks: Vec<Task> = Vec::with_capacity(allocated_workers.len());
+        for w in allocated_workers.iter() {
+            let batch_size = (w.resources().gpu() / worker_spec.resources.gpu())
+                .floor()
+                .min(max_batch_size) as u32;
+            run_tracker
+                .lock()
+                .await
+                .worker_tracker
+                .add_worker(w.peer_id(), batch_size);
+            let worker_task = Task::try_new(
+                network.clone(),
+                JobSpec {
+                    job_id,
+                    executor: TrainExecutorDescriptor::new(TRAIN_EXECUTOR_NAME)
+                        .into_executor(TrainExecutorConfig {
+                            model: diloco_config.model.clone().into(),
+                            data: Fetch::scheduler(peer_id, dataset.to_string()),
+                            updates: Send::peers(
+                                vec![parameter_server.peer_id()],
+                                SelectionStrategy::All,
+                            ),
+                            results: Receive::peers(vec![parameter_server.peer_id()]),
+                            optimizer: diloco_config.inner_optimizer.clone(),
+                            batch_size,
+                            preprocessor: diloco_config.preprocessor.clone().map(|p| p.into()),
+                            scheduler: None,
+                        })
+                        .into(),
+                },
+                &[w],
+            )
+            .await
+            .into_diagnostic()?;
+            worker_tasks.push(worker_task);
+        }
 
         let _parameter_server_task = Task::try_new(
             network.clone(),

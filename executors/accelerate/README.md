@@ -90,6 +90,20 @@ Accelerate requires a configuration file that describes your training environmen
 
 Refer to the [Accelerate CLI documentation](https://huggingface.co/docs/accelerate/en/package_reference/cli#accelerate-config) for guidance on creating configuration files for different hardware setups.
 
+### Configure System Resources
+
+The worker needs to know its compute capabilities in order to only participate in Jobs that don't exceed its limits and for the scheduler to decide on an optimal `batch size`. Thus, ensure that the announced resources in
+
+```toml
+[resources]
+cpu = 1
+memory = 8
+storage = 20
+gpu = 24
+```
+
+match the system's capabilities.
+
 ## Next Steps
 
 Once you've configured your worker with the *accelerate* executor:
