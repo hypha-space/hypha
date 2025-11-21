@@ -1,3 +1,8 @@
++++
+title = "Scheduler"
+description = "Covers scheduler duties, configuration, and job specification fields for orchestrating distributed training."
++++
+
 # Scheduler
 
 The scheduler orchestrates distributed training jobs by coordinating workers, managing resource allocation, and controlling DiLoCo synchronization. This section covers scheduler configuration, deployment, and operational details.

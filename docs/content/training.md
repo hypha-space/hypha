@@ -1,3 +1,8 @@
++++
+title = "DiLoCo Training"
+description = "Walkthrough of running Hypha's DiLoCo training workflow, explaining component roles and execution flow."
++++
+
 # DiLoCo Training
 
 This guide explains how to set up and run distributed training in Hypha using the DiLoCo (Distributed Low-Communication) based algorithm. It covers the training workflow andconfiguration. For initial setup, see [Installation](installation.md) and [Quick Start](quick-start.md).

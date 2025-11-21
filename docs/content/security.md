@@ -1,3 +1,8 @@
++++
+title = "Security"
+description = "Outlines Hypha's mTLS design, certificate hierarchy, and node authentication flow."
++++
+
 # Security
 
 Hypha implements mutual TLS (mTLS) authentication and certificate-based access control.

@@ -1,3 +1,8 @@
++++
+title = "hypha-data CLI"
+description = "Auto-generated reference for the hypha-data command, covering init, probe, and run modes."
++++
+
 <!-- NOTE: Auto-generated. Do not edit manually. -->
 
 # hypha-data CLI Reference

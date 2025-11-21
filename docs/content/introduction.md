@@ -1,3 +1,8 @@
++++
+title = "Introduction"
+description = "High-level overview of Hypha's goals, capabilities, and primary use cases for decentralized ML."
++++
+
 # Introduction
 
 ## What is Hypha?

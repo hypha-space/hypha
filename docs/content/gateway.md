@@ -1,3 +1,8 @@
++++
+title = "Gateway"
+description = "Describes gateway responsibilities plus configuration, telemetry, and protocol participation guidance."
++++
+
 # Gateway
 
 Gateway nodes provide stable entry points for the Hypha network. They enable peer discovery, facilitate NAT traversal, and anchor the distributed hash table. This section covers gateway deployment and configuration.

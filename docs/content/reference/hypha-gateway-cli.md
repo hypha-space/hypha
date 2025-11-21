@@ -1,3 +1,8 @@
++++
+title = "hypha-gateway CLI"
+description = "Auto-generated reference for the hypha-gateway command, including init, probe, and run usage."
++++
+
 <!-- NOTE: Auto-generated. Do not edit manually. -->
 
 # hypha-gateway CLI Reference

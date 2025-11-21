@@ -1,3 +1,8 @@
++++
+title = "Data Node"
+description = "Documents how data nodes store, announce, and serve SafeTensors datasets along with preparation guidance."
++++
+
 # Data Node
 
 Data nodes store prepared datasets and serve slices to workers on demand. They announce available datasets via the DHT and stream data efficiently using the SafeTensors format. This section covers data node deployment, dataset preparation, and configuration.

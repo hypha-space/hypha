@@ -1,55 +1,60 @@
++++
+title = "hypha-scheduler CLI"
+description = "Auto-generated reference for the hypha-scheduler command, its init/probe/run options, and flags."
++++
+
 <!-- NOTE: Auto-generated. Do not edit manually. -->
 
-# hypha-worker CLI Reference
+# hypha-scheduler CLI Reference
 
-This document contains the help content for the `hypha-worker` command-line program.
+This document contains the help content for the `hypha-scheduler` command-line program.
 
 **Command Overview:**
 
-* [`hypha-worker`↴](#hypha-worker)
-* [`hypha-worker init`↴](#hypha-worker-init)
-* [`hypha-worker probe`↴](#hypha-worker-probe)
-* [`hypha-worker run`↴](#hypha-worker-run)
+* [`hypha-scheduler`↴](#hypha-scheduler)
+* [`hypha-scheduler init`↴](#hypha-scheduler-init)
+* [`hypha-scheduler probe`↴](#hypha-scheduler-probe)
+* [`hypha-scheduler run`↴](#hypha-scheduler-run)
 
-## `hypha-worker`
+## `hypha-scheduler`
 
-The Hypha Worker executes training and inference jobs assigned by schedulers via
-the Hypha network.
+The Hypha Scheduler discovers workers via the Hypha network and orchestrates
+distributed ML training jobs.
 
 
-**Usage:** `hypha-worker <COMMAND>`
+**Usage:** `hypha-scheduler <COMMAND>`
 
 ###### **Subcommands:**
 
 * `init` — Generate a default configuration file
 * `probe` — Check if a remote peer is healthy and reachable
-* `run` — Start the worker and begin accepting jobs
+* `run` — Start the scheduler and begin job orchestration
 
 
 
-## `hypha-worker init`
+## `hypha-scheduler init`
 
 Generate a default configuration file
 
-Creates a TOML configuration file with sensible defaults for job execution,
-including certificate paths, network addresses, gateway connections, and
-resource/executor settings.
+Creates a TOML configuration file with sensible defaults for job orchestration,
+including certificate paths, network addresses, gateway connections, and job settings.
 
 IMPORTANT: If the output file exists, it will be overwritten without warning.
 
 
-**Usage:** `hypha-worker init [OPTIONS]`
+**Usage:** `hypha-scheduler init [OPTIONS]`
 
 ###### **Options:**
 
 * `-o`, `--output <OUTPUT>` — Path where the configuration file will be written
 
   Default value: `config.toml`
-* `-n`, `--name <NAME>` — Name of this worker node
+* `-n`, `--name <NAME>` — Name of this scheduler node
+* `-j`, `--job <JOB>`
 
 
 
-## `hypha-worker probe`
+## `hypha-scheduler probe`
 
 Check if a remote peer is healthy and reachable
 
@@ -59,13 +64,13 @@ with code 0 if the peer is healthy, or non-zero otherwise.
 Useful for:
 * Verifying gateway connectivity before starting jobs
 * Container health checks (Docker, Kubernetes)
-* Monitoring worker availability
+* Monitoring scheduler availability
 * Deployment verification and readiness checks
 
-NOTE: It's not possible to self-probe using the same certificate used to run the worker.
+NOTE: It's not possible to self-probe using the same certificate used to run the scheduler.
 
 
-**Usage:** `hypha-worker probe [OPTIONS] <ADDRESS>`
+**Usage:** `hypha-scheduler probe [OPTIONS] <ADDRESS>`
 
 ###### **Arguments:**
 
@@ -73,7 +78,7 @@ NOTE: It's not possible to self-probe using the same certificate used to run the
 
    Examples:
      /ip4/192.168.1.100/tcp/8080/
-     /dns4/worker.example.com/tcp/443/p2p/12D3KooW...
+     /dns4/scheduler.example.com/tcp/443/p2p/12D3KooW...
 
 ###### **Options:**
 
@@ -109,15 +114,15 @@ NOTE: It's not possible to self-probe using the same certificate used to run the
 
 
 
-## `hypha-worker run`
+## `hypha-scheduler run`
 
-Start the worker and begin accepting jobs
+Start the scheduler and begin job orchestration
 
-Loads configuration, connects to gateways, advertises resources, and executes
-assigned jobs. Runs until interrupted (SIGINT/SIGTERM) with a graceful shutdown.
+Loads configuration, connects to gateways, discovers workers, and orchestrates
+training jobs. Runs until interrupted (SIGINT/SIGTERM) with a graceful shutdown.
 
 
-**Usage:** `hypha-worker run [OPTIONS]`
+**Usage:** `hypha-scheduler run [OPTIONS]`
 
 ###### **Options:**
 
@@ -127,44 +132,31 @@ assigned jobs. Runs until interrupted (SIGINT/SIGTERM) with a graceful shutdown.
 * `--gateway <GATEWAY_ADDRESSES>` — Gateway addresses to connect to (repeatable, overrides config)
 
    Gateways provide network bootstrapping, DHT access, and optional relay.
-   Must include the peer ID in the multiaddr.
 
    Examples:
-     --gateway /ip4/203.0.113.10/tcp/8080/p2p/12D3KooWAbc...
-     --gateway /dns4/gateway.hypha.example/tcp/443/p2p/12D3KooWAbc...
-   Required: connect to at least one gateway.
+     --gateway /ip4/203.0.113.10/tcp/8080/
+     --gateway /dns4/gateway.hypha.example/tcp/443/
 * `--listen <LISTEN_ADDRESSES>` — Addresses to listen on (repeatable, overrides config)
 
-   Where the worker accepts incoming connections.
+   Where the scheduler accepts incoming connections.
 
    Examples:
-     --listen /ip4/0.0.0.0/tcp/9091
-     --listen /ip4/0.0.0.0/udp/9091/quic-v1
+     --listen /ip4/0.0.0.0/tcp/9090
+     --listen /ip4/0.0.0.0/udp/9090/quic-v1
 * `--external <EXTERNAL_ADDRESSES>` — External addresses to advertise (repeatable, overrides config)
 
    Publicly reachable addresses peers should use to connect.
 
    Examples:
-     --external /ip4/203.0.113.30/tcp/9091
-     --external /dns4/worker.example.com/tcp/9091
+     --external /ip4/203.0.113.20/tcp/9090
+     --external /dns4/scheduler.example.com/tcp/9090
 * `--relay-circuit <RELAY_CIRCUIT>` — Enable relay circuit listening via gateway (overrides config)
 
    true = use relay (default), false = direct connections only.
 
   Possible values: `true`, `false`
 
-* `--socket <SOCKET_ADDRESS>` — Socket path for driver communication (overrides config)
-
-   Unix domain socket for worker-executor communication (optional).
-* `--work-dir <WORK_DIR>` — Base directory for job working directories (overrides config)
-
-   Where per-job working directories are created.
-
-   Examples:
-     --work-dir /tmp
-     --work-dir /mnt/fast-ssd/hypha
 * `--exclude-cidr <EXCLUDE_CIDR>` — CIDR ranges to exclude from DHT (repeatable, overrides config)
 
    Filters out peer addresses matching these ranges before adding to the DHT.
-
    Examples: 10.0.0.0/8, fc00::/7

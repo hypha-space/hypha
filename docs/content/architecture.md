@@ -1,3 +1,8 @@
++++
+title = "Architecture Overview"
+description = "Explains how gateways, schedulers, workers, and data nodes interact across Hypha's decentralized network."
++++
+
 # Architecture Overview
 
 Hypha's architecture combines decentralized networking with coordinated resource allocation to enable distributed machine learning at scale. This section explains how components interact and the protocols that connect them.

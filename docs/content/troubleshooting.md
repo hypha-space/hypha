@@ -1,3 +1,11 @@
++++
+title = "Troubleshooting"
+description = "Aid in resolving common issues encountered when using Hypha."
+weight = 30
+[taxonomies]
+track = ["reference"]
++++
+
 # Troubleshooting
 
 This guide addresses common issues encountered when using Hypha. Follow the steps for each error to resolve them effectively.

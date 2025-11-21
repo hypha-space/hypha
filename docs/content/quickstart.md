@@ -1,3 +1,8 @@
++++
+title = "Quick Start"
+description = "Step-by-step guide for installing Hypha, generating certificates, configuring nodes, and running a first training job."
++++
+
 # Quick Start Guide
 
 ## Overview

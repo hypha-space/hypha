@@ -1,3 +1,8 @@
++++
+title = "Installation"
+description = "Explains every supported method for installing or removing Hypha binaries and where to go next."
++++
+
 # Installing Hypha
 
 ## Installation methods

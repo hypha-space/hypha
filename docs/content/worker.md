@@ -1,3 +1,8 @@
++++
+title = "Worker Node"
+description = "Details worker responsibilities, configuration options, and executor setup for running training or inference jobs."
++++
+
 # Worker Node
 
 Worker nodes execute training and inference tasks in the Hypha network. They evaluate task advertisements, bid for work, and run jobs through configurable executors. This section covers worker deployment, configuration, and executor setup.
