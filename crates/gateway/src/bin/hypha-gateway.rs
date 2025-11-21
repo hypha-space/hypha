@@ -130,6 +130,32 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
     )
     .await;
 
+    // NOTE: Dial each gateway address (if any provided). The gateway attempts to connect
+    // to all addresses and succeeds if any are reachable. Empty gateway_addresses is valid.
+    let gateway_results = join_all(
+        config
+            .gateway_addresses()
+            .iter()
+            .map(|address| {
+                let address = address.clone();
+                let network = network.clone();
+                async move {
+                    match network.dial(address.clone()).await {
+                        Ok(peer_id) => {
+                            tracing::info!(address=%address, peer_id=%peer_id, "Connected to gateway");
+                            Ok(peer_id)
+                        }
+                        Err(e) => {
+                            tracing::warn!(address=%address, error=%e, "Failed to connect to gateway");
+                            Err(e)
+                        }
+                    }
+                }
+            })
+            .collect::<Vec<_>>(),
+    )
+    .await;
+
     let mut sigterm = signal(SignalKind::terminate()).into_diagnostic()?;
 
     tokio::select! {
