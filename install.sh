@@ -388,7 +388,7 @@ get_architecture() {
 
     case "$_ostype" in
         Linux)
-            _ostype="unknown-linux-gnu"
+            _ostype="unknown-linux"
             ;;
         Darwin)
             _ostype="apple-darwin"
@@ -415,14 +415,11 @@ get_architecture() {
 
 select_target_for_arch() {
     case "$1" in
-        x86_64-unknown-linux-gnu)
-            echo "x86_64-unknown-linux-gnu"
+        x86_64-unknown-linux)
+            echo "x86_64-unknown-linux-musl"
             ;;
         aarch64-apple-darwin)
             echo "aarch64-apple-darwin"
-            ;;
-        x86_64-apple-darwin)
-            echo "x86_64-apple-darwin"
             ;;
         *)
             err "no prebuilt binaries available for $1"
