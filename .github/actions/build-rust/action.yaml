@@ -22,6 +22,14 @@ runs:
         save-if: true
         cache-provider: "github"
 
+    - name: Install musl toolchain (Linux musl targets)
+      if: contains(inputs.target, 'musl')
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y musl-tools
+        rustup target add ${{ inputs.target }}
+
     - name: Install cargo-edit
       run: cargo install cargo-edit
       shell: bash
