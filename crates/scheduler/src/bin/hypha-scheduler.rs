@@ -240,7 +240,6 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
     // This will be fixed once we have introduced a proper worker pool with retry allocations.
     sleep(Duration::from_millis(1000)).await;
 
-    // Request multiple workers to increase chances of two distinct peers
     let allocated_parameter_servers = match allocator
         .request(
             parameter_server_spec.clone(),

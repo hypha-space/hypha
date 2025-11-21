@@ -11,7 +11,7 @@ use hypha_messages::{
     worker_offer::{self, Request as WorkerOfferRequest},
 };
 use hypha_network::{gossipsub::GossipsubInterface, request_response::RequestResponseInterfaceExt};
-use hypha_resources::WeightedResourceEvaluator;
+use hypha_resources::ResourceEvaluator;
 use libp2p::PeerId;
 use pin_project::pin_project;
 use thiserror::Error;
@@ -52,19 +52,28 @@ pub trait Allocator: Send + Sync {
 }
 
 /// Greedy allocator that selects the first worker offering the lowest price
-pub struct GreedyWorkerAllocator {
+pub struct GreedyWorkerAllocator<R>
+where
+    R: ResourceEvaluator,
+{
     network: Network,
-    evaluator: WeightedResourceEvaluator,
+    evaluator: R,
 }
 
-impl GreedyWorkerAllocator {
+impl<R> GreedyWorkerAllocator<R>
+where
+    R: ResourceEvaluator,
+{
     // TODO: Consider request specific evaluator instead of one for all worker requests
-    pub fn new(network: Network, evaluator: WeightedResourceEvaluator) -> Self {
+    pub fn new(network: Network, evaluator: R) -> Self {
         Self { network, evaluator }
     }
 }
 
-impl Allocator for GreedyWorkerAllocator {
+impl<R> Allocator for GreedyWorkerAllocator<R>
+where
+    R: ResourceEvaluator + Copy + Send + Sync,
+{
     async fn request(
         &self,
         spec: WorkerSpec,
@@ -274,7 +283,7 @@ impl From<Candidates> for Vec<(PeerId, WorkerOfferRequest)> {
 }
 
 #[pin_project]
-struct GreedyOfferAggregator<S> {
+struct GreedyOfferAggregator<S, R> {
     #[pin]
     stream: S,
     #[pin]
@@ -285,10 +294,13 @@ struct GreedyOfferAggregator<S> {
     returned: bool,
     hard_deadline: tokio::time::Instant,
     upper_price: f64,
-    evaluator: WeightedResourceEvaluator,
+    evaluator: R,
 }
 
-impl<S> GreedyOfferAggregator<S> {
+impl<S, R> GreedyOfferAggregator<S, R>
+where
+    R: ResourceEvaluator,
+{
     pub fn new(
         stream: S,
         deadline: Duration,
@@ -296,7 +308,7 @@ impl<S> GreedyOfferAggregator<S> {
         desired: usize,
         diversity: bool,
         upper_price: f64,
-        evaluator: WeightedResourceEvaluator,
+        evaluator: R,
     ) -> Self {
         let hard_deadline = tokio::time::Instant::now() + deadline;
         GreedyOfferAggregator {
@@ -313,9 +325,10 @@ impl<S> GreedyOfferAggregator<S> {
     }
 }
 
-impl<S> Stream for GreedyOfferAggregator<S>
+impl<S, R> Stream for GreedyOfferAggregator<S, R>
 where
     S: Stream<Item = (PeerId, WorkerOfferRequest)> + Unpin,
+    R: ResourceEvaluator,
 {
     type Item = Vec<(PeerId, WorkerOfferRequest)>;
 
@@ -363,7 +376,7 @@ where
                         continue;
                     }
 
-                    let score = this.evaluator.evaluate(offer.price, &offer.resources);
+                    let score = this.evaluator.score(offer.price, &offer.resources);
                     let changed = this
                         .candidates
                         .try_insert(Candidate::new(peer_id, offer, score))
