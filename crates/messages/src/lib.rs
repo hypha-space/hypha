@@ -151,9 +151,14 @@ pub mod worker_offer {
         pub timeout: SystemTime,
     }
 
-    /// Scheduler acknowledges the offer
+    /// Scheduler responds with decision on the offer
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub struct Response {}
+    pub enum Response {
+        /// Scheduler accepts the offer - worker maintains temporary lease until first renewal
+        Accepted,
+        /// Scheduler rejects the offer - worker immediately releases the lease
+        Rejected,
+    }
 }
 
 // Protocol: Renew an active lease

@@ -56,31 +56,47 @@ sequenceDiagram
     P--)W: Worker Request (via topic subscription)
     alt Worker can satisfy req. and bid >= threshold
         W->>S: Offer (at equal or adjusted price)
-        Note over S,W: There are cases in which it might<br>benificial to offer resource below the advertized price point
+        Note over W: Worker creates temporary lease (500ms)
+        alt Scheduler accepts offer
+            S->>W: Accepted
+            Note over W: Worker maintains temporary lease
+            Note over S: Scheduler immediately starts renewal loop
+        else Scheduler rejects offer
+            S->>W: Rejected
+            Note over W: Worker immediately releases lease
+        end
     else
         Note over W: Silent rejection
     end
 
-    loop Lease renewal
-        alt
-            S->>W: Renew
-            Note over S,W: A lease is excepte by renewing the temporaty lease
-
-        alt Still available
-            W->>S: Confirm
-        else
-            W->>S: Reject
-        end
-        else Non Responsive
-            S--xW:
+    loop Lease renewal (if accepted)
+        alt First renewal (within 500ms)
+            S->>W: RenewLease
+            alt Lease still valid
+                W->>S: Renewed (10s timeout)
+                Note over W: Lease extended to full duration
+            else
+                W->>S: Failed
+            end
+        else Subsequent renewals (every ~7.5s)
+            S->>W: RenewLease
+            alt Lease still valid
+                W->>S: Renewed (10s timeout)
+            else
+                W->>S: Failed
+            end
         end
     end
 ```
 
 
-Schedulers _publish_ requests, describing resource and other requirements along and an initial bid (priority/virtual price). Workers _respond_ to these requests if they meet all requirements and their local price threshold. Workers may respond with a counter-offer if they can meet the requirements at a different price.
-Workers will maintain a temporary leas for a very short time to not offer the same resource to another scheduler at the same time, but will drop the lease if the scheduler doesn't accpet it in time. Once a lease is establisched a scheduler needs to renew the lease at the set times as it will otherwise expire.
-With an active lease a scheduler may dispatch jobs to workers which they'll execute.
+Schedulers _publish_ requests, describing resource and other requirements along with an initial bid (priority/virtual price). Workers _respond_ to these requests if they meet all requirements and their local price threshold. Workers may respond with a counter-offer if they can meet the requirements at a different price.
+
+Workers create a temporary lease (500ms) when sending an offer to prevent offering the same resource to multiple schedulers simultaneously. The scheduler responds immediately with either `Accepted` or `Rejected`:
+- **Accepted**: Worker maintains the temporary lease. The scheduler immediately starts its renewal loop, and must call `RenewLease` within 500ms to extend the lease to its full duration (10s). This prevents temporary leases from blocking resources unnecessarily.
+- **Rejected**: Worker immediately releases the lease, freeing resources for other scheduling requests.
+
+Once a lease is extended via the first renewal, the scheduler continues to renew the lease periodically (at ~75% of expiration) to maintain resource availability. With an active lease, a scheduler may dispatch jobs to workers which they'll execute.
 
 
 #### Message Types
@@ -111,7 +127,7 @@ pub mod request_worker {
 
 ##### Worker offers
 
-Workers offer a lease to scheduler if the request requirements are met. The scheduler doesn't need to respond to the offer but should acknowledgement it. Offers are accepted by the scheduler via an ininital lease renew.
+Workers offer a lease to scheduler if the request requirements are met. The scheduler responds with either `Accepted` or `Rejected`. An accepted offer creates a temporary lease (500ms) that the scheduler must extend via `RenewLease` within the timeout period.
 
 ```rust
 pub mod worker_offer {
@@ -124,13 +140,22 @@ pub mod worker_offer {
         pub request_id: Uuid,
         /// Worker's _counter-offer_ price
         pub price: f64,
+        /// Resources reserved for this offer
+        pub resources: Resources,
         /// Accept the offer within the timeout otherwise it's going to expire.
         pub timeout: SystemTime,
     }
 
+    /// Scheduler responds with decision on the offer
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub struct Response {}
-}```
+    pub enum Response {
+        /// Scheduler accepts the offer - worker maintains temporary lease until first renewal
+        Accepted,
+        /// Scheduler rejects the offer - worker immediately releases the lease
+        Rejected,
+    }
+}
+```
 
 #### Lease Renewal
 

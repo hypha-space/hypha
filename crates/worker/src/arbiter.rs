@@ -411,24 +411,69 @@ where
                 let mut lease_manager = self.lease_manager.clone();
                 let network = self.network.clone();
                 self.tasks.spawn(async move {
-                    // NOTE: Send offer to peer
-                    if let Err(err) = network
+                    // NOTE: Send offer to peer and wait for Accepted/Rejected response
+                    match network
                         .request::<api::Codec>(peer_id, api::Request::WorkerOffer(offer.clone()))
                         .await
                     {
-                        tracing::error!(
-                            request_id = ?request.id,
-                            peer_id = ?peer_id,
-                            error = %err,
-                            "Failed to send WorkerOffer"
-                        );
-
-                        if let Err(e) = lease_manager.remove(&lease.id).await {
+                        Ok(api::Response::WorkerOffer(response)) => {
+                            match response {
+                                hypha_messages::worker_offer::Response::Accepted => {
+                                    tracing::info!(
+                                        request_id = ?request.id,
+                                        lease_id = ?lease.id,
+                                        peer_id = ?peer_id,
+                                        "Offer accepted by scheduler, maintaining temporary lease"
+                                    );
+                                    // Lease is maintained, scheduler will call RenewLease to extend
+                                }
+                                hypha_messages::worker_offer::Response::Rejected => {
+                                    tracing::debug!(
+                                        request_id = ?request.id,
+                                        lease_id = ?lease.id,
+                                        peer_id = ?peer_id,
+                                        "Offer rejected by scheduler, removing lease"
+                                    );
+                                    // Immediately remove the lease to free resources
+                                    if let Err(e) = lease_manager.remove(&lease.id).await {
+                                        tracing::error!(
+                                            lease_id = ?lease.id,
+                                            error = %e,
+                                            "Failed to remove rejected lease"
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        Ok(_) => {
                             tracing::error!(
-                                lease_id = ?lease.id,
-                                error = %e,
-                                "Failed to remove lease after offer send failure"
+                                request_id = ?request.id,
+                                peer_id = ?peer_id,
+                                "Received unexpected response type for WorkerOffer"
                             );
+                            if let Err(e) = lease_manager.remove(&lease.id).await {
+                                tracing::error!(
+                                    lease_id = ?lease.id,
+                                    error = %e,
+                                    "Failed to remove lease after unexpected response"
+                                );
+                            }
+                        }
+                        Err(err) => {
+                            tracing::error!(
+                                request_id = ?request.id,
+                                peer_id = ?peer_id,
+                                error = %err,
+                                "Failed to send WorkerOffer"
+                            );
+
+                            if let Err(e) = lease_manager.remove(&lease.id).await {
+                                tracing::error!(
+                                    lease_id = ?lease.id,
+                                    error = %e,
+                                    "Failed to remove lease after offer send failure"
+                                );
+                            }
                         }
                     }
                 });

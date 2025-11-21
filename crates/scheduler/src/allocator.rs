@@ -81,10 +81,12 @@ impl Allocator for GreedyWorkerAllocator {
             "Requesting worker"
         );
 
-        // Set up channel for offers
+        // Set up channel for offers with their response channels
         let (tx, rx) = mpsc::channel(100);
 
-        // NOTE: Set up a handler to receive and ack offers
+        // NOTE: Set up a handler to receive offers and respond with Accepted/Rejected
+        // The response is determined after aggregation, so we use oneshot channels to
+        // communicate the decision back to each response handler
         let offer_handle = tokio::spawn(
             self.network
                 .on::<api::Codec, _>(move |req: &api::Request| matches!(req, api::Request::WorkerOffer(worker_offer::Request { request_id, .. }) if request_id == &id))
@@ -95,10 +97,27 @@ impl Allocator for GreedyWorkerAllocator {
                     let tx = tx.clone();
                     async move {
                         if let (peer_id, api::Request::WorkerOffer(offer)) = request {
-                            let _ = tx.send((peer_id, offer)).await;
+                            // Create a oneshot channel for receiving the decision
+                            let (decision_tx, decision_rx) = tokio::sync::oneshot::channel();
+                            let _ = tx.send((peer_id, offer, decision_tx)).await;
+
+                            // Wait for the decision from the aggregator
+                            match decision_rx.await {
+                                Ok(accepted) => {
+                                    if accepted {
+                                        return api::Response::WorkerOffer(worker_offer::Response::Accepted);
+                                    } else {
+                                        return api::Response::WorkerOffer(worker_offer::Response::Rejected);
+                                    }
+                                }
+                                Err(_) => {
+                                    // Channel closed, default to rejected
+                                    return api::Response::WorkerOffer(worker_offer::Response::Rejected);
+                                }
+                            }
                         }
 
-                        api::Response::WorkerOffer(worker_offer::Response {})
+                        api::Response::WorkerOffer(worker_offer::Response::Rejected)
                     }
                 }),
         );
@@ -132,20 +151,28 @@ impl Allocator for GreedyWorkerAllocator {
             self.evaluator,
         ));
 
-        let offers = offer_aggregator.next().await;
+        let result = offer_aggregator.next().await;
 
         // NOTE: Always abort the response handler task to prevent resource leaks
         // The task should be cancelled regardless of whether we found an offer or not
         offer_handle.abort();
 
-        match offers {
-            Some(offers) if !offers.is_empty() => {
+        match result {
+            Some((offers, rejected_decisions)) if !offers.is_empty() => {
+                // NOTE: Send Rejected to all non-selected offers
+                for decision_tx in rejected_decisions {
+                    let _ = decision_tx.send(false);
+                }
+
                 // NOTE: While the worker instances created here are themselves futures,
                 // it's the caller's responsibility to await them.
                 #[allow(clippy::async_yields_async)]
-                let workers = join_all(offers.into_iter().map(|(peer_id, offer)| {
+                let workers = join_all(offers.into_iter().map(|(peer_id, offer, decision_tx)| {
                     let spec = spec.clone();
                     async move {
+                        // Send Accepted response
+                        let _ = decision_tx.send(true);
+
                         Worker::create(
                             offer.id,
                             peer_id,
@@ -161,6 +188,13 @@ impl Allocator for GreedyWorkerAllocator {
 
                 Ok(workers)
             }
+            Some((_, rejected_decisions)) => {
+                // No offers selected, reject all
+                for decision_tx in rejected_decisions {
+                    let _ = decision_tx.send(false);
+                }
+                Err(AllocatorError::NoOffersReceived)
+            }
             _ => Err(AllocatorError::NoOffersReceived),
         }
     }
@@ -174,19 +208,25 @@ enum CandidatesError {
     Full,
 }
 
-#[derive(Clone)]
 struct Candidate {
     peer_id: PeerId,
     offer: WorkerOfferRequest,
     score: f64,
+    decision_tx: tokio::sync::oneshot::Sender<bool>,
 }
 
 impl Candidate {
-    fn new(peer_id: PeerId, offer: WorkerOfferRequest, score: f64) -> Self {
+    fn new(
+        peer_id: PeerId,
+        offer: WorkerOfferRequest,
+        score: f64,
+        decision_tx: tokio::sync::oneshot::Sender<bool>,
+    ) -> Self {
         Self {
             peer_id,
             offer,
             score,
+            decision_tx,
         }
     }
 }
@@ -195,6 +235,7 @@ struct Candidates {
     offers: Vec<Candidate>,
     capacity: usize,
     diversity: bool,
+    rejected: Vec<tokio::sync::oneshot::Sender<bool>>,
 }
 
 impl Candidates {
@@ -203,6 +244,7 @@ impl Candidates {
             offers: Vec::with_capacity(capacity),
             capacity,
             diversity,
+            rejected: Vec::new(),
         }
     }
 
@@ -215,12 +257,16 @@ impl Candidates {
                 .position(|c| c.peer_id == candidate.peer_id)
             {
                 if candidate.score < self.offers[i].score {
-                    self.offers[i] = candidate;
+                    // Replace existing offer with better one, reject the old one
+                    let old = std::mem::replace(&mut self.offers[i], candidate);
+                    self.rejected.push(old.decision_tx);
                     self.sort();
 
                     return Ok(());
                 }
 
+                // Reject the new candidate
+                self.rejected.push(candidate.decision_tx);
                 return Err(CandidatesError::Rejected);
             }
         }
@@ -237,12 +283,15 @@ impl Candidates {
         if let Some(last) = self.offers.last_mut()
             && candidate.score < last.score
         {
-            *last = candidate;
+            let old = std::mem::replace(last, candidate);
+            self.rejected.push(old.decision_tx);
             self.sort();
 
             return Ok(());
         }
 
+        // Reject the candidate
+        self.rejected.push(candidate.decision_tx);
         Err(CandidatesError::Full)
     }
 
@@ -261,15 +310,19 @@ impl Candidates {
     fn offers(&self) -> &[Candidate] {
         &self.offers
     }
-}
 
-impl From<Candidates> for Vec<(PeerId, WorkerOfferRequest)> {
-    fn from(candidates: Candidates) -> Self {
-        candidates
+    fn into_results(
+        self,
+    ) -> (
+        Vec<(PeerId, WorkerOfferRequest, tokio::sync::oneshot::Sender<bool>)>,
+        Vec<tokio::sync::oneshot::Sender<bool>>,
+    ) {
+        let accepted = self
             .offers
             .into_iter()
-            .map(|candidate| (candidate.peer_id, candidate.offer))
-            .collect()
+            .map(|candidate| (candidate.peer_id, candidate.offer, candidate.decision_tx))
+            .collect();
+        (accepted, self.rejected)
     }
 }
 
@@ -315,9 +368,12 @@ impl<S> GreedyOfferAggregator<S> {
 
 impl<S> Stream for GreedyOfferAggregator<S>
 where
-    S: Stream<Item = (PeerId, WorkerOfferRequest)> + Unpin,
+    S: Stream<Item = (PeerId, WorkerOfferRequest, tokio::sync::oneshot::Sender<bool>)> + Unpin,
 {
-    type Item = Vec<(PeerId, WorkerOfferRequest)>;
+    type Item = (
+        Vec<(PeerId, WorkerOfferRequest, tokio::sync::oneshot::Sender<bool>)>,
+        Vec<tokio::sync::oneshot::Sender<bool>>,
+    );
 
     fn poll_next(
         self: Pin<&mut Self>,
@@ -336,7 +392,7 @@ where
             tracing::debug!("Reached maximum offer limit");
             let candidates = std::mem::replace(this.candidates, Candidates::new(0, false));
             *this.returned = true;
-            return Poll::Ready(Some(candidates.into()));
+            return Poll::Ready(Some(candidates.into_results()));
         }
 
         // Poll the deadline timer
@@ -344,13 +400,13 @@ where
             tracing::debug!("Deadline reached");
             let candidates = std::mem::replace(this.candidates, Candidates::new(0, false));
             *this.returned = true;
-            return Poll::Ready(Some(candidates.into()));
+            return Poll::Ready(Some(candidates.into_results()));
         }
 
         // Poll for new offers
         loop {
             match this.stream.as_mut().poll_next(cx) {
-                Poll::Ready(Some((peer_id, offer))) => {
+                Poll::Ready(Some((peer_id, offer, decision_tx))) => {
                     *this.offers_received += 1;
 
                     if offer.price > *this.upper_price {
@@ -360,13 +416,15 @@ where
                             max_price = %this.upper_price,
                             "Rejecting offer above max price"
                         );
+                        // Immediately reject offers that are above max price
+                        let _ = decision_tx.send(false);
                         continue;
                     }
 
                     let score = this.evaluator.evaluate(offer.price, &offer.resources);
                     let changed = this
                         .candidates
-                        .try_insert(Candidate::new(peer_id, offer, score))
+                        .try_insert(Candidate::new(peer_id, offer, score, decision_tx))
                         .is_ok();
 
                     if changed {
@@ -396,7 +454,7 @@ where
                             let candidates =
                                 std::mem::replace(this.candidates, Candidates::new(0, false));
                             *this.returned = true;
-                            return Poll::Ready(Some(candidates.into()));
+                            return Poll::Ready(Some(candidates.into_results()));
                         }
                     }
 
@@ -407,7 +465,7 @@ where
                     // Stream ended, return what we have
                     let candidates = std::mem::replace(this.candidates, Candidates::new(0, false));
                     *this.returned = true;
-                    return Poll::Ready(Some(candidates.into()));
+                    return Poll::Ready(Some(candidates.into_results()));
                 }
                 Poll::Pending => {
                     // No more offers available right now
