@@ -22,8 +22,8 @@ runs:
         save-if: true
         cache-provider: "github"
 
-    - name: Install cargo-edit
-      run: cargo install cargo-edit
+    - name: Add rustup target
+      run: rustup target add "${{ inputs.target }}"
       shell: bash
 
     - name: Set version
