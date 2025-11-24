@@ -1,6 +1,8 @@
 +++
 title = "hypha-scheduler CLI"
 description = "Auto-generated reference for the hypha-scheduler command, its init/probe/run options, and flags."
+[taxonomies]
+track = ["reference"]
 +++
 
 <!-- NOTE: Auto-generated. Do not edit manually. -->

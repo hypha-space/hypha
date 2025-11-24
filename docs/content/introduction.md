@@ -1,6 +1,8 @@
 +++
 title = "Introduction"
 description = "High-level overview of Hypha's goals, capabilities, and primary use cases for decentralized ML."
+[taxonomies]
+track = ["onboarding"]
 +++
 
 # Introduction
@@ -53,4 +55,4 @@ Edge computing scenarios, multi-region deployments, and hybrid cloud/on-premise 
 
 ## Getting Started
 
-For hands-on experience with Hypha, proceed to the [Quick Start](quick-start.md) guide to set up your first end-to-end decentralized training system.
+For hands-on experience with Hypha, proceed to the [Quick Start](quickstart.md) guide to set up your first end-to-end decentralized training system.

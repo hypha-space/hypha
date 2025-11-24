@@ -1,6 +1,8 @@
 +++
 title = "hypha-data CLI"
 description = "Auto-generated reference for the hypha-data command, covering init, probe, and run modes."
+[taxonomies]
+track = ["reference"]
 +++
 
 <!-- NOTE: Auto-generated. Do not edit manually. -->

@@ -1,6 +1,8 @@
 +++
 title = "Gateway"
 description = "Describes gateway responsibilities plus configuration, telemetry, and protocol participation guidance."
+[taxonomies]
+track = ["reference"]
 +++
 
 # Gateway
@@ -23,7 +25,7 @@ Gateways participate in all network protocols (Kademlia, Gossipsub, request/resp
 
 ## Installation
 
-Install the data node binary following the [Installation](installation.md) guide.
+Install the gateway binary following the [Installation](installation.md) guide.
 
 ## Configuration Parameters
 

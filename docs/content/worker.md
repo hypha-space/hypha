@@ -1,6 +1,8 @@
 +++
 title = "Worker Node"
 description = "Details worker responsibilities, configuration options, and executor setup for running training or inference jobs."
+[taxonomies]
+track = ["reference"]
 +++
 
 # Worker Node
@@ -44,7 +46,7 @@ Each job creates a subdirectory `hypha-{uuid}` under the base path. Jobs have fu
 
 ## Configuration Parameters
 
-Data node configuration uses TOML format with network, security, and storage settings. Generate an example configuration file using the [`hypha-worker init`](../reference/hypha-wowker-cli.md#hypha-data-init) command. You will need to provide paths to TLS certificates and configure basic network settings (gateway addresses, listen addresses).
+Worker configuration uses TOML format with network, security, and storage settings. Generate an example configuration file using the [`hypha-worker init`](../reference/hypha-worker-cli.md#hypha-worker-init) command. Provide certificate paths along with gateway addresses and listen/external multiaddrs.
 
 ### Resource Advertisement
 

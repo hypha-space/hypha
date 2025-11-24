@@ -1,6 +1,8 @@
 +++
 title = "Security"
 description = "Outlines Hypha's mTLS design, certificate hierarchy, and node authentication flow."
+[taxonomies]
+track = ["reference"]
 +++
 
 # Security

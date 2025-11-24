@@ -1,6 +1,8 @@
 +++
 title = "Data Node"
 description = "Documents how data nodes store, announce, and serve SafeTensors datasets along with preparation guidance."
+[taxonomies]
+track = ["reference"]
 +++
 
 # Data Node

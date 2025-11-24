@@ -1,6 +1,8 @@
 +++
 title = "hypha-gateway CLI"
 description = "Auto-generated reference for the hypha-gateway command, including init, probe, and run usage."
+[taxonomies]
+track = ["reference"]
 +++
 
 <!-- NOTE: Auto-generated. Do not edit manually. -->

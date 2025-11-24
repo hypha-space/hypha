@@ -1,6 +1,8 @@
 +++
 title = "hypha-certutil CLI"
 description = "Auto-generated reference for the hypha-certutil command and its subcommands."
+[taxonomies]
+track = ["reference"]
 +++
 
 <!-- NOTE: Auto-generated. Do not edit manually. -->

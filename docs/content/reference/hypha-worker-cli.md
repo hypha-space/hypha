@@ -1,6 +1,8 @@
 +++
 title = "hypha-worker CLI"
 description = "Auto-generated reference for the hypha-worker command, covering configuration and operational subcommands."
+[taxonomies]
+track = ["reference"]
 +++
 
 <!-- NOTE: Auto-generated. Do not edit manually. -->
