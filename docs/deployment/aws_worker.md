@@ -115,7 +115,9 @@ You’ll need this to SSH in and:
    - Subnet: any subnet with outbound internet access (NAT or public).
    - **Auto-assign public IP**: enable if you want to SSH directly from the internet; optionally disable if using a bastion/SSM.
 
-7. **Firewall (security group)**:
+7. **Firewall (Security Group and Network ACL)**:
+
+#### 2.4.1 Security Group
 
 Create a security group like `hypha-worker-gpu` (or reuse a shared `hypha-cluster` SG) with:
 
@@ -131,6 +133,16 @@ Create a security group like `hypha-worker-gpu` (or reuse a shared `hypha-cluste
     - Connectivity to your gateway’s advertised addresses.
 
 EC2 security groups are stateful; replies to outbound traffic are automatically allowed (see the [security group reference](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-security-groups.html)).  
+
+#### 2.4.2 Network ACL
+
+If any custom Network ACLs rules are in place, ensure they allow the necessary traffic to your workers instance.
+
+Other than the workers Security Group firewall, Network ACLs are stateless. Replies to outbound traffic are not automatically allowed. 
+
+Given that, when NACLs are in place, you have to bind your worker to a specific port and allow traffic to that port.
+
+If there is no inbound traffic allowed for your worker, it will not be able to receive any traffic and therefore fail to connect to the gateway.
 
 ### 2.5 Storage
 
