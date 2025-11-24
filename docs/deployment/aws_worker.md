@@ -173,10 +173,13 @@ From your local machine:
 
 ```bash
 ssh -i path/to/key.pem ec2-user@<public-ip>
+```
 
 Update base packages:
 
+```bash
 sudo dnf update -y
+```
 
 Amazon Linux 2023 uses dnf (not yum).  ￼
 
@@ -190,36 +193,40 @@ For G4dn (NVIDIA T4) you need the NVIDIA driver. AWS provides official guidance 
 Follow the AWS docs exactly for the version/instance family you’re using. High-level steps on Amazon Linux 2023:
 	1.	Install kernel headers and development packages as described in NVIDIA’s Amazon Linux guide:  ￼
 
+```bash
 sudo dnf install -y \
-  kernel-devel-$(uname -r) \
-  kernel-headers-$(uname -r) \
+  kernel-devel \
+  kernel-headers \
   gcc make
-
+```
 
 	2.	Download the GRID driver using the instructions in the EC2 User Guide:  ￼
 	•	This usually involves an aws s3 cp from the special driver bucket.
 	•	Example shape (not exact URL — use the AWS docs):
 
+```bash
 aws s3 cp s3://ec2-linux-nvidia-drivers/latest/NVIDIA-Linux-x86_64-<version>.run .
 chmod +x NVIDIA-Linux-x86_64-<version>.run
-
+```
 
 	3.	Install the driver (often with --silent):
 
+```bash
 sudo ./NVIDIA-Linux-x86_64-<version>.run --silent
+```
 
+	4.	(Optional) Reboot to load the kernel modules:
 
-	4.	Reboot to load the kernel modules:
-
+```bash
 sudo reboot
-
+```
 
 	5.	SSH back in and verify:
 
+```bash
 ssh -i path/to/key.pem ec2-user@<public-ip>
 nvidia-smi
-
-
+```
 
 If nvidia-smi works and shows a T4 GPU, the driver is correctly installed.
 
@@ -233,7 +240,9 @@ We want all heavy data (models, datasets, caches) on a data volume, not on the r
 
 Check the block devices:
 
+```bash
 sudo lsblk
+```
 
 You’ll typically see:
 	•	nvme0n1 – root disk
@@ -245,37 +254,48 @@ Use the one that is not mounted as /. Do not format the root disk.
 
 Example assuming /dev/nvme1n1 is your data disk:
 
+```bash
 sudo mkfs.ext4 -E nodiscard /dev/nvme1n1
+```
 
 5.3 Create and Mount /mnt/data
 
+```bash
 sudo mkdir -p /mnt/data
 sudo chown -R ec2-user:ec2-user /mnt/data
 
 sudo mount /dev/nvme1n1 /mnt/data
 df -h /mnt/data
+```
 
 5.4 Persist the Mount (fstab)
 
 Get the disk UUID:
 
+```bash
 sudo blkid /dev/nvme1n1
+```
 
 Add an entry to /etc/fstab (replace with your UUID):
 
+```bash
 echo 'UUID=<YOUR-UUID>  /mnt/data  ext4  defaults,nofail,_netdev  0  2' \
   | sudo tee -a /etc/fstab
+```
 
 Test:
 
+```bash
 sudo umount /mnt/data
 sudo mount -a
 findmnt /mnt/data
+```
 
 If you prefer legacy paths like /mount/data, add a symlink:
 
+```bash
 sudo ln -s /mnt/data /mount/data
-
+```
 
 ⸻
 
@@ -287,13 +307,16 @@ We’ll point everything at /mnt/data.
 
 6.1 Create Cache Directories
 
+```bash
 mkdir -p /mnt/data/{hf/{datasets,transformers,hub},uv,pip,tmp}
 sudo chown -R ec2-user:ec2-user /mnt/data
+```
 
 6.2 Export Environment Variables
 
 Append to ~/.bashrc:
 
+```bash
 cat >> ~/.bashrc <<'EOF'
 # Hugging Face caches
 export HF_HOME=/mnt/data/hf
@@ -312,6 +335,7 @@ export TMPDIR=/mnt/data/tmp
 EOF
 
 source ~/.bashrc
+```
 
 UV_CACHE_DIR is the standard env var for configuring uv’s cache location.  ￼
 
@@ -325,6 +349,7 @@ If you later run the worker under systemd, copy these environment variables into
 
 Use the official installer:  ￼
 
+```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
@@ -333,16 +358,21 @@ source ~/.bashrc
 uv --version
 
 uv will manage Python environments and automatically install Python versions as needed.  ￼
+```
 
 7.2 Install Hypha Binaries
 
 Install Hypha from the release installer (adapt <VERSION>):
 
+```bash
 curl -fsSL https://github.com/hypha-space/hypha/releases/download/v<VERSION>/install.sh | sh
+```
 
 Verify:
 
+```bash
 hypha-worker --help
+```
 
 See the hypha-worker CLI reference￼ for full options.
 
@@ -361,8 +391,10 @@ On the worker, place files like:
 
 Protect the key:
 
+```bash
 sudo chown root:root /etc/hypha/certs/*-key.pem
 sudo chmod 600 /etc/hypha/certs/*-key.pem
+```
 
 You’ll point the worker config at these paths.
 
@@ -376,7 +408,9 @@ We’ll generate a base config with hypha-worker init and then edit it.
 
 Create a working directory:
 
+```bash
 mkdir -p ~/hypha && cd ~/hypha
+```
 
 Pick your gateway address:
 	•	For internal cluster traffic, prefer private IP, e.g.:
@@ -387,11 +421,13 @@ Pick your gateway address:
 
 Run:
 
+```bash
 hypha-worker init \
   -n worker-gpu-1 \
   -o worker-gpu-1.toml \
   --exclude-cidr 192.0.2.0/24 \
   --gateway /ip4/<GATEWAY_PRIVATE_IP>/tcp/8080
+```
 
 This creates worker-gpu-1.toml with reasonable defaults (see Worker Node￼ for structure).
 
@@ -402,29 +438,37 @@ Open worker-gpu-1.toml in your editor.
 9.2.1 Certificates
 Set certificate paths:
 
+```toml
 cert_pem  = "/etc/hypha/certs/worker-gpu-1-cert.pem"
 key_pem   = "/etc/hypha/certs/worker-gpu-1-key.pem"
 trust_pem = "/etc/hypha/certs/ca-bundle.pem"
 # Optional: CRLs if you use them
 # crls_pem = "/etc/hypha/certs/crl.pem"
+```
 
 9.2.2 Working Directory
 Point the worker at /mnt/data/work so all per-job directories and artifacts land on the data volume:
 
+```toml
 work_dir = "/mnt/data/work"
+```
 
 Create it:
 
+```bash
 mkdir -p /mnt/data/work
+```
 
 9.2.3 Resources
 Advertise the resources of your instance. Example for g4dn.xlarge (adjust as needed):
 
+```toml
 [resources]
 cpu     = 4     # vCPUs
 memory  = 16    # GB RAM
 storage = 200   # GB available on /mnt/data
 gpu     = 16    # GB VRAM on the T4
+```
 
 These are advisory, used by the scheduler to match jobs to workers; they are not hard OS limits.
 
@@ -433,16 +477,19 @@ By default, workers initiate outbound connections to the gateway and rarely need
 
 If you want to pin a specific listen port:
 
+```toml
 listen_addresses = [
   "/ip4/0.0.0.0/tcp/9091",
   "/ip4/0.0.0.0/udp/9091/quic-v1",
 ]
+```
 
 Make sure your security group allows this port from the gateway (or cluster SG).
 
 9.2.5 Executor for DiLoCo (Accelerate)
 Add an executor for DiLoCo training using uv + Accelerate, similar to the example in the Worker docs:
 
+```toml
 [[executors]]
 class   = "train"
 name    = "diloco-transformer"
@@ -462,6 +509,7 @@ args = [
     "--work-dir", "{WORK_DIR}",
     "--job", "{JOB_JSON}",
 ]
+```
 
 Make sure /etc/hypha/accelerate.yaml exists with a configuration that matches your single-GPU setup (see the training docs for an example).
 
@@ -471,9 +519,11 @@ Make sure /etc/hypha/accelerate.yaml exists with a configuration that matches yo
 
 Before running the worker for real, use the probe subcommand to verify mTLS and connectivity to the gateway:
 
+```bash
 hypha-worker probe \
   -c worker-gpu-1.toml \
   /ip4/<GATEWAY_PRIVATE_IP>/tcp/8080/
+```
 
 On success, it exits with status 0. If you get errors, check:
 	•	certificate paths
@@ -487,7 +537,9 @@ On success, it exits with status 0. If you get errors, check:
 
 Finally, start the worker:
 
-RUST_LOG=info hypha-worker run -c worker-gpu-1.toml
+```bash
+hypha-worker run -c worker-gpu-1.toml
+```
 
 You should see logs indicating:
 	•	successful TLS handshake with the gateway
