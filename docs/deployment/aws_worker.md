@@ -200,40 +200,37 @@ Amazon Linux 2023 uses dnf (not yum).  ￼
 4. Install the NVIDIA GRID Driver (G4dn)
 
 For G4dn (NVIDIA T4) you need the NVIDIA driver. AWS provides official guidance and S3-hosted drivers for:
-	•	G4dn, G5, G6, etc.  ￼
+•	G4dn, G5, G6, etc.
 
 Follow the AWS docs exactly for the version/instance family you’re using. High-level steps on Amazon Linux 2023:
-	1.	Install kernel headers and development packages as described in NVIDIA’s Amazon Linux guide:  ￼
+1.	Install kernel headers and development packages as described in NVIDIA’s Amazon Linux guide:  ￼
 
 ```bash
-sudo dnf install -y \
-  kernel-devel \
-  kernel-headers \
-  gcc make
+sudo dnf install -y kernel-devel kernel-headers gcc make
 ```
 
-	2.	Download the GRID driver using the instructions in the EC2 User Guide:  ￼
-	•	This usually involves an aws s3 cp from the special driver bucket.
-	•	Example shape (not exact URL — use the AWS docs):
+2.	Download the GRID driver using the instructions in the EC2 User Guide:  ￼
+•	This usually involves an aws s3 cp from the special driver bucket.
+•	Example shape (not exact URL — use the AWS docs):
 
 ```bash
 aws s3 cp s3://ec2-linux-nvidia-drivers/latest/NVIDIA-Linux-x86_64-<version>.run .
 chmod +x NVIDIA-Linux-x86_64-<version>.run
 ```
 
-	3.	Install the driver (often with --silent):
+3.	Install the driver (often with --silent):
 
 ```bash
 sudo ./NVIDIA-Linux-x86_64-<version>.run --silent
 ```
 
-	4.	(Optional) Reboot to load the kernel modules:
+4.	Reboot to load the kernel modules:
 
 ```bash
 sudo reboot
 ```
 
-	5.	SSH back in and verify:
+5.	SSH back in and verify:
 
 ```bash
 ssh -i path/to/key.pem ec2-user@<public-ip>
@@ -257,8 +254,8 @@ sudo lsblk
 ```
 
 You’ll typically see:
-	•	nvme0n1 – root disk
-	•	nvme1n1 – instance store or extra EBS disk
+•	nvme0n1 – root disk
+•	nvme1n1 – instance store or extra EBS disk
 
 Use the one that is not mounted as /. Do not format the root disk.
 
