@@ -2,7 +2,8 @@ from collections.abc import Iterator
 from typing import Any
 
 import torch
-from safetensors.torch import load_file
+from safetensors.torch import load
+from snappy import uncompress
 from torch.utils.data import DataLoader, IterableDataset
 
 
@@ -22,7 +23,9 @@ class IterableStreamDataSet(IterableDataset):  # type: ignore[type-arg]
 
     def __iter__(self):  # type: ignore[no-untyped-def]
         for path in self.data_iter:
-            data = load_file(path, device="cpu")
+            with open(path, "rb") as file:
+                raw_bytes = uncompress(file.read())
+            data = load(raw_bytes)
             processed = (
                 {**self.processor(**{k: data.pop(k) for k in self.processor_inputs}), **data}
                 if self.processor
