@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use documented::{Documented, DocumentedFieldsOpt};
 use hypha_config::{ConfigError, ConfigWithMetadata, TLSConfig, ValidatableConfig};
-use hypha_network::{IpNet, reserved_cidrs};
+use hypha_network::{IpNet, find_containing_cidr, reserved_cidrs};
 use hypha_telemetry::{
     attributes::Attributes,
     otlp::{Endpoint, Headers, Protocol},
@@ -54,6 +54,20 @@ pub struct Config {
     /// SECURITY: Keep this updated with your certificate authority's latest CRL to maintain
     /// network security. Automate CRL updates in production environments.
     crls_pem: Option<PathBuf>,
+
+    /// Gateway addresses to connect to (optional).
+    ///
+    /// Allows this gateway to connect to other gateways for network entry. Providing multiple
+    /// gateway addresses offers redundancy; the gateway attempts to connect to all and succeeds
+    /// if any are reachable.
+    ///
+    /// Leaving this empty means the gateway operates as a standalone entry point.
+    ///
+    /// Examples:
+    /// * "/ip4/203.0.113.10/tcp/8080/"
+    /// * "/dns4/gateway.hypha.example/tcp/443/"
+    #[serde(default)]
+    gateway_addresses: Vec<Multiaddr>,
 
     /// Network addresses to listen on for incoming connections.
     ///
@@ -176,6 +190,7 @@ impl Default for Config {
             key_pem: PathBuf::from("gateway-key.pem"),
             trust_pem: PathBuf::from("gateway-trust.pem"),
             crls_pem: None,
+            gateway_addresses: vec![],
             listen_addresses: vec![
                 "/ip4/127.0.0.1/tcp/8080"
                     .parse()
@@ -204,6 +219,10 @@ impl Default for Config {
 }
 
 impl Config {
+    pub fn gateway_addresses(&self) -> &Vec<Multiaddr> {
+        &self.gateway_addresses
+    }
+
     pub fn listen_addresses(&self) -> &Vec<Multiaddr> {
         &self.listen_addresses
     }
@@ -273,6 +292,20 @@ impl ValidatableConfig for Config {
 
             return Err(ConfigError::with_metadata(&metadata)(ConfigError::Invalid(
                 message.to_string(),
+            )));
+        }
+
+        // NOTE: Validate that gateway addresses don't overlap with excluded CIDRs.
+        if let Some((address, cidr)) = cfg
+            .gateway_addresses()
+            .iter()
+            .find_map(|addr| find_containing_cidr(addr, cfg.exclude_cidr()).map(|c| (addr, c)))
+        {
+            let metadata = cfg.find_metadata("exclude_cidr");
+            let message = format!("Gateway address `{address}` overlaps excluded CIDR `{cidr}`.");
+
+            return Err(ConfigError::with_metadata(&metadata)(ConfigError::Invalid(
+                message,
             )));
         }
 
