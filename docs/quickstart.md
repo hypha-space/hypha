@@ -175,3 +175,5 @@ After successfully running training, the scheduler terminal should display these
 ```
 
 **NOTE**: We are aware of the error messages and they are expected (for now). As long as these are the only errors, everything worked as expected.
+
+If you encounter any issue, please have a look at the [Troubleshooting Guide](troubleshooting.md).
