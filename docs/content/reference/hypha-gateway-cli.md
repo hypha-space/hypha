@@ -52,6 +52,32 @@ IMPORTANT: If the output file exists, it will be overwritten without warning.
 
   Default value: `config.toml`
 * `-n`, `--name <NAME>` — Name of this gateway node
+* `--cert <CERT_PEM>` — Path to the certificate PEM file (overrides config)
+
+   Must be a valid X.509 certificate in PEM format.
+* `--key <KEY_PEM>` — Path to the private key PEM file (overrides config)
+
+   Must correspond to the certificate. Security: restrict permissions (e.g., chmod 600).
+* `--trust <TRUST_PEM>` — Path to the trust chain PEM file (overrides config)
+
+   CA bundle containing certificates trusted by this node. If not provided,
+   uses trust_pem from the configuration file.
+* `--crls <CRLS_PEM>` — Path to the certificate revocation list PEM (overrides config)
+
+   Optional CRL for rejecting compromised certificates. If not provided,
+   uses crls_pem from the configuration file if present.
+* `--listen <LISTEN_ADDRESSES>` — Addresses to listen on (repeatable, overrides config)
+
+   Where this gateway accepts incoming connections.
+   Examples: /ip4/0.0.0.0/tcp/8080, /ip4/0.0.0.0/udp/8080/quic-v1
+* `--external <EXTERNAL_ADDRESSES>` — External addresses to advertise (repeatable, overrides config)
+
+   Publicly reachable addresses peers should use to connect.
+   Examples: /ip4/203.0.113.10/tcp/8080, /dns4/gateway.example.com/tcp/8080
+* `--exclude-cidr <EXCLUDE_CIDR>` — CIDR ranges to exclude from DHT (repeatable, overrides config)
+
+   Filters out peer addresses matching these ranges before adding to the DHT.
+   Examples: 10.0.0.0/8, fc00::/7
 
 
 

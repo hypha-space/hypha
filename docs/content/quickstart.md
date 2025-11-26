@@ -38,7 +38,7 @@ Install Hypha using the standalone installer script:
 curl -fsSL https://github.com/hypha-space/hypha/releases/download/v<VERSION>/install.sh | sh
 ```
 
-For alternative installation methods, see the [Installation Guide](installation.md).
+For alternative installation methods, see the [Installation Guide](@/installation.md).
 
 ---
 
@@ -64,7 +64,7 @@ hypha-certutil node --ca-cert ./quickstart-ca-cert.pem --ca-key ./quickstart-ca-
 ```
 
 > [!WARNING]
-> `hypha-certutil` is only for development and testing. For production clusters, follow the mTLS guidance in [Security](security.md) and issue node certificates from your organization’s PKI with proper rotation and CRL distribution.
+> `hypha-certutil` is only for development and testing. For production clusters, follow the mTLS guidance in [Security](@/security.md) and issue node certificates from your organization’s PKI with proper rotation and CRL distribution.
 
 ---
 

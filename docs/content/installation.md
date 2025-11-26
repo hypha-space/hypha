@@ -7,7 +7,7 @@ track = ["reference"]
 
 # Installing Hypha
 
-Hypha provides prebuilt binaries for Linux and macOS, plus a source build path when you need to test unreleased commits. This page explains each option, when to use it, and how to verify the download before running it. For first-time users, install the binaries on your workstation and then follow the [Quick Start Guide](quickstart.md).
+Hypha provides prebuilt binaries for Linux and macOS, plus a source build path when you need to test unreleased commits. This page explains each option, when to use it, and how to verify the download before running it. For first-time users, install the binaries on your workstation and then follow the [Quick Start Guide](@/quickstart.md).
 
 ## Choosing an installation method
 
@@ -74,5 +74,5 @@ rm -f ~/.local/bin/hypha-certutil \
 
 ## Next steps
 
-1. Follow the [Quick Start Guide](quickstart.md) to configure certificates, nodes, and run your first DiLoCo job.
-2. Study the [Architecture](architecture.md) and individual component docs ([Gateway](gateway.md), [Scheduler](scheduler.md), [Worker](worker.md), [Data Node](data.md)) before deploying production clusters.
+1. Follow the [Quick Start Guide](@/quickstart.md) to configure certificates, nodes, and run your first DiLoCo job.
+2. Study the [Architecture](@/architecture.md) and individual component docs ([Gateway](@/gateway.md), [Scheduler](@/scheduler.md), [Worker](@/worker.md), [Data Node](@/data.md)) before deploying production clusters.

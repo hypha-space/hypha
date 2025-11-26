@@ -7,7 +7,7 @@ track = ["onboarding"]
 
 # DiLoCo Training
 
-This guide explains how to set up and run distributed training in Hypha using the DiLoCo (Distributed Low-Communication) based algorithm. It covers the training workflow and configuration. For initial setup, see [Installation](installation.md) and [Quick Start](quickstart.md).
+This guide explains how to set up and run distributed training in Hypha using the DiLoCo (Distributed Low-Communication) based algorithm. It covers the training workflow and configuration. For initial setup, see [Installation](@/installation.md) and [Quick Start](@/quickstart.md).
 
 ## Overview
 
@@ -37,26 +37,26 @@ Understanding each component's role helps diagnose issues and optimize performan
 
 ### Components
 
-**Data Node** ([docs/data.md](data.md))
+**Data Node** ([docs/data.md](@/data.md))
 
 - Serves dataset slices in SafeTensors format
 - Announces dataset availability via DHT provider records
 - Streams data to workers on demand
 
-**Training Workers** ([docs/worker.md](worker.md))
+**Training Workers** ([docs/worker.md](@/worker.md))
 
 - Run the `diloco-transformer` executor
 - Perform k local optimization steps
 - Report metrics and send pseudo-gradients to parameter server
 
-**Parameter Server Worker** ([docs/worker.md](worker.md))
+**Parameter Server Worker** ([docs/worker.md](@/worker.md))
 
 - Runs the `parameter-server` executor
 - Aggregates pseudo-gradients from training workers
 - Applies outer optimizer (Nesterov momentum)
 - Broadcasts updated model weights
 
-**Scheduler** ([docs/scheduler.md](scheduler.md))
+**Scheduler** ([docs/scheduler.md](@/scheduler.md))
 
 - Advertises job requirements via pub/sub
 - Matches workers to tasks based on resources and pricing
@@ -135,7 +135,7 @@ def save_language_slice(input_ids, attention_masks, output_path):
     save_file(tensors, output_path)
 ```
 
-See [Data](data.md) for complete dataset preparation instructions and how to serve the prepared dataset. Once readay, start your data node to serve the dataset:
+See [Data](@/data.md) for complete dataset preparation instructions and how to serve the prepared dataset. Once readay, start your data node to serve the dataset:
 
 ```bash
 hypha-data run -c config.toml
@@ -170,7 +170,7 @@ args = [
 ]
 ```
 
-See [Worker](worker.md) for complete worker configuration.
+See [Worker](@/worker.md) for complete worker configuration.
 
 ## Parameter Server
 
@@ -248,7 +248,7 @@ Uses `AutoModelForImageClassification.from_pretrained()`.
 
 All HuggingFace models compatible with the Auto classes are supported. See the [HuggingFace documentation](https://huggingface.co/docs/transformers/model_doc/auto) for details.
 
-See [docs/scheduler.md](scheduler.md) for complete configuration reference.
+See [docs/scheduler.md](@/scheduler.md) for complete configuration reference.
 
 ## Monitoring and Metrics
 

@@ -9,7 +9,7 @@ track = ["reference"]
 
 Gateway nodes provide stable entry points for the Hypha network. They enable peer discovery, facilitate NAT traversal, and anchor the distributed hash table. This section covers gateway deployment and configuration.
 
-**CLI Reference**: See the [hypha-gateway CLI Reference](../reference/hypha-gateway-cli.md) for complete command-line documentation.
+**CLI Reference**: See the [hypha-gateway CLI Reference](@/reference/hypha-gateway-cli.md) for complete command-line documentation.
 
 ## Role and Responsibilities
 
@@ -25,11 +25,11 @@ Gateways participate in all network protocols (Kademlia, Gossipsub, request/resp
 
 ## Installation
 
-Install the gateway binary following the [Installation](installation.md) guide.
+Install the gateway binary following the [Installation](@/installation.md) guide.
 
 ## Configuration Parameters
 
-Gateway configuration uses TOML format with security and network settings. Generate an example configuration file using the [`hypha-gateway init`](../reference/hypha-gateway-cli.md#hypha-gateway-init) command. You will need to provide paths to TLS certificates and configure basic network settings (listen addresses, external addresses).
+Gateway configuration uses TOML format with security and network settings. Generate an example configuration file using the [`hypha-gateway init`](@/reference/hypha-gateway-cli.md#hypha-gateway-init) command. You will need to provide paths to TLS certificates and configure basic network settings (listen addresses, external addresses).
 
 ### OpenTelemetry
 

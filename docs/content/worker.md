@@ -9,7 +9,7 @@ track = ["reference"]
 
 Worker nodes execute training and inference tasks in the Hypha network. They evaluate task advertisements, bid for work, and run jobs through configurable executors. This section covers worker deployment, configuration, and executor setup.
 
-**CLI Reference**: See the [hypha-worker CLI Reference](../reference/hypha-worker-cli.md) for complete command-line documentation.
+**CLI Reference**: See the [hypha-worker CLI Reference](@/reference/hypha-worker-cli.md) for complete command-line documentation.
 
 ## Role and Responsibilities
 
@@ -29,7 +29,7 @@ Workers implement several subsystems to participate in the distributed training 
 
 ## Installation and Setup
 
-Install the data node binary following the [Installation](installation.md) guide.
+Install the data node binary following the [Installation](@/installation.md) guide.
 
 ### Work Directory Setup
 
@@ -46,7 +46,7 @@ Each job creates a subdirectory `hypha-{uuid}` under the base path. Jobs have fu
 
 ## Configuration Parameters
 
-Worker configuration uses TOML format with network, security, and storage settings. Generate an example configuration file using the [`hypha-worker init`](../reference/hypha-worker-cli.md#hypha-worker-init) command. Provide certificate paths along with gateway addresses and listen/external multiaddrs.
+Worker configuration uses TOML format with network, security, and storage settings. Generate an example configuration file using the [`hypha-worker init`](@/reference/hypha-worker-cli.md#hypha-worker-init) command. Provide certificate paths along with gateway addresses and listen/external multiaddrs.
 
 ### Resource Advertisement
 

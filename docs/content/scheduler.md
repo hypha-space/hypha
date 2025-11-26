@@ -9,7 +9,7 @@ track = ["reference"]
 
 The scheduler orchestrates distributed training jobs by coordinating workers, managing resource allocation, and controlling DiLoCo synchronization. This section covers scheduler configuration, deployment, and operational details.
 
-**CLI Reference**: See the [hypha-scheduler CLI Reference](../reference/hypha-scheduler-cli.md) for complete command-line documentation.
+**CLI Reference**: See the [hypha-scheduler CLI Reference](@/reference/hypha-scheduler-cli.md) for complete command-line documentation.
 
 ## Role and Responsibilities
 
@@ -33,11 +33,11 @@ The scheduler serves as the coordination point for distributed training:
 
 ## Installation
 
-Install the data node binary following the [Installation](installation.md) guide.
+Install the data node binary following the [Installation](@/installation.md) guide.
 
 ## Configuration Parameters
 
-Scheduler configuration uses TOML format with network, security, and job specification settings. Generate an example configuration file using the [`hypha-scheduler init`](../reference/hypha-scheduler-cli.md#hypha-scheduler-init) command. You will need to provide paths to TLS certificates, configure network settings (gateway addresses, listen addresses), and define your training job specification.
+Scheduler configuration uses TOML format with network, security, and job specification settings. Generate an example configuration file using the [`hypha-scheduler init`](@/reference/hypha-scheduler-cli.md#hypha-scheduler-init) command. You will need to provide paths to TLS certificates, configure network settings (gateway addresses, listen addresses), and define your training job specification.
 
 ### Network and Security Settings
 

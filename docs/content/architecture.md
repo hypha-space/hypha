@@ -75,7 +75,7 @@ Workers execute training and inference tasks. Each worker implements several sub
 
 **Job Manager**: Executes confirmed jobs. The job manager spawns executor processes, provides them with work directories and communication sockets, and monitors execution.
 
-**Executors**: Handle actual computation. Process executors run training scripts as subprocesses. Aggregate executors implement _parameter server_ functionality for DiLoCo synchronization. See the [Worker](worker.md) documentation for executor details.
+**Executors**: Handle actual computation. Process executors run training scripts as subprocesses. Aggregate executors implement _parameter server_ functionality for DiLoCo synchronization. See the [Worker](@/worker.md) documentation for executor details.
 
 **Job Bridge**: Provides a language-agnostic HTTP API over Unix sockets, allowing executors to fetch resources, send data to peers, and receive streams without understanding P2P protocols. See the [Job Bridge RFC](../rfc/2025-08-14_job_bridge.md) for the complete interface specification.
 

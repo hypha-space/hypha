@@ -40,7 +40,7 @@ Hypha enforces strict certificate requirements to ensure compatibility with ente
 
 For development and testing, Hypha provides `hypha-certutil` to generate certificates. This tool creates the three-tier certificate hierarchy (Root CA → Organization CA → Node certificates) but is not designed for production use.
 
-See the [hypha-certutil CLI Reference](reference/hypha-certutil-cli.md) for detailed usage and examples.
+See the [hypha-certutil CLI Reference](@/reference/hypha-certutil-cli.md) for detailed usage and examples.
 
 ## Node Authentication Flow
 
