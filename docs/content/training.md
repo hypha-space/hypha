@@ -1,6 +1,7 @@
 +++
 title = "DiLoCo Training"
 description = "Walkthrough of running Hypha's DiLoCo training workflow, explaining component roles and execution flow."
+weight = 3
 [taxonomies]
 track = ["onboarding"]
 +++

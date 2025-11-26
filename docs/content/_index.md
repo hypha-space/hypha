@@ -2,6 +2,7 @@
 title = "Hypha"
 description = "High-level overview of Hypha's goals, capabilities, and primary use cases for decentralized ML."
 template = "index.html"
+sort_by = "weight"
 +++
 
 # Hypha

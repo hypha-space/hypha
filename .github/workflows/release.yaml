@@ -177,3 +177,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npx semantic-release
+
+      - name: Deploy docs to Cloudflare
+        uses: ./.github/actions/deploy-cloudflare
+        with:
+          cf-api-token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          cf-account-id: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}

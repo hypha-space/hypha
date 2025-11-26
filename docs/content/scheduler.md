@@ -1,6 +1,7 @@
 +++
 title = "Scheduler"
 description = "Covers scheduler duties, configuration, and job specification fields for orchestrating distributed training."
+weight = 13
 [taxonomies]
 track = ["reference"]
 +++

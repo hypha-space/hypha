@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section>
+    <h1>{{ term.name | title }}</h1>
+    {% if taxonomy.name == "track" %}
+    <p>
+        {{ term.name | title }} content follows the {{ term.name | lower }} track requirements. See the
+        other track via <a href="{{ get_url(path="track/", trailing_slash=true) }}">the taxonomy index</a>.
+    </p>
+    {% endif %}
+    {% if paginator %}
+    {% set entries = paginator.pages %}
+    {% else %}
+    {% set entries = term.pages %}
+    {% endif %}
+    {% if entries | length == 0 %}
+    <p>No content has been tagged with this term yet.</p>
+    {% else %}
+    <ul role="navigation" aria-label="{{ term.name }} pages">
+        {% for page in entries %}
+        <li>
+            <a href="{{ page.permalink }}">{{ page.title }}</a>
+            {% if page.summary %}
+            <summary>{{ page.summary | safe }}</summary>
+            {% else %}
+            {% set excerpt = page.description | default(value=page.content | striptags) %}
+            <summary>{{ excerpt | truncate(length=160) }}</summary>
+            {% endif %}
+        </li>
+        {% endfor %}
+    </ul>
+    {% if paginator and paginator.number_pagers > 1 %}
+    <nav aria-label="Pagination">
+        {% if paginator.previous %}
+        <a href="{{ paginator.previous }}">{{ config.extra.pagination_prev | default(value="« Newer") }}</a>
+        {% endif %}
+        <span>Page {{ paginator.current_index + 1 }} of {{ paginator.number_pagers }}</span>
+        {% if paginator.next %}
+        <a href="{{ paginator.next }}">{{ config.extra.pagination_next | default(value="Older »") }}</a>
+        {% endif %}
+    </nav>
+    {% endif %}
+    {% endif %}
+</section>
+{% endblock %}

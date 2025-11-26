@@ -1,6 +1,7 @@
 +++
 title = "Architecture Overview"
 description = "Explains how gateways, schedulers, workers, and data nodes interact across Hypha's decentralized network."
+weight = 2
 [taxonomies]
 track = ["reference"]
 +++

@@ -1,6 +1,7 @@
 +++
 title = "Worker Node"
 description = "Details worker responsibilities, configuration options, and executor setup for running training or inference jobs."
+weight = 11
 [taxonomies]
 track = ["reference"]
 +++

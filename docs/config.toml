@@ -1,0 +1,16 @@
+base_url = "https://hypha-space.katulu.workers.dev"
+compile_sass = false
+theme = "hypha"
+build_search_index = true
+taxonomies = [
+    {name = "track", feed = false},
+]
+
+[search]
+index_format = "fuse_javascript"
+
+[markdown]
+highlight_code = true
+
+[extra]
+# Put all your custom variables here

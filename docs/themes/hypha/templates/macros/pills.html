@@ -1,0 +1,11 @@
+{% macro track(term) %} {% if term %} {% set label = term | title %} {% set bg = "#e2e8f0" %} {% set
+fg = "#334155" %} {% if term == "onboarding" %} {% set bg = "#dbeafe" %} {% set fg = "#1d4ed8" %} {%
+elif term == "reference" %} {% set bg = "#f3e8ff" %} {% set fg = "#9333ea" %} {% endif %} {% set
+href = get_taxonomy_url(kind="track", name=term) %}
+<a
+    href="{{ href }}"
+    style="display:inline-block;margin-left:0.4rem;padding:0.08rem 0.5rem;border-radius:999px;font-size:0.7rem;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;background-color:{{ bg }};color:{{ fg }};text-decoration:none;"
+>
+    {{ label }}
+</a>
+{% endif %} {% endmacro %}

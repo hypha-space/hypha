@@ -1,0 +1,49 @@
+{% extends "base.html" %} {% import "macros/pills.html" as pills %} {% block content %}
+<section>
+    {{ section.content | safe }} {% if section.pages | length > 0 %}
+    <h3>{{ section.title }}</h3>
+    <ul role="navigation" aria-label="Navigation">
+        {% for page in section.pages %} {% if not page.extra.hidden_in_nav %}
+        <li>
+            <a href="{{ page.permalink }}">{{ page.title }}</a>
+            {% if page.taxonomies.track %} {% for tag in page.taxonomies.track %} {{
+            pills::track(term=tag) }} {% endfor %} {% endif %} {% if page.summary %}
+            <summary>{{ page.summary | safe }}</summary>
+            {% else %} {% set excerpt = page.description | default(value=page.content | striptags)
+            %}
+            <summary>{{ excerpt | truncate(length=140) }}</summary>
+            {% endif %}
+        </li>
+        {% endif %} {% endfor %} {% if section.subsections | length > 0 %} {% for subsection_path in
+        section.subsections %} {% set subsection = get_section(path=subsection_path) %} {% if not
+        subsection.extra.hidden_in_nav %}
+        <li>
+            <a href="{{ subsection.permalink }}">{{ subsection.title }}</a>
+            {% if subsection.extra.track %} {{ pills::track(term=subsection.extra.track) }} {% endif
+            %} {% if subsection.summary %}
+            <summary>{{ subsection.summary | safe }}</summary>
+            {% else %} {% set excerpt = subsection.description | default(value=subsection.content |
+            striptags) %}
+            <summary>{{ excerpt | truncate(length=140) }}</summary>
+            {% endif %} {% if subsection.pages | length > 0 %}
+            <ul role="navigation" aria-label="Navigation">
+                {% for page in subsection.pages %} {% if not page.extra.hidden_in_nav %}
+                <li>
+                    <a href="{{ page.permalink }}">{{ page.title }}</a>
+                    {% if page.taxonomies.track %} {% for tag in page.taxonomies.track %} {{
+                    pills::track(term=tag) }} {% endfor %} {% endif %} {% if page.summary %}
+                    <summary>{{ page.summary | safe }}</summary>
+                    {% else %} {% set excerpt = page.description | default(value=page.content |
+                    striptags) %}
+                    <summary>{{ excerpt | truncate(length=140) }}</summary>
+                    {% endif %}
+                </li>
+                {% endif %} {% endfor %}
+            </ul>
+            {% endif %}
+        </li>
+        {% endif %} {% endfor %} {% endif %}
+    </ul>
+    {% endif %}
+</section>
+{% endblock %}

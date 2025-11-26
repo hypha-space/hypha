@@ -1,6 +1,7 @@
 +++
 title = "Gateway"
 description = "Describes gateway responsibilities plus configuration, telemetry, and protocol participation guidance."
+weight = 10
 [taxonomies]
 track = ["reference"]
 +++

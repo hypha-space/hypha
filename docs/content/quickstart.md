@@ -1,6 +1,7 @@
 +++
 title = "Quick Start"
 description = "Step-by-step guide for installing Hypha, generating certificates, configuring nodes, and running a first training job."
+weight = 0
 [taxonomies]
 track = ["onboarding"]
 +++
