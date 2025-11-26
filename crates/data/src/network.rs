@@ -21,7 +21,7 @@ use libp2p::{
     swarm::{NetworkBehaviour, SwarmEvent},
     tcp, tls, yamux,
 };
-use libp2p_stream as stream;
+use libp2p_stream::{self as stream, ConnectionPolicy};
 use tokio::sync::{SetOnce, mpsc};
 
 type HealthRequestHandlers = Vec<RequestHandler<health::Codec>>;
@@ -107,7 +107,7 @@ impl Network {
                     )),
                     relay_client,
                     dcutr: dcutr::Behaviour::new(key.public().to_peer_id()),
-                    stream: stream::Behaviour::new(),
+                    stream: stream::Behaviour::with_relay_policy(ConnectionPolicy::IgnoreRelayed),
                     kademlia: kad::Behaviour::new(
                         key.public().to_peer_id(),
                         kad::store::MemoryStore::new(key.public().to_peer_id()),
