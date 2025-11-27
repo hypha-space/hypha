@@ -36,8 +36,7 @@ args = [
     "run",
     "--python", "3.12",
     "--no-project",
-    "--with", "https://github.com/hypha-space/hypha/releases/download/v<version>/hypha_accelerate_executor-<version without semver channel or metadata>-py3-none-any.whl",
-    # Optional: add `--extra`, "<variant>" here to pin a specific torch build (see docs below)
+    "--with", "hypha-accelerate-executor[<variant>] @ https://github.com/hypha-space/hypha/releases/download/v<version>/hypha_accelerate_executor-<PEP 440-compliant version derived from the release version (e.g., `1.0.0a19` for `v1.0.0-alpha.19`)>-py3-none-any.whl", # Specify variant matching the worker's hardware configuration
     "--", # N.B. this standalone `--` is the separator between `uv` opts and the cmd to be executed
     "accelerate",
     "launch",
@@ -60,19 +59,24 @@ Let's break down the important parts of this configuration:
 
 **Python and dependencies**:
 - `--python "3.12"` — Specifies the Python version to use (adjust as needed for your environment)
-- `--with "https://github.com/..."` — The URL to the executor wheel. Replace `<version>` with the actual release version you want to use (e.g., `0.1.0`). Find available releases at https://github.com/hypha-space/hypha/releases the pages also lists the release assets the correct URL for the executor wheel.
+- `--with "https://github.com/..."` — The URL to the executor wheel. Replace `<version>` with the actual release version you want to use (e.g., `0.1.0`). Find available releases and the exact wheel URL, including the PEP 440-compliant version string, on the [GitHub Releases page](https://github.com/hypha-space/hypha/releases).
 
 **PyTorch variant**
-- `--extra` — via this flag you can choose which PyTorch variant to installto match the executor to
-your hardware. Insert it after `--with` argument in the args list. Available options:
+To ensure `uv` installs the correct PyTorch build for your hardware, you must specify the variant directly in the `--with` argument using the `'package[variant] @ url'` format. This explicitly tells `uv` which compatible wheels to pull.
 
-- `mps_cu128` (default) — Apple Silicon with Metal (MPS) acceleration and CUDA 12.8 drivers
+The format for the `--with` argument is:
+`hypha-accelerate-executor[<variant>] @ https://github.com/hypha-space/hypha/releases/download/v<version>/hypha_accelerate_executor-<PEP 440-compliant version derived from the release version (e.g., '1.0.0a19' for 'v1.0.0-alpha.19')>-py3-none-any.whl`
+
+Available variants for `<variant>` include:
+
+- `mps_cu128` (default if no variant specified) — Apple Silicon with Metal (MPS) acceleration and CUDA 12.8 drivers
 - `cpu` — CPU-only environments
 - `cu126` — NVIDIA GPUs with CUDA 12.6 drivers
 - `cu129` — NVIDIA GPUs with CUDA 12.9 drivers
 - `rocm64` — AMD GPUs with ROCm 6.4
 
-If you omit `--extra`, uv installs the default `mps_cu128` build.
+For example, to install the `rocm64` variant, the `--with` argument would be:
+`hypha-accelerate-executor[rocm64] @ https://github.com/hypha-space/hypha/releases/download/v<version>/hypha_accelerate_executor-<PEP 440-compliant version derived from the release version (e.g., '1.0.0a19' for 'v1.0.0-alpha.19')>-py3-none-any.whl`
 
 **Accelerate configuration**:
 - `--config_file "<path/to/accelerate.yaml>"` — Path to your Accelerate configuration file that defines the distributed training setup. This must match your machine's hardware configuration (number of GPUs, distributed training strategy, etc.)
