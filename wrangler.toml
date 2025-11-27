@@ -2,12 +2,12 @@ name = "hypa-space"
 compatibility_date = "2025-01-01"
 
 [assets]
-directory = "./public"
+directory = "./docs/public"
 not_found_handling = "404-page"
 html_handling = "auto-trailing-slash"
 
 [build]
-command = "zola build --root docs --output-dir public"
+command = "zola --root docs build --output-dir docs/public --force"
 
 # Environment variables for production
 [env.production]
