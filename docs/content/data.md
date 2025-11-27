@@ -1,8 +1,16 @@
++++
+title = "Data Node"
+description = "Documents how data nodes store, announce, and serve SafeTensors datasets along with preparation guidance."
+weight = 12
+[taxonomies]
+track = ["reference"]
++++
+
 # Data Node
 
 Data nodes store prepared datasets and serve slices to workers on demand. They announce available datasets via the DHT and stream data efficiently using the SafeTensors format. This section covers data node deployment, dataset preparation, and configuration.
 
-**CLI Reference**: See the [hypha-data CLI Reference](../reference/hypha-data-cli.md) for complete command-line documentation.
+**CLI Reference**: See the [hypha-data CLI Reference](@/reference/hypha-data-cli.md) for complete command-line documentation.
 
 ## Role and Responsibilities
 
@@ -18,7 +26,7 @@ Data nodes do not participate in training coordination, resource allocation, or 
 
 ## Installation and Setup
 
-Install the data node binary following the [Installation](installation.md) guide.
+Install the data node binary following the [Installation](@/installation.md) guide.
 
 ### Storage Setup
 
@@ -119,7 +127,7 @@ The data node announces the directory name (e.g., "imagenet-1k") to the DHT. Sch
 
 ## Configuration Parameters
 
-Data node configuration uses TOML format with network, security, and storage settings. Generate an example configuration file using the [`hypha-data init`](../reference/hypha-data-cli.md#hypha-data-init) command. You will need to provide paths to TLS certificates and configure basic network settings (gateway addresses, listen addresses).
+Data node configuration uses TOML format with network, security, and storage settings. Generate an example configuration file using the [`hypha-data init`](@/reference/hypha-data-cli.md#hypha-data-init) command. You will need to provide paths to TLS certificates and configure basic network settings (gateway addresses, listen addresses).
 
 ### Dataset Path
 

@@ -1,0 +1,28 @@
+{% extends "base.html" %} {% block content %}
+<section>
+    <h1>{{ taxonomy.name | title }} taxonomy</h1>
+    {% if taxonomy.name == "track" %}
+    <p>
+        Hypha follows a dual-track IA: <strong>Onboarding</strong> guides new operators from
+        installation to the DiLoCo tutorial, while <strong>Reference</strong> collects concepts,
+        tasks, and CLI docs for day-to-day operations. Pick the track below to filter the library.
+    </p>
+    {% else %}
+    <p>Browse every term defined in the {{ taxonomy.name }} taxonomy.</p>
+    {% endif %} {% if terms | length == 0 %}
+    <p>No terms have been defined yet.</p>
+    {% else %}
+    <ul role="navigation" aria-label="Taxonomy terms">
+        {% for term in terms %}
+        <li>
+            <a href="{{ term.permalink }}">{{ term.name | title }}</a>
+            {% set page_count = term.pages | length %}
+            <summary>
+                {{ page_count }} linked {% if page_count == 1 %}page{% else %}pages{% endif %}.
+            </summary>
+        </li>
+        {% endfor %}
+    </ul>
+    {% endif %}
+</section>
+{% endblock %}

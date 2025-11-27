@@ -1,3 +1,11 @@
++++
+title = "Quick Start"
+description = "Step-by-step guide for installing Hypha, generating certificates, configuring nodes, and running a first training job."
+weight = 0
+[taxonomies]
+track = ["onboarding"]
++++
+
 # Quick Start Guide
 
 ## Overview
@@ -27,11 +35,11 @@ Also if you want to build from source, you need your rust toolchain.
 
 Install Hypha using the standalone installer script:
 
-```sh
+```bash
 curl -fsSL https://github.com/hypha-space/hypha/releases/download/v<VERSION>/install.sh | sh
 ```
 
-For alternative installation methods (GitHub releases, Cargo), see the [Installation Guide](installation.md).
+For alternative installation methods, see the [Installation Guide](@/installation.md).
 
 ---
 
@@ -45,18 +53,19 @@ All Hypha components require setup, and certificates need to be prepared.
 
 Create the necessary certificates first. See `hypha-certutil --help` for details.
 
-For this quickstart guide, execute the following commands:
-
 ```bash
-hypha-certutil root --organization root && \
-hypha-certutil org --root-cert ./root-ca-cert.pem --root-key ./root-ca-key.pem -o quickstart && \
-hypha-certutil node --ca-cert ./quickstart-ca-cert.pem --ca-key ./quickstart-ca-key.pem -n gateway && \
-hypha-certutil node --ca-cert ./quickstart-ca-cert.pem --ca-key ./quickstart-ca-key.pem -n scheduler && \
-hypha-certutil node --ca-cert ./quickstart-ca-cert.pem --ca-key ./quickstart-ca-key.pem -n worker1 && \
-hypha-certutil node --ca-cert ./quickstart-ca-cert.pem --ca-key ./quickstart-ca-key.pem -n worker2 && \
-hypha-certutil node --ca-cert ./quickstart-ca-cert.pem --ca-key ./quickstart-ca-key.pem -n worker3 && \
+hypha-certutil root --organization root
+hypha-certutil org --root-cert ./root-ca-cert.pem --root-key ./root-ca-key.pem -o quickstart
+hypha-certutil node --ca-cert ./quickstart-ca-cert.pem --ca-key ./quickstart-ca-key.pem -n gateway
+hypha-certutil node --ca-cert ./quickstart-ca-cert.pem --ca-key ./quickstart-ca-key.pem -n scheduler
+hypha-certutil node --ca-cert ./quickstart-ca-cert.pem --ca-key ./quickstart-ca-key.pem -n worker1
+hypha-certutil node --ca-cert ./quickstart-ca-cert.pem --ca-key ./quickstart-ca-key.pem -n worker2
+hypha-certutil node --ca-cert ./quickstart-ca-cert.pem --ca-key ./quickstart-ca-key.pem -n worker3
 hypha-certutil node --ca-cert ./quickstart-ca-cert.pem --ca-key ./quickstart-ca-key.pem -n data1
 ```
+
+> [!WARNING]
+> `hypha-certutil` is only for development and testing. For production clusters, follow the mTLS guidance in [Security](@/security.md) and issue node certificates from your organization’s PKI with proper rotation and CRL distribution.
 
 ---
 
@@ -74,12 +83,20 @@ Generate a configuration for local development using `hypha-gateway init`:
 hypha-gateway init -n gateway -o gateway-config.toml --exclude-cidr 192.0.2.0/24
 ```
 
+```text
+Configuration written to: "gateway-config.toml"
+```
+
 #### Scheduler Node
 
 Generate the necessary configuration using `hypha-scheduler init`:
 
 ```bash
 hypha-scheduler init -n scheduler -o scheduler-config.toml --exclude-cidr 192.0.2.0/24 --gateway /ip4/127.0.0.1/tcp/8080
+```
+
+```text
+Configuration written to: "scheduler-config.toml"
 ```
 
 ##### Send metrics to AIM
@@ -91,9 +108,15 @@ If you want the Scheduler to send metrics to AIM, you can download and set up ou
 Generate worker configuration using `hypha-worker init`:
 
 ```bash
-hypha-worker init -n worker1 -o worker1-config.toml --exclude-cidr 192.0.2.0/24 --gateway /ip4/127.0.0.1/tcp/8080 && \
-hypha-worker init -n worker2 -o worker2-config.toml --exclude-cidr 192.0.2.0/24 --gateway /ip4/127.0.0.1/tcp/8080 && \
+hypha-worker init -n worker1 -o worker1-config.toml --exclude-cidr 192.0.2.0/24 --gateway /ip4/127.0.0.1/tcp/8080
+hypha-worker init -n worker2 -o worker2-config.toml --exclude-cidr 192.0.2.0/24 --gateway /ip4/127.0.0.1/tcp/8080
 hypha-worker init -n worker3 -o worker3-config.toml --exclude-cidr 192.0.2.0/24 --gateway /ip4/127.0.0.1/tcp/8080
+```
+
+```text
+Configuration written to: "worker1-config.toml"
+Configuration written to: "worker2-config.toml"
+Configuration written to: "worker3-config.toml"
 ```
 
 #### Accelerate Configuration
@@ -101,7 +124,7 @@ hypha-worker init -n worker3 -o worker3-config.toml --exclude-cidr 192.0.2.0/24 
 Create an `accelerate.yaml` file with the following configuration:
 
 ```bash
-cat <<EOL > accelerate.yaml
+cat <<'EOF' > accelerate.yaml
 compute_environment: LOCAL_MACHINE
 debug: false
 distributed_type: "NO"
@@ -118,7 +141,7 @@ tpu_env: []
 tpu_use_cluster: false
 tpu_use_sudo: false
 use_cpu: false
-EOL
+EOF
 ```
 
 #### Data Node
@@ -126,7 +149,11 @@ EOL
 Generate a data configuration using `hypha-data init`:
 
 ```bash
-hypha-data init -n data1 --dataset-path="mnist" -o data-config.toml --exclude-cidr 192.0.2.0/24 --gateway /ip4/127.0.0.1/tcp/8080
+hypha-data init -n data1 --dataset-path="mnist/mnist" -o data-config.toml --exclude-cidr 192.0.2.0/24 --gateway /ip4/127.0.0.1/tcp/8080
+```
+
+```text
+Configuration written to: "data-config.toml"
 ```
 
 ### Download the Training Dataset
@@ -134,9 +161,11 @@ hypha-data init -n data1 --dataset-path="mnist" -o data-config.toml --exclude-ci
 In the project folder (where all configuration files and certificates are), clone the HuggingFace dataset. To ensure a clean folder structure afterwards, use this quick workaround:
 
 ```bash
-git clone https://huggingface.co/datasets/hypha-space/mnist mnist.git && \
-mv mnist.git/mnist . && \
-rm -rf mnist.git
+git clone https://huggingface.co/datasets/hypha-space/mnist
+```
+
+```text
+Cloning into 'mnist'...
 ```
 
 Congratulations! Hypha is now set up correctly.
@@ -149,7 +178,16 @@ With everything set up, start the Hypha nodes and begin training.
 
 In different terminals, start the gateway first:
 
-1. `RUST_LOG=info hypha-gateway run -c gateway-config.toml`
+```bash
+RUST_LOG=info hypha-gateway run -c gateway-config.toml
+```
+
+```text
+INFO libp2p_swarm: local_peer_id=<PEER_ID>
+INFO hypha_network::listen: Listening address=/ip4/127.0.0.1/tcp/8080
+INFO hypha_network::listen: Listening address=/ip4/127.0.0.1/udp/8080/quic-v1
+WARN libp2p_kad::behaviour: Failed to trigger bootstrap: No known peers.
+```
 
 Then start the worker and data nodes (the gateway must be running first):
 
@@ -160,7 +198,9 @@ Then start the worker and data nodes (the gateway must be running first):
 
 Finally, once all the nodes above are running properly, start the scheduler to begin training:
 
-1. `RUST_LOG=info hypha-scheduler run -c scheduler-config.toml`
+```bash
+RUST_LOG=info hypha-scheduler run -c scheduler-config.toml
+```
 
 ### Expected Output
 

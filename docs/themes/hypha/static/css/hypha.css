@@ -1,0 +1,40 @@
+:root {
+    --pico-font-family: monospace;
+    --pico-border-radius: 0.25rem;
+    --hypha-max-width: 960px;
+}
+
+header {
+    display: flex;
+    align-items: flex-start;
+    flex-direction: column;
+    gap: var(--pico-spacing);
+}
+
+header [type="search"] {
+    --pico-border-radius: 0.25rem;
+    padding-top: var(--pico-spacing);
+}
+
+header ul[role="navigation"] {
+    padding-left: 1em;
+}
+
+main [aria-label="Breadcrumb"] {
+    justify-content: start;
+    gap: var(--pico-spacing);
+    padding-bottom: var(--pico-spacing);
+}
+
+main ul[role="navigation"] li {
+    list-style: "├─ ";
+}
+
+main ul[role="navigation"] li summary {
+    font-size: 90%;
+}
+
+footer {
+    border-top: 1px solid var(--pico-color);
+    font-size: 90%;
+}

@@ -1,3 +1,10 @@
++++
+title = "hypha-worker CLI"
+description = "Auto-generated reference for the hypha-worker command, covering configuration and operational subcommands."
+[taxonomies]
+track = ["reference"]
++++
+
 <!-- NOTE: Auto-generated. Do not edit manually. -->
 
 # hypha-worker CLI Reference
@@ -46,6 +53,50 @@ IMPORTANT: If the output file exists, it will be overwritten without warning.
 
   Default value: `config.toml`
 * `-n`, `--name <NAME>` — Name of this worker node
+* `--gateway <GATEWAY_ADDRESSES>` — Gateway addresses to connect to (repeatable, overrides config)
+
+   Gateways provide network bootstrapping, DHT access, and optional relay.
+   Must include the peer ID in the multiaddr.
+
+   Examples:
+     --gateway /ip4/203.0.113.10/tcp/8080/p2p/12D3KooWAbc...
+     --gateway /dns4/gateway.hypha.example/tcp/443/p2p/12D3KooWAbc...
+   Required: connect to at least one gateway.
+* `--listen <LISTEN_ADDRESSES>` — Addresses to listen on (repeatable, overrides config)
+
+   Where the worker accepts incoming connections.
+
+   Examples:
+     --listen /ip4/0.0.0.0/tcp/9091
+     --listen /ip4/0.0.0.0/udp/9091/quic-v1
+* `--external <EXTERNAL_ADDRESSES>` — External addresses to advertise (repeatable, overrides config)
+
+   Publicly reachable addresses peers should use to connect.
+
+   Examples:
+     --external /ip4/203.0.113.30/tcp/9091
+     --external /dns4/worker.example.com/tcp/9091
+* `--relay-circuit <RELAY_CIRCUIT>` — Enable relay circuit listening via gateway (overrides config)
+
+   true = use relay (default), false = direct connections only.
+
+  Possible values: `true`, `false`
+
+* `--socket <SOCKET_ADDRESS>` — Socket path for driver communication (overrides config)
+
+   Unix domain socket for worker-executor communication (optional).
+* `--work-dir <WORK_DIR>` — Base directory for job working directories (overrides config)
+
+   Where per-job working directories are created.
+
+   Examples:
+     --work-dir /tmp
+     --work-dir /mnt/fast-ssd/hypha
+* `--exclude-cidr <EXCLUDE_CIDR>` — CIDR ranges to exclude from DHT (repeatable, overrides config)
+
+   Filters out peer addresses matching these ranges before adding to the DHT.
+
+   Examples: 10.0.0.0/8, fc00::/7
 
 
 

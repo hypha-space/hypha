@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <meta name="color-scheme" content="light dark" />
+        <meta name="HandheldFriendly" content="True" />
+        {% set site_title = config.title | default(value="Hypha Docs") %}
+        {% set meta_description = config.description | default(value="Hypha documentation.") %}
+        {% set page_title = site_title %}
+        {% if page %}
+            {% set page_title = page.title ~ " · " ~ site_title %}
+            {% if page.description %}
+                {% set meta_description = page.description %}
+            {% elif page.summary %}
+                {% set meta_description = page.summary | striptags | trim | truncate(length=180) %}
+            {% endif %}
+        {% elif section %}
+            {% set page_title = section.title ~ " · " ~ site_title %}
+            {% if section.description %}
+                {% set meta_description = section.description %}
+            {% endif %}
+        {% endif %}
+        <meta name="description" content="{{ meta_description }}" />
+        <title>{% block title %}{{ page_title }}{% endblock title %}</title>
+        <link rel="shortcut icon" href="{{ get_url(path="img/favicon-light.ico", trailing_slash=false) }}"
+        type="image/x-icon" media="(prefers-color-scheme: light)">
+        <link rel="shortcut icon" href="{{ get_url(path="img/favicon-dark.ico", trailing_slash=false) }}"
+        type="image/x-icon" media="(prefers-color-scheme: dark)">
+        <link rel="stylesheet" href="{{ get_url(path="css/pico.classless.zinc.min.css", trailing_slash=false) }}" />
+        <link rel="stylesheet" href="{{ get_url(path="css/hypha.css", trailing_slash=false) }}" />
+    </head>
+    {% set docs_root = get_section(path="_index.md") %}
+    {% set repo_edit_base = "https://github.com/hypha-space/hypha/edit/main/docs/content/" %}
+    {% if page %}
+        {% set edit_slug = page.relative_path %}
+    {% elif section %}
+        {% set edit_slug = section.relative_path %}
+    {% endif %}
+    {% if edit_slug %}
+        {% set edit_url = repo_edit_base ~ edit_slug %}
+    {% endif %}
+    <body data-base-url="{{ config.base_url }}">
+        <header>
+            <a href="{{ docs_root.permalink }}">
+                <img src="{{ get_url(path="img/logo-adaptive.svg", trailing_slash=false) }}" alt="Hypha Space Logo"  />
+
+            </a>
+            <input type="search" placeholder="Search" autocomplete="off" hidden />
+            <ul role="navigation" aria-label="Search Results" hidden />
+        </header>
+        <main>{% block content %}{% endblock content %}</main>
+        {% set imprint_page = get_page(path="imprint.md") %}
+        <footer>
+            <div class="contribute">
+                {% if edit_url %}
+                <p>Found something to improve? <a href="{{ edit_url }}">Edit this page on GitHub</a>. Found a bug? <a href="https://github.com/hypha-space/hypha/issues/new/choose">Open an issue on GitHub</a> so we can fix and improve Hypha.</p>
+                {% else %}
+                <p>Found a bug? <a href="https://github.com/hypha-space/hypha/issues/new/choose">Open an issue</a> so we can fix and improve Hypha.</p>
+                {% endif %}
+            </div>
+            <div class="legal-links">
+                <a href="https://www.iubenda.com/privacy-policy/78826813" class="iubenda-black iubenda-noiframe iubenda-embed iubenda-noiframe" title="Privacy Policy">Privacy Policy</a>
+                <a href="https://www.iubenda.com/privacy-policy/78826813/cookie-policy" class="iubenda-black iubenda-noiframe iubenda-embed iubenda-noiframe" title="Cookie Policy">Cookie Policy</a>
+                {% if imprint_page %}
+                <a href="{{ imprint_page.permalink }}">Imprint</a>
+                {% endif %}
+            </div>
+        </footer>
+        <script defer src="{{ get_url(path="js/fuse.min.js", trailing_slash=false) }}"></script>
+        <script defer src="{{ get_url(path="js/mermaid.min.js", trailing_slash=false) }}"></script>
+        <script defer src="{{ get_url(path="search_index.en.js", trailing_slash=false) }}"></script>
+        <script defer src="{{ get_url(path="js/search.js", trailing_slash=false) }}"></script>
+        <script defer src="{{ get_url(path="js/mermaid-init.js", trailing_slash=false) }}"></script>
+        <script type="text/javascript">
+        (function (w, d) {
+            var loader = function () {
+                var s = d.createElement("script");
+                var tag = d.getElementsByTagName("script")[0];
+                s.src = "https://cdn.iubenda.com/iubenda.js";
+                tag.parentNode.insertBefore(s, tag);
+            };
+            if (w.addEventListener) {
+                w.addEventListener("load", loader, false);
+            } else if (w.attachEvent) {
+                w.attachEvent("onload", loader);
+            } else {
+                w.onload = loader;
+            }
+        })(window, document);
+        </script>
+    </body>
+</html>

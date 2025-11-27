@@ -1,0 +1,18 @@
+{% macro trail(page, section) %} {% set root = get_section(path="_index.md") %} {% set base_title =
+root.title | default(value="Docs") %} {% set segments = [] %} {% if page %} {% set segments =
+page.ancestors | reverse %} {% set current_label = page.title %} {% set current_url = page.permalink
+%} {% elif section %} {% set segments = section.ancestors | reverse %} {% set current_label =
+section.title | default(value=base_title) %} {% set current_url = section.permalink %} {% endif %}
+
+<nav aria-label="Breadcrumb">
+    <a href="{{ root.permalink }}">{{ base_title }}</a>
+    {% for ancestor_path in segments %} {% set ancestor = get_section(path=ancestor_path) %} {% if
+    ancestor.permalink != root.permalink %}
+    <span aria-hidden="true">/</span>
+    <a href="{{ ancestor.permalink }}">{{ ancestor.title }}</a>
+    {% endif %} {% endfor %} {% if current_label %}
+    <span aria-hidden="true">/</span>
+    <span aria-current="page">{{ current_label }}</span>
+    {% endif %}
+</nav>
+{% endmacro %}

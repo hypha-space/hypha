@@ -1,0 +1,4 @@
+{% extends "base.html" %} {% import "macros/breadcrumbs.html" as crumbs %} {% block content %} {{
+crumbs::trail(page=page, section=false) }}
+<section>{{ page.content | safe }}</section>
+{% endblock %}

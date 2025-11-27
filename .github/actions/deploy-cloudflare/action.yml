@@ -1,0 +1,32 @@
+name: Deploy to Cloudflare
+description: Build and deploy the docs to Cloudflare Workers
+inputs:
+  cf-api-token:
+    description: Cloudflare API token with permission to deploy Workers Sites/Pages
+    required: true
+  cf-account-id:
+    description: Cloudflare account ID that owns the target project
+    required: true
+  environment:
+    description: Wrangler environment to deploy
+    required: false
+    default: production
+  github-token:
+    description: GitHub token forwarded to Wrangler for authenticated fetches
+    required: false
+runs:
+  using: composite
+  steps:
+    - name: Install Zola dependency needed for building the doc bundle via wrangler
+      uses: taiki-e/install-action@763e3324d4fd026c9bd284c504378585777a87d5 # v2.62.57
+      with:
+        tool: zola@0.21.0
+
+    - name: Deploy via Wrangler
+      uses: cloudflare/wrangler-action@da0e0dfe58b7a431659754fdf3f186c529afbe65 # v3.14.1
+      with:
+        apiToken: ${{ inputs.cf-api-token }}
+        accountId: ${{ inputs.cf-account-id }}
+        command: deploy --env ${{ inputs.environment }}
+      env:
+        GITHUB_TOKEN: ${{ inputs.github-token }}

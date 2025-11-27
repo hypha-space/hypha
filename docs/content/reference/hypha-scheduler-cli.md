@@ -1,3 +1,10 @@
++++
+title = "hypha-scheduler CLI"
+description = "Auto-generated reference for the hypha-scheduler command, its init/probe/run options, and flags."
+[taxonomies]
+track = ["reference"]
++++
+
 <!-- NOTE: Auto-generated. Do not edit manually. -->
 
 # hypha-scheduler CLI Reference
@@ -46,6 +53,37 @@ IMPORTANT: If the output file exists, it will be overwritten without warning.
   Default value: `config.toml`
 * `-n`, `--name <NAME>` — Name of this scheduler node
 * `-j`, `--job <JOB>`
+* `--gateway <GATEWAY_ADDRESSES>` — Gateway addresses to connect to (repeatable, overrides config)
+
+   Gateways provide network bootstrapping, DHT access, and optional relay.
+
+   Examples:
+     --gateway /ip4/203.0.113.10/tcp/8080/
+     --gateway /dns4/gateway.hypha.example/tcp/443/
+* `--listen <LISTEN_ADDRESSES>` — Addresses to listen on (repeatable, overrides config)
+
+   Where the scheduler accepts incoming connections.
+
+   Examples:
+     --listen /ip4/0.0.0.0/tcp/9090
+     --listen /ip4/0.0.0.0/udp/9090/quic-v1
+* `--external <EXTERNAL_ADDRESSES>` — External addresses to advertise (repeatable, overrides config)
+
+   Publicly reachable addresses peers should use to connect.
+
+   Examples:
+     --external /ip4/203.0.113.20/tcp/9090
+     --external /dns4/scheduler.example.com/tcp/9090
+* `--relay-circuit <RELAY_CIRCUIT>` — Enable relay circuit listening via gateway (overrides config)
+
+   true = use relay (default), false = direct connections only.
+
+  Possible values: `true`, `false`
+
+* `--exclude-cidr <EXCLUDE_CIDR>` — CIDR ranges to exclude from DHT (repeatable, overrides config)
+
+   Filters out peer addresses matching these ranges before adding to the DHT.
+   Examples: 10.0.0.0/8, fc00::/7
 
 
 
