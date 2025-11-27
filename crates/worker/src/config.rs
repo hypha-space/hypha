@@ -438,7 +438,7 @@ impl Default for Config {
                             "--no-project".to_string(),
                             "--with".to_string(),
                             format!(
-                                "https://github.com/hypha-space/hypha/releases/download/v{}/hypha_accelerate_executor-{}-py3-none-any.whl",
+                                "hypha-accelerate-executor[mps_cu128] @ https://github.com/hypha-space/hypha/releases/download/v{}/hypha_accelerate_executor-{}-py3-none-any.whl",
                                 version,
                                 to_pyver(version)
                             ),
