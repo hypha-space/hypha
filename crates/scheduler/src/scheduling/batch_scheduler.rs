@@ -67,7 +67,7 @@ where
             progress: update, ..
         },
     ) = request;
-    tracing::info!(
+    tracing::debug!(
         %peer_id,
         ?update,
         "Received update",
@@ -96,11 +96,9 @@ where
                         update_cap,
                     );
                     let peer_position = tracker.worker_tracker.worker_position(&peer_id)?;
-                    tracing::debug!(time = %time, count = %cnt, "Finish simulation");
-                    tracing::info!(
-                        "Simulation with projection {:?} and {:?} of {:?}",
+                    tracing::debug!(time = %time, count = %cnt,
+                        "Simulation with projection {:?} and {:?}",
                         projection,
-                        cnt,
                         tracker.count()
                     );
                     if cnt == 0 && !capped {
@@ -130,6 +128,7 @@ where
         }
         progress::Progress::Updated => {
             let mut tracker = tracker.lock().await;
+            tracing::info!("Finished round {:}", tracker.round() + 1);
             tracker.next_round();
             if tracker.training_finished() {
                 Ok(progress::Response::Done {})
