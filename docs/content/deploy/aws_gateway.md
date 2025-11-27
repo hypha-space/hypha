@@ -14,6 +14,7 @@ This guide walks you through deploying a **Hypha Gateway** on AWS EC2.
 **Prerequisites:**
 - A **Node Certificate** and Key for the gateway (see [Security](@/security.md)).
 - A static public IP (AWS Elastic IP) is strongly recommended to keep the entry point stable.
+- An [aws](https://aws.amazon.com) account.
 
 ## 1. Infrastructure Specification
 
