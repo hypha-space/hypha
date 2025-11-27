@@ -26,6 +26,10 @@ runs:
       run: rustup target add "${{ inputs.target }}"
       shell: bash
 
+    - name: Install cargo-edit
+      run: cargo install cargo-edit
+      shell: bash
+
     - name: Set version
       run: cargo set-version "${{ inputs.version }}"
       shell: bash
