@@ -10,7 +10,7 @@ use candle_core::{
     Device, Tensor,
     safetensors::{Load, MmapedSafetensors},
 };
-use futures_util::StreamExt;
+use futures_util::{StreamExt, TryStreamExt};
 use hypha_messages::{Executor, progress};
 use libp2p::PeerId;
 use safetensors::serialize_to_file;
@@ -19,6 +19,10 @@ use tokio::{
     fs,
     io::{self, AsyncWriteExt},
     sync::mpsc,
+};
+use tokio_retry::{
+    Retry,
+    strategy::{ExponentialBackoff, jitter},
 };
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use uuid::Uuid;
@@ -80,6 +84,10 @@ impl JobExecutor for ParameterServerExecutor {
     ) -> Result<ParameterServerExecution, Error> {
         tracing::info!(job_spec = ?job, "Executing parameter server job");
 
+        let retry_strategy = ExponentialBackoff::from_millis(100)
+            .map(jitter) // add jitter to delays
+            .take(3); // limit to 3 retries
+
         let id = Uuid::new_v4();
         let work_dir = self.work_dir_base.join(format!("hypha-{}", id));
         fs::create_dir_all(&work_dir).await?;
@@ -104,10 +112,7 @@ impl JobExecutor for ParameterServerExecutor {
 
                 // NOTE: Receive streams in parallel, but keep processing (averaging + broadcasting)
                 // sequential to stay within memory constraints and preserve existing logic.
-                let incoming = match connector.receive(updates).await {
-                    Ok(s) => s,
-                    Err(_) => return,
-                };
+                let incoming = connector.receive(updates).await?;
 
                 // Channel to report finished file paths from parallel receivers to the sequenced processor.
                 let (tx, mut rx) = mpsc::channel::<(String, PathBuf)>(num_workers.max(1) * 2);
@@ -195,7 +200,7 @@ impl JobExecutor for ParameterServerExecutor {
                                     // Compute (a + b) / 2.
                                     (a + b).and_then(|t| t / 2.)
                                 };
-                                if let Err(e) = apply_tensor_op(
+                                apply_tensor_op(
                                     &file_name,
                                     &result_tensor_file_name,
                                     &resulting_tensor_file_name,
@@ -203,9 +208,7 @@ impl JobExecutor for ParameterServerExecutor {
                                     &device,
                                     average_op,
                                 )
-                                .await{
-                                    tracing::warn!(error = ?e, "Failed to average results");
-                                }
+                                .await?;
                                 Some(resulting_tensor_file_name)
                         }
                     };
@@ -220,68 +223,57 @@ impl JobExecutor for ParameterServerExecutor {
                         // In edge-cases we might receive updates while still sending out results.
                         // This will overwrite 'result_file_name'.
                         let final_tensor_file_name = work_dir.join("avg-final");
-                        fs::rename(result_file_name.as_path(), final_tensor_file_name.as_path()).await.expect("tensor file can be renamed");
+                        fs::rename(result_file_name.as_path(), final_tensor_file_name.as_path()).await?;
 
                         // Do outer optimization
-                        let gradient_file =  nesterov(final_tensor_file_name.clone(),  work_dir.clone(), &device, optimizer.momentum, optimizer.learning_rate).await.expect("nesterov");
+                        let gradient_file =  nesterov(final_tensor_file_name.clone(),  work_dir.clone(), &device, optimizer.momentum, optimizer.learning_rate).await?;
+                        let gradient_file_path = gradient_file.as_path();
 
                         // These need to be reset before sending out the result!
                         current_result_tensor_file_name = None;
                         current_worker = 0;
 
-                        match connector.send(results.clone()).await {
-                            Ok(writers) => {
-                                writers.for_each_concurrent(None, async |item_res| {
-                                    match item_res {
-                                        Ok(item) => {
-                                                tracing::info!(peer_id = item.meta.name, "Sending parameter server update");
+                        Retry::spawn(retry_strategy.clone(), || {
+                            let connector = connector.clone();
+                            let results = results.clone();
+                            async move {
+                                let writer = connector.send(results).await?;
+                                writer
+                                    .map_err(Error::from)
+                                    .try_for_each_concurrent(None, |item| {
+                                        async move {
+                                        tracing::info!(peer_id = item.meta.name, "Sending parameter server update");
+                                        let mut file = fs::File::open(gradient_file_path).await?;
+                                        let mut writer = item.writer;
+                                        io::copy(&mut file, &mut writer).await?;
+                                        writer.shutdown().await?;
+                                        Ok(())
+                                    }})
+                                    .await?;
+                                Ok::<(), Error>(())
+                            }
+                        }).await?;
 
-                                                match fs::File::open(gradient_file.as_path()).await {
-                                                    Ok(mut file) => {
-                                                        let mut writer = item.writer;
+                        fs::remove_file(gradient_file.as_path()).await?;
+                        fs::remove_file(final_tensor_file_name.as_path()).await?;
 
-                                                        if let Err(e) = io::copy(
-                                                            &mut file,
-                                                            &mut writer,
-                                                        )
-                                                        .await
-                                                        {
-                                                            tracing::warn!(error = ?e, "Failed to write update to peer");
-                                                        }
-
-                                                        writer.shutdown().await.expect("Failed to shutdown writer");
-                                                    }
-                                                    Err(e) => {
-                                                        tracing::warn!(error = ?e, "Failed to open result tensor file");
-                                                    }
-                                            }
-                                        }
-                                        Err(e) => {
-                                            tracing::warn!(error = ?e, "Failed to open writer to peer");
-                                        }
+                        Retry::spawn(retry_strategy.clone(), || {
+                            let network = network.clone();
+                            async move {
+                                hypha_network::request_response::RequestResponseInterface::<progress::Codec>::request(
+                                    &network,
+                                    scheduler_id,
+                                    progress::Request{
+                                        job_id,
+                                        progress: progress::Progress::Updated,
                                     }
-                                }).await;
+                                )
+                                .await
                             }
-                            Err(e) => {
-                                // Do not panic if peers are not reachable (e.g., no addresses). We'll retry on next batch.
-                                tracing::warn!(error = ?e, "Failed to send to peers; will retry on next aggregation");
-                            }
-                        }
-
-                        fs::remove_file(gradient_file.as_path()).await.expect("gradient file can be removed");
-                        fs::remove_file(final_tensor_file_name.as_path()).await.expect("tensor file can be removed");
-
-                        let _ = hypha_network::request_response::RequestResponseInterface::<progress::Codec>::request(
-                            &network,
-                            scheduler_id,
-                            progress::Request{
-                                job_id,
-                                progress: progress::Progress::Updated,
-                            }
-                        )
-                        .await.expect("Request progres");
+                        }).await?;
                     }
                 }
+                Ok::<(), Error>(())
             };
 
             tokio::select! {

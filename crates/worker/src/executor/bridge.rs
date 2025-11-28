@@ -30,6 +30,10 @@ use tokio::{
     io::{self, AsyncWriteExt},
     net::UnixListener,
 };
+use tokio_retry::{
+    Retry,
+    strategy::{ExponentialBackoff, jitter},
+};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use utoipa::OpenApi;
 use uuid::Uuid;
@@ -217,37 +221,47 @@ async fn fetch_resource(
     State(state): State<Arc<SockState>>,
     Json(resource): Json<Fetch>,
 ) -> Result<Json<Vec<FileResponse>>, Error> {
+    let retry_strategy = ExponentialBackoff::from_millis(100)
+        .map(jitter) // add jitter to delays
+        .take(3); // limit to 3 retries
     validate_fetch(&resource)?;
 
-    let dir_rel = "artifacts".to_string();
-    let dir_abs = safe_join(&state.work_dir, &dir_rel)?;
-    fs::create_dir_all(&dir_abs).await?;
+    let out = Retry::spawn(retry_strategy, || {
+        let state = state.clone();
+        let resource = resource.clone();
+        let dir_rel = "artifacts".to_string();
+        let mut out: Vec<FileResponse> = Vec::new();
+        async move {
+            let dir_abs = safe_join(&state.work_dir, &dir_rel)?;
+            fs::create_dir_all(&dir_abs).await?;
+            let mut items = state.connector.fetch(resource).await?;
+            let mut idx: usize = 0;
+            while let Some(item) = items.next().await.transpose().map_err(Error::Io)? {
+                let (file_name, mut reader) = derive_name_and_reader(item, idx);
+                let rel = format!("{}/{}", dir_rel, file_name);
+                let abs = safe_join(&state.work_dir, &rel)?;
+                if let Some(parent) = abs.parent() {
+                    fs::create_dir_all(parent).await?;
+                }
 
-    let mut out: Vec<FileResponse> = Vec::new();
-    let mut items = state.connector.fetch(resource).await?;
-    let mut idx: usize = 0;
-    while let Some(item) = items.next().await.transpose().map_err(Error::Io)? {
-        let (file_name, mut reader) = derive_name_and_reader(item, idx);
-        let rel = format!("{}/{}", dir_rel, file_name);
-        let abs = safe_join(&state.work_dir, &rel)?;
-        if let Some(parent) = abs.parent() {
-            fs::create_dir_all(parent).await?;
+                let mut file = fs::File::create(&abs).await?;
+                let size = tokio::io::copy(&mut reader, &mut file).await?;
+                file.sync_all().await?;
+                tracing::info!(size, file = %abs.display(), "Copied resource");
+                set_permissions(&abs, Permissions::from_mode(0o600)).await?;
+
+                out.push(FileResponse { path: rel, size });
+                idx += 1;
+            }
+            Ok::<std::vec::Vec<FileResponse>, Error>(out)
         }
-
-        let mut file = fs::File::create(&abs).await?;
-        let size = tokio::io::copy(&mut reader, &mut file).await?;
-        file.sync_all().await?;
-        tracing::info!(size, file = %abs.display(), "Copied resource");
-        set_permissions(&abs, Permissions::from_mode(0o600)).await?;
-
-        out.push(FileResponse { path: rel, size });
-        idx += 1;
-    }
+    })
+    .await?;
 
     Ok(Json(out))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 struct SendRequest {
     resource: Send,
     path: String,
@@ -257,71 +271,48 @@ async fn send_resource(
     State(state): State<Arc<SockState>>,
     Json(req): Json<SendRequest>,
 ) -> Result<(), Error> {
-    let abs = safe_join(&state.work_dir, &req.path)?;
-    let mut writers = match state.connector.send(req.resource).await {
-        Ok(w) => w,
-        Err(e) => {
-            tracing::error!(error = %e, file = %abs.display(), "send_resource: failed to open writers");
-            return Err(Error::Connector(e));
+    let retry_strategy = ExponentialBackoff::from_millis(100)
+        .map(jitter) // add jitter to delays
+        .take(3); // limit to 3 retries
+
+    Retry::spawn(retry_strategy, || {
+        let state = state.clone();
+        let req = req.clone();
+        async move {
+            let abs = safe_join(&state.work_dir, &req.path)?;
+            let mut writers = state.connector.send(req.resource).await?;
+
+            let cancel = state.cancel.clone();
+            let file_path = abs.clone();
+            let task_tracker = state.task_tracker.clone();
+
+            // Copy the resource in the background to avoid blocking.
+            task_tracker.spawn(async move {
+                loop {
+                    let next_item = tokio::select! {
+                        _ = cancel.cancelled() => None,
+                        item = writers.next() => item,
+                    };
+
+                    let Some(item_result) = next_item else {
+                        if cancel.is_cancelled() {
+                            tracing::debug!(file = %file_path.display(), "send_resource: task cancelled");
+                        }
+                        break Ok::<(), Error>(());
+                    };
+                    let item = item_result?;
+                    let peer_id = item.meta.name.clone();
+                    let mut writer = item.writer;
+                    let mut reader =  fs::File::open(&file_path).await?;
+                    tracing::info!(peer_id = %peer_id, file = %file_path.display(), "Sending resource");
+                    let sent_bytes = io::copy(&mut reader, &mut writer).await?;
+                    writer.shutdown().await?;
+                    tracing::info!(size = sent_bytes, file = %file_path.display(), peer_id = %peer_id, "Sent resource");
+                }
+            });
+            Ok::<(), Error>(())
         }
-    };
-
-    let cancel = state.cancel.clone();
-    let file_path = abs.clone();
-    let task_tracker = state.task_tracker.clone();
-
-    // Copy the resource in the background to avoid blocking.
-    task_tracker.spawn(async move {
-        loop {
-            let next_item = tokio::select! {
-                _ = cancel.cancelled() => None,
-                item = writers.next() => item,
-            };
-
-            let Some(item_result) = next_item else {
-                if cancel.is_cancelled() {
-                    tracing::debug!(file = %file_path.display(), "send_resource: task cancelled");
-                }
-                break;
-            };
-
-            let item = match item_result {
-                Ok(item) => item,
-                Err(err) => {
-                    tracing::error!(error = %err, file = %file_path.display(), "send_resource: writer stream error");
-                    break;
-                }
-            };
-
-            let peer_id = item.meta.name.clone();
-            let mut writer = item.writer;
-
-            let mut reader = match fs::File::open(&file_path).await {
-                Ok(file) => file,
-                Err(err) => {
-                    tracing::error!(error = %err, file = %file_path.display(), peer_id = %peer_id, "send_resource: failed to open file");
-                    break;
-                }
-            };
-
-            tracing::info!(peer_id = %peer_id, file = %file_path.display(), "Sending resource");
-
-            let sent_bytes = match io::copy(&mut reader, &mut writer).await {
-                Ok(bytes) => bytes,
-                Err(err) => {
-                    tracing::error!(error = %err, file = %file_path.display(), peer_id = %peer_id, "send_resource: failed to copy resource");
-                    break;
-                }
-            };
-
-            if let Err(err) = writer.shutdown().await {
-                tracing::error!(error = %err, file = %file_path.display(), peer_id = %peer_id, "send_resource: failed to shutdown writer");
-                break;
-            }
-
-            tracing::info!(size = sent_bytes, file = %file_path.display(), peer_id = %peer_id, "Sent resource");
-        }
-    });
+    }).await?;
 
     Ok(())
 }
@@ -507,19 +498,29 @@ async fn send_status(
     State(state): State<Arc<SockState>>,
     Json(req): Json<progress::Progress>,
 ) -> Result<Json<progress::Response>, Error> {
-    tracing::info!("{:?}", req);
-    let response =
-        hypha_network::request_response::RequestResponseInterface::<progress::Codec>::request(
-            &state.network,
-            state.scheduler,
-            Request {
-                job_id: state.job_id,
-                progress: req,
-            },
-        )
-        .await?;
+    let retry_strategy = ExponentialBackoff::from_millis(100)
+        .map(jitter) // add jitter to delays
+        .take(3); // limit to 3 retries
 
-    Ok(axum::Json(response))
+    // TODO we should ensure that a message is not received repeatedly. Otherwise it will distort the training.
+    let result = Retry::spawn(retry_strategy, || {
+        let req_clone = req.clone();
+        let state = state.clone();
+        async move {
+            hypha_network::request_response::RequestResponseInterface::<progress::Codec>::request(
+                &state.network,
+                state.scheduler,
+                Request {
+                    job_id: state.job_id,
+                    progress: req_clone,
+                },
+            )
+            .await
+        }
+    })
+    .await?;
+
+    Ok(axum::Json(result))
 }
 
 fn derive_name_and_reader(item: ReadItem, idx: usize) -> (String, BoxAsyncRead) {
