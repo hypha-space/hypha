@@ -169,6 +169,9 @@ jobs:
           # Inject the release version into the install script
           sed 's/^VERSION=""$/VERSION="v${{ needs.get-next-version.outputs.new-release-version }}"/' install.sh > ./artifacts/install.sh
           chmod +x ./artifacts/install.sh
+          # Copy to `static` for deployment to Cloudflare as static asset
+          mkdir -p docs/static
+          cp ./artifacts/install.sh docs/static/install.sh
 
       - name: ls artifacts
         run: ls -R ./artifacts
@@ -178,7 +181,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npx semantic-release
 
-      - name: Deploy docs to Cloudflare
+      - name: Deploy release to Cloudflare
         uses: ./.github/actions/deploy-cloudflare
         with:
           cf-api-token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
