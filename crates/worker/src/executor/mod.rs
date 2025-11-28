@@ -12,7 +12,7 @@ pub use parameter_server::ParameterServerExecutor;
 pub use process::ProcessExecutor;
 use uuid::Uuid;
 
-use crate::executor::parameter_server::TensorOpError;
+use crate::{connector::ConnectorError, executor::parameter_server::TensorOpError};
 
 #[derive(Error, Debug)]
 pub enum Error {
@@ -29,6 +29,10 @@ pub enum Error {
     Tensor(#[from] TensorOpError),
     #[error("Executor configuration invalid: {0}")]
     InvalidExecutorConfig(String),
+    #[error("Request/Response error")]
+    RequestResponse(#[from] hypha_network::request_response::RequestResponseError),
+    #[error("Connector error")]
+    Connector(#[from] ConnectorError),
 }
 
 pub trait JobExecutor {

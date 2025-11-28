@@ -57,17 +57,12 @@ where
 
     pub async fn run(mut self, cancel: CancellationToken) -> Result<(), MetricsError> {
         while !cancel.is_cancelled() {
-            match self.streams.next().await {
-                Some((per_id, metrics)) => {
-                    tracing::debug!("Forwarding metric");
-                    self.connector
-                        .forward_metrics(per_id, metrics)
-                        .await
-                        .expect("Status forwarded");
-                }
-                None => {
-                    tracing::debug!("None received")
-                }
+            if let Some((per_id, metrics)) = self.streams.next().await {
+                tracing::debug!("Forwarding metric");
+                self.connector
+                    .forward_metrics(per_id, metrics)
+                    .await
+                    .expect("Status forwarded");
             }
         }
         Ok(())
