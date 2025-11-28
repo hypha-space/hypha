@@ -111,7 +111,3 @@ Probe commands (`hypha-worker probe <gateway>` or `hypha-data probe <gateway>`) 
 - **Secrets** — rotate certificates regularly and publish CRLs referenced by every node.
 - **Automation** — run Hypha binaries under systemd or another supervisor, and template configs via your CM tool. The [AWS GPU Worker guide](@/deploy/aws_gpu_worker.md) includes system prep patterns (cache directories, driver installation) you can reuse elsewhere.
 - **Incident response** — document troubleshooting steps for mTLS failures, DHT discovery problems, and dataset availability. Start with the symptom tables in [Security](@/security.md) and [Data Node](@/data.md).
-
----
-
-Next, follow a platform-specific runbook such as [Deploying a Hypha Gateway on AWS](@/deploy/aws_gateway.md), [Deploying a small Hypha GPU Worker on AWS](@/deploy/aws_gpu_worker.md), or [Deploying a Hypha CPU Worker](@/deploy/aws_cpu_worker.md), or create your own by cloning this template and linking back to the relevant component references.

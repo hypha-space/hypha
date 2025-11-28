@@ -14,6 +14,7 @@ This guide walks you through deploying a **CPU-only worker** on AWS EC2, specifi
 **Prerequisites:**
 - A running **Gateway** reachable by the worker.
 - A **Node Certificate** and Key for the worker (see [Security](@/security.md)).
+- An [aws](https://aws.amazon.com) account.
 
 ## 1. Infrastructure Specification
 
