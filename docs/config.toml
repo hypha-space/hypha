@@ -1,4 +1,4 @@
-base_url = "https://hypha-space.katulu.workers.dev"
+base_url = "https://hypha-space.org"
 compile_sass = false
 theme = "hypha"
 build_search_index = true
