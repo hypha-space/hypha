@@ -130,7 +130,7 @@ jobs:
         with:
           version: ${{ needs.get-next-version.outputs.new-release-version }}
           target: ${{ matrix.target }}
-          binaries: "hypha-gateway hypha-worker hypha-data hypha-scheduler hypha-certutil"
+          binaries: "hypha-gateway hypha-worker hypha-data hypha-scheduler hypha-certutil hypha-inspect"
 
   github-release:
     runs-on: ubuntu-latest

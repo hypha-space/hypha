@@ -21,7 +21,7 @@ set -u
 
 APP_NAME="hypha"
 VERSION=""
-BINARIES="hypha-gateway hypha-worker hypha-data hypha-scheduler hypha-certutil"
+BINARIES="hypha-gateway hypha-worker hypha-data hypha-scheduler hypha-certutil hypha-inspect"
 
 if [ -n "${HYPHA_INSTALLER_BASE_URL:-}" ]; then
     INSTALLER_BASE_URL="$HYPHA_INSTALLER_BASE_URL"
