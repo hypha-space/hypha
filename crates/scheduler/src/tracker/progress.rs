@@ -1,7 +1,9 @@
+use hypha_messages::progress;
 use libp2p::PeerId;
 use tokio::time::Instant;
 
 use crate::{
+    scheduler_config::ModelDestiantion,
     statistics::RuntimeStatistic,
     tracker::worker::{WorkerTracker, WorkerTrackerError},
 };
@@ -16,6 +18,7 @@ where
     round_start_instant: Instant,
     update_epochs: u32,
     update_counter: u32,
+    pub upload_to_hf: Option<ModelDestiantion>,
     pub worker_tracker: WorkerTracker<T>,
 }
 
@@ -23,7 +26,12 @@ impl<T> ProgressTracker<T>
 where
     T: RuntimeStatistic,
 {
-    pub fn new(parameter_server: PeerId, update_target: u32, update_epochs: u32) -> Self {
+    pub fn new(
+        parameter_server: PeerId,
+        update_target: u32,
+        update_epochs: u32,
+        upload_to_hf: Option<ModelDestiantion>,
+    ) -> Self {
         ProgressTracker {
             counter: update_target,
             parameter_server,
@@ -31,6 +39,7 @@ where
             round_start_instant: tokio::time::Instant::now(),
             update_epochs,
             update_counter: 0,
+            upload_to_hf,
             worker_tracker: WorkerTracker::<T>::new(),
         }
     }
@@ -64,6 +73,18 @@ where
     pub fn training_finished(&self) -> bool {
         self.update_counter == self.update_epochs
     }
+
+    pub fn upload(&mut self) -> Option<progress::Response> {
+        let result = self
+            .upload_to_hf
+            .as_ref()
+            .map(|destination| progress::Response::PushToHF {
+                repository: destination.repository.clone(),
+                token: destination.token.clone(),
+            });
+        self.upload_to_hf = None;
+        result
+    }
 }
 
 #[cfg(test)]
@@ -95,7 +116,7 @@ mod tests {
 
     #[tokio::test]
     async fn peer_info() {
-        let mut tracker = ProgressTracker::<RunningMean>::new(PeerId::random(), 1024, 1);
+        let mut tracker = ProgressTracker::<RunningMean>::new(PeerId::random(), 1024, 1, None);
         tokio::time::pause();
         let p1 = PeerId::random();
         tracker.worker_tracker.add_worker(p1, 2);
@@ -129,7 +150,7 @@ mod tests {
 
     #[test]
     fn peer_state() {
-        let mut tracker = ProgressTracker::<RunningMean>::new(PeerId::random(), 1024, 1);
+        let mut tracker = ProgressTracker::<RunningMean>::new(PeerId::random(), 1024, 1, None);
         let p1 = PeerId::random();
         tracker.worker_tracker.add_worker(p1, 2);
 
@@ -149,7 +170,7 @@ mod tests {
 
     #[test]
     fn parameter_server_update() {
-        let mut tracker = ProgressTracker::<RunningMean>::new(PeerId::random(), 1024, 1);
+        let mut tracker = ProgressTracker::<RunningMean>::new(PeerId::random(), 1024, 1, None);
         let ps = PeerId::random();
         tracker.update_parameter_server(ps);
         assert_eq!(tracker.parameter_server, ps)

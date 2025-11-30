@@ -301,6 +301,7 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
             allocated_parameter_servers[0].peer_id(),
             diloco_config.rounds.avg_samples_between_updates,
             diloco_config.rounds.update_rounds,
+            diloco_config.model_destination.clone(),
         )));
 
         let (metrics_rx, batch_scheduler_handle) = BatchScheduler::run::<

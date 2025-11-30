@@ -88,13 +88,18 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR09
                                     # Load new model with outer gradients
                                     model.load_state_dict(merge_models(previous_model_path, path))
                                     # over write previous model
-                                    save_model(model, previous_model_path)
-                                    model = accelerator.prepare(model)
-                                    print("Weights updated from", rel_path, flush=True)
                                     response = session.send_status("update-received")
                                     if response["type"] == "Done":
                                         print("Training finished")
                                         break
+                                    if response["type"] == "PushToHF":
+                                        model.push_to_hub(response["repository"], token=response["token"])
+                                        print("Model pushed. Traning finished")
+                                        break
+
+                                    save_model(model, previous_model_path)
+                                    model = accelerator.prepare(model)
+                                    print("Weights updated from", rel_path, flush=True)
                             except Exception as e:
                                 print(f"pointer handling error: {e}")
                     except StopIteration:

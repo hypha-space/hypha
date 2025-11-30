@@ -32,6 +32,7 @@ pub struct DiLoCo {
     #[serde(rename = "outer_optimizer")]
     pub outer_optimizer: Nesterov,
     pub resources: DiLoCoResources,
+    pub model_destination: Option<ModelDestiantion>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, Copy)]
@@ -100,6 +101,7 @@ impl Default for DiLoCo {
                 worker_price: PriceRange::default(),
                 parameter_server_price: PriceRange::default(),
             },
+            model_destination: None,
         }
     }
 }
@@ -128,6 +130,12 @@ impl From<ModelSource> for Model {
             input_names: source.input_names,
         }
     }
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct ModelDestiantion {
+    pub repository: String,
+    pub token: String,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]

@@ -79,6 +79,9 @@ token = "hf_..."                           # Optional auth token
 type = "vision-classification"             # Model type
 ```
 
+> [!IMPORTANT]
+> The token will be shared with all workers. Only use a token with limited rights and invalidate the token at the end.
+
 Supported model types:
 
 - `vision-classification`: Image classification models (AutoModelForImageClassification)
@@ -93,6 +96,9 @@ repository = "l45k/Resnet50"
 filenames = ["preprocessor_config.json"]
 token = "hf_..."
 ```
+
+> [!IMPORTANT]
+> The token will be shared with all workers. Only use a token with limited rights and invalidate the token at the end.
 
 **Dataset Configuration**:
 
@@ -117,6 +123,20 @@ learning_rate = 0.001
 learning_rate = 0.7
 momentum = 0.9
 ```
+
+**Upload Trained Model To HF**:
+To upload the trained model to Hugging Face provide a repository and a token with with the correct rights:
+
+```toml
+[scheduler.job.model_destination]
+repository="repository/identifier"
+token="hf_*"
+```
+
+> [!IMPORTANT]
+> This will override any existing model and model weights in the repositry and if the repository doesn't exist, it will
+try to create a new repository with the account defaults (if not changed it will be a public repositry). Additionally,
+the token will be shared with a worker. Only use a token with limited rights and invalidate the token at the end.
 
 **Resource Requirements**:
 
