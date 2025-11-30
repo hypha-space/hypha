@@ -115,6 +115,10 @@ pub mod progress {
         },
         Done,
         Error,
+        PushToHF {
+            repository: String,
+            token: String,
+        },
     }
 }
 

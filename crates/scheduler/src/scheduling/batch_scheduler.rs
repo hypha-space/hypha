@@ -150,7 +150,7 @@ where
                 {
                     notifier.notify_one();
                 }
-                Ok(progress::Response::Done {})
+                Ok(tracker.upload().unwrap_or(progress::Response::Done {}))
             } else {
                 tracker
                     .worker_tracker
@@ -252,6 +252,7 @@ mod batch_scheduler_tests {
             PeerId::random(),
             1024,
             2,
+            None,
         )));
         let (tx, mut rx) = channel(3);
         let peer_id = PeerId::random();
@@ -345,7 +346,9 @@ mod batch_scheduler_tests {
     #[tokio::test]
     async fn handle_simple_two_rounds() {
         let ps = PeerId::random();
-        let tracker = Arc::new(Mutex::new(ProgressTracker::<RunningMean>::new(ps, 800, 2)));
+        let tracker = Arc::new(Mutex::new(ProgressTracker::<RunningMean>::new(
+            ps, 800, 2, None,
+        )));
         tokio::time::pause();
         let w1 = PeerId::random();
         tracker.lock().await.worker_tracker.add_worker(w1, 150);
@@ -448,7 +451,9 @@ mod batch_scheduler_tests {
     #[tokio::test]
     async fn single_worker_responding() {
         let ps = PeerId::random();
-        let tracker = Arc::new(Mutex::new(ProgressTracker::<RunningMean>::new(ps, 200, 2)));
+        let tracker = Arc::new(Mutex::new(ProgressTracker::<RunningMean>::new(
+            ps, 200, 2, None,
+        )));
         tokio::time::pause();
         let w1 = PeerId::random();
         tracker.lock().await.worker_tracker.add_worker(w1, 150);
