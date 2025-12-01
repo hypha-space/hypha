@@ -1,6 +1,7 @@
 +++
 title = "Imprint"
 description = "Legal notice and licensing details for the Hypha documentation site."
+weight = 100
 [extra]
 hidden_in_nav = true
 +++
