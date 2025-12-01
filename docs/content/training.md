@@ -108,15 +108,16 @@ sequenceDiagram
     W->>PS: Send pseudo-gradient
     PS->>PS: Aggregate gradients (mean)
     PS->>PS: Apply outer optimizer (Nesterov)
-    PS->>W: Broadcast updated weights
+    PS->>W: Broadcast updated global gradients
 ```
 
 ## Data Distribution
 
-Efficient data loading and distribution is critical for training throughput. Datasets are provided in slices via data nodes. You need to prepare your data by slicing it and store them in the SafeTensors format, fast loading:
+Efficient data loading and distribution is critical for training throughput. Datasets are provided in slices via data nodes. You need to prepare your data by slicing it and store them in the SafeTensors format, fast loading. Additionally, we rely on [Snappy](https://github.com/google/snappy) compression to minimize the storage footprint and faster transmission:
 
 ```python
-from safetensors.torch import save_file
+from safetensors.torch import save
+from snappy import compress
 import torch
 
 # Vision data example
@@ -124,8 +125,9 @@ def save_vision_slice(images, labels, output_path):
     tensors = {
         "images": torch.stack(images),  # [N, C, H, W]
         "labels": torch.tensor(labels),  # [N]
-    }
-    save_file(tensors, output_path)
+    }        
+    with open(output_path, 'wb') as out_file:
+        out_file.write(compress(save(tensors)))
 
 # Language data example
 def save_language_slice(input_ids, attention_masks, output_path):
@@ -133,7 +135,8 @@ def save_language_slice(input_ids, attention_masks, output_path):
         "input_ids": torch.tensor(input_ids),      # [N, seq_len]
         "attention_mask": torch.tensor(attention_masks),  # [N, seq_len]
     }
-    save_file(tensors, output_path)
+    with open(output_path, 'wb') as out_file:
+        out_file.write(compress(save(tensors)))
 ```
 
 See [Data](@/data.md) for complete dataset preparation instructions and how to serve the prepared dataset. Once readay, start your data node to serve the dataset:
@@ -144,7 +147,7 @@ hypha-data run -c config.toml
 
 ## Training Workers
 
-Training workers perform the core computation of the DiLoCo algorithm. Each worker begins by advertising its resources and executor capabilities to the scheduler, then receives job configuration via the Job Bridge socket. Once configured, the worker downloads the model and preprocessor from HuggingFace and begins fetching data slices from the data node. The worker then trains for k local steps using the inner optimizer (AdamW), continuously reporting metrics such as loss and throughput to the scheduler. After completing its local training steps, the worker computes and sends pseudo-gradients (weight deltas) to the parameter server, receives the updated global weights, and repeats the cycle.
+Training workers perform the core computation of the DiLoCo algorithm. Each worker begins by advertising its resources and executor capabilities to the scheduler, then receives job configuration via the Job Bridge socket. Once configured, the worker downloads the model and preprocessor from HuggingFace and begins fetching data slices from the data node. The worker then trains for k local steps using the inner optimizer (AdamW), continuously reporting metrics such as loss and throughput to the scheduler. After completing its local training steps, the worker computes and sends pseudo-gradients (weight deltas) to the parameter server, receives the updated global gradient to update the weights, and repeats the cycle.
 
 Configure workers to run the DiLoCo training executor:
 
@@ -158,7 +161,7 @@ args = [
     "run",
     "--python", "3.12",
     "--no-project",
-    "--with", "https://github.com/hypha-space/hypha/releases/download/v<version>/hypha_accelerate_executor-<version without semver channel or metadata>-py3-none-any.whl",
+    "--with", "hypha-accelerate-executor[<extra for CUDA/ROCm version>] @ https://github.com/hypha-space/hypha/releases/download/v<version>/hypha_accelerate_executor-<version without semver channel or metadata>-py3-none-any.whl",
     # Optional: add `--extra`, "<variant>" here to pin a specific torch build (see docs below)
     "--", # N.B. this standalone `--` is the separator between `uv` opts and the cmd to be executed
     "accelerate",
@@ -175,7 +178,7 @@ See [Worker](@/worker.md) for complete worker configuration.
 
 ## Parameter Server
 
-The parameter server aggregates updates from training workers and maintains the global model state. It waits for pseudo-gradients from all workers (with a configurable timeout), then aggregates them by computing their mean. The server applies the outer optimizer using Nesterov momentum, where `velocity = momentum × velocity_prev + Δθ_avg` and `update = learning_rate × (momentum × velocity + Δθ_avg)`, updating the global model as `θ_global = θ_global + update`. Finally, it broadcasts the updated model weights to all workers to begin the next training cycle.
+The parameter server aggregates updates from training workers and maintains the global model state. It waits for pseudo-gradients from all workers (with a configurable timeout), then aggregates them by computing their mean. The server applies the outer optimizer using Nesterov momentum, where `velocity = momentum × velocity_prev + Δθ_avg` and `Δθ_update = learning_rate × (momentum × velocity + Δθ_avg)`. Finally, it broadcasts the updates to all workers, s.t. they can update their local model and begin with the next training cycle.
 
 Run a dedicated worker with the parameter server executor:
 
@@ -232,7 +235,6 @@ Specify minimum worker requirements:
 [scheduler.job.resources]
 min_memory_mb = 8192
 min_gpus = 1
-gpu_type = "nvidia"  # or "amd", "any"
 ```
 
 ### Model Types
@@ -242,7 +244,7 @@ gpu_type = "nvidia"  # or "amd", "any"
 ```toml
 [scheduler.job.model]
 repository = "microsoft/resnet-50"
-type = "vision-classification"
+type = "image-classification"
 ```
 
 Uses `AutoModelForImageClassification.from_pretrained()`.
@@ -281,7 +283,7 @@ Workers train locally for k steps using their assigned data:
 
 ```python
 # Initialize from parameter server
-θ_worker = receive_from_parameter_server()
+θ_worker = download_model_from_huggingface()
 θ_initial = θ_worker.clone()
 
 # Local training for k steps
@@ -293,9 +295,11 @@ for step in range(k):
 
     report_metrics(loss, batch_size)
 
-# Compute pseudo-gradient
+# Compute pseudo-gradient and weight by processed samples
 Δθ = θ_worker - θ_initial
-send_to_parameter_server(Δθ)
+weighted_Δθ = Δθ * ( local_sample_size / global_sample_size)
+
+send_to_parameter_server(weighted_Δθ)
 ```
 
 **Key Points**:
@@ -313,23 +317,20 @@ The parameter server aggregates and applies Nesterov momentum:
 # Wait for all workers (with timeout)
 pseudo_gradients = [Δθ_1, Δθ_2, ..., Δθ_N]
 
-# Average pseudo-gradients
-Δθ_avg = mean(pseudo_gradients)
+# Sum weighted pseudo-gradients
+Δθ_avg = sum(pseudo_gradients)
 
 # Apply Nesterov momentum
 velocity = momentum × velocity_prev + Δθ_avg
-update = learning_rate × (momentum × velocity + Δθ_avg)
-
-# Update global model
-θ_global = θ_global + update
+Δθ_update = learning_rate × (momentum × velocity + Δθ_avg)
 
 # Broadcast to workers
-broadcast_to_workers(θ_global)
+broadcast_to_workers(Δθ_update)
 ```
 
 **Key Points**:
 
-- Simple averaging provides unweighted aggregation
+- Simple averaging with pre-weighted pseudo_gradients
 - Nesterov momentum accelerates convergence
 - Updated model becomes starting point for next inner loop
 - Timeout prevents indefinite waiting for stragglers

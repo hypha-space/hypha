@@ -36,7 +36,7 @@ Also if you want to build from source, you need your rust toolchain.
 Install Hypha using the standalone installer script:
 
 ```bash
-curl -fsSL https://github.com/hypha-space/hypha/releases/download/v<VERSION>/install.sh | sh
+curl -fsSL https://hypha-space.org/install.sh | sh
 ```
 
 For alternative installation methods, see the [Installation Guide](@/installation.md).

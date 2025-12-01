@@ -76,17 +76,14 @@ repository = "owner/repo"                  # HuggingFace repository
 revision = "main"                          # Optional branch/tag
 filenames = ["config.json", "model.safetensors"]
 token = "hf_..."                           # Optional auth token
-type = "vision-classification"             # Model type
+type = "image-classification"             # Model type
+input_names = ["images"]                # Input names to the model
 ```
 
 > [!IMPORTANT]
 > The token will be shared with all workers. Only use a token with limited rights and invalidate the token at the end.
 
-Supported model types:
-
-- `vision-classification`: Image classification models (AutoModelForImageClassification)
-- `causal-lm`: Causal language models (AutoModelForCausalLM)
-- `torch`: Generic PyTorch models
+All transformers Auto Classe are supported.
 
 **Preprocessor Configuration** (optional):
 
@@ -95,6 +92,8 @@ Supported model types:
 repository = "l45k/Resnet50"
 filenames = ["preprocessor_config.json"]
 token = "hf_..."
+type = "image"              # Preprocessor Type
+input_names = ["images"]     # Input names to the preprocessor
 ```
 
 > [!IMPORTANT]
@@ -137,6 +136,24 @@ token="hf_*"
 > This will override any existing model and model weights in the repositry and if the repository doesn't exist, it will
 try to create a new repository with the account defaults (if not changed it will be a public repositry). Additionally,
 the token will be shared with a worker. Only use a token with limited rights and invalidate the token at the end.
+
+**Training Duration**:
+
+To controll the training process, there are two essential parameters. First, the number of DiLoCo rounds and second, the
+number of data samples that should be processed between updates. The Scheduler determines batch size automatically, 
+that can be processes by a worker depending on it's capabilities. To prevent a single worker to run with an extremly
+large batch size, one can also cap the batch size with a `max_batch_size`.
+
+```toml
+[scheduler.job.rounds]
+update_rounds = 100
+avg_samples_between_updates = 1200
+max_batch_size = 600
+```
+
+> [!NOTE]
+> The `avg_samples_between_updates` is the minimal number of samples and the Scheduler can use more samples depending on
+the batch sizes of the participating Workers. It will not reduce the batch size to exactly match the value.
 
 **Resource Requirements**:
 

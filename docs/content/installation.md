@@ -20,7 +20,7 @@ Hypha provides prebuilt binaries for Linux and macOS, plus a source build path w
 The installer supports modern Linux distributions (Debian, Ubuntu, Fedora, Amazon Linux) and macOS 13+ on Apple Silicon. Replace `v<VERSION>` with the version you want to install.
 
 ```bash
-curl -fsSL https://github.com/hypha-space/hypha/releases/download/v<VERSION>/install.sh -o /tmp/hypha-install.sh
+curl -curl -fsSL https://hypha-space.org/install.sh -o /tmp/hypha-install.sh
 shasum -a 256 /tmp/hypha-install.sh
 sh /tmp/hypha-install.sh
 ```
@@ -39,7 +39,7 @@ For a list of available versions, visit the [GitHub Releases](https://github.com
 > [!TIP]
 > To inspect the installer script before use, download it using `curl` and inspect it using `less`:
 > ```sh
-> curl -LsSf https://github.com/hypha-space/hypha/releases/download/v<VERSION>/install.sh | less
+> curl -fsSL https://hypha-space.org/install.sh | less
 > ```
 
 Add `$HOME/.local/bin` to the `PATH` for service users or shells that do not source `.profile` automatically. On macOS, open a new terminal so login shells reload the updated `PATH`.
