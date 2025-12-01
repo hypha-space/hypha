@@ -12,6 +12,14 @@ index_format = "fuse_javascript"
 [markdown]
 highlight_code = true
 
+render_emoji = true
+
+external_links_target_blank = true
+external_links_no_follow = true
+external_links_no_referrer = true
+
+bottom_footnotes = true
+
 github_alerts = true
 
 [extra]
