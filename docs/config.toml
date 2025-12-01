@@ -11,6 +11,8 @@ index_format = "fuse_javascript"
 
 [markdown]
 highlight_code = true
+highlight_theme = "one-dark"
+extra_syntaxes_and_themes = ["syntaxes"]
 
 render_emoji = true
 

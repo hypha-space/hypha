@@ -1,0 +1,60 @@
+%YAML 1.2
+---
+name: Log File
+
+file_extensions:
+  - log
+
+scope: log
+
+contexts:
+  main:
+    - match: '^(\[?\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}:\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?\]?)?\s*((?i:TRACE))\b(.*)$'
+      captures:
+        1: comment.line.log
+        2: support.constant.log
+        3: text.log
+
+    - match: '^(\[?\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}:\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?\]?)?\s*((?i:DEBUG))\b(.*)$'
+      captures:
+        1: comment.line.log
+        2: entity.name.function.log
+        3: text.log
+
+    - match: '^(\[?\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}:\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?\]?)?\s*((?i:INFO))\b(.*)$'
+      captures:
+        1: comment.line.log
+        2: string.other.log
+        3: text.log
+
+    - match: '^(\[?\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}:\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?\]?)?\s*((?i:WARN(?:ING)?))\b(.*)$'
+      captures:
+        1: comment.line.log
+        2: constant.numeric
+        3: text.log
+
+    - match: '^(\[?\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}:\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?\]?)?\s*((?i:ERROR))\b(.*)$'
+      captures:
+        1: comment.line.log
+        2: variable.language.log
+        3: text.log
+
+    - match: '^(\[?\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}:\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?\]?)?\s*((?i:CRITICAL))\b(.*)$'
+      captures:
+        1: comment.line.log
+        2: keyword.control.log
+        3: text.log
+
+    - match: '^(\[?\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}:\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?\]?)?\s*((?i:FATAL))\b(.*)$'
+      captures:
+        1: comment.line.log
+        2: constant.language.log
+        3: text.log
+
+    - match: '([\w-]+)\.(?i:(DEBUG|INFO|WARNING|ERROR|CRITICAL)):'
+      captures:
+        1: constant.language.log
+        2: keyword.other.log
+
+    - match: '.+'
+      scope: text.log
