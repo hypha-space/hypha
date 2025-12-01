@@ -1,44 +1,34 @@
 # Hypha
 
-Hypha is a self-managing "Kubernetes for AI" designed for distributed machine learning training and inference. Built on libp2p for decentralized networking, Hypha enables organizations to train and serve massive models across heterogeneous, poorly-connected infrastructure—from HPC GPU farms to commodity hardware—without requiring centralized coordination.
+Hypha is a self-managing "Kubernetes for AI" (but simpler) for distributed machine learning. Train and serve models across heterogeneous infrastructure—from GPU farms to _commodity_ hardware.
 
-The system implements DiLoCo (Distributed Low-Communication) style training, reducing network communication by approximately 500x compared to traditional data-parallel approaches. With automatic resource discovery, workload distribution, and fault tolerance, Hypha maintains enterprise-grade security and reliability while eliminating single points of failure.
+[Get started in minutes following the quick start guide.](https://hypha-space.org/quickstart/)
+
+Built on the battle-tested libp2p network stack with additional security features, Hypha maintains high security and reliability while making it simple to set up. The system implements DiLoCo (Distributed Low-Communication) style training, an approach that dramatically reduces communication overhead compared to traditional data-parallel training making it feasable to train across data centers.
+
+## Key Features
+
+- **Distributed Training** — Run DiLoCo-style training across workers with infrequent synchronization, ideal for bandwidth-constrained or geographically distributed setups. [Learn more →](docs/content/training.md)
+- **Production Inference (in development)** — The same decentralized architecture supports scalable, resilient inference serving with automatic load balancing.
+- **Security** — End-to-end encryption via mTLS, certificate revocation for immediate access control, and a permissioned network model. [Security guide →](docs/content/security.md)
 
 ## Installation
 
 Install Hypha using the standalone installer script:
 
 ```sh
-curl -fsSL https://github.com/hypha-space/hypha/releases/download/v<VERSION>/install.sh | sh
+curl -LsSf https://hypha-space.org/install.sh | sh
 ```
 
-For alternative installation methods (GitHub releases, Cargo), see the [Installation Guide](docs/installation.md).
+For alternative installation methods (GitHub releases, Cargo), see the [Installation Guide](docs/content/installation.md).
 
-## Getting Started
+## Next Steps
 
-Follow the [Quick Start Guide](docs/quickstart.md) to set up your first end-to-end decentralized training system.
+New to Hypha? Start with the Quick Start to get a local cluster running in minutes, then explore the architecture and deployment guides to get into production.
 
-## Goals
-
-### Democratize Large-Scale ML
-
-Make cutting-edge machine learning accessible to organizations by efficiently utilizing heterogeneous compute resources.
-
-### Minimize Operational Complexity
-
-Develop a _self_-managing system that automatically handles resource discovery, workload distribution, fault tolerance, and scaling with minimal configuration requirements and administrative overhead.
-
-### Power Production Applications
-
-Provide a reliable, high-performance inference backbone to support real-world ML applications with the scale, latency, and reliability requirements of production systems.
-
-### Real-World Ready
-
-Build a secure, maintainable, and observable system that meets enterprise requirements for encryption, resilience, repeatable deployment, and comprehensive logging.
-
-## Components
-
-<!-- TODO: Add short overview describing the main components purpose . -->
+- **[Quick Start](https://hypha-space.org/quickstart/)** — Set up a local cluster and run your first training job
+- **[Architecture](https://hypha-space.org/architecture/)** — How Gateways, Schedulers, Workers, and Data Nodes fit together
+- **[Deployment](https://hypha-space.org/deploy/)** — Deploy Hypha on cloud infrastructure
 
 ## Contributing
 
