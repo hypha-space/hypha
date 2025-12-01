@@ -12,5 +12,7 @@ index_format = "fuse_javascript"
 [markdown]
 highlight_code = true
 
+github_alerts = true
+
 [extra]
 # Put all your custom variables here
