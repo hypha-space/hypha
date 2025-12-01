@@ -53,7 +53,7 @@ SafeTensors provides several advantages for dataset storage:
 * **Streaming**: Efficient sequential access for network serving
 * **Portability**: Simple binary format with minimal dependencies
 
-While originally designed for model parameters, SafeTensors works well for preprocessed training data (tokenized text, normalized images, etc.).
+While originally designed for model parameters, SafeTensors works well for preprocessed training data (tokenized text, normalized images, etc.). Additionally, we rely on [Snappy](https://github.com/google/snappy) compression to minimize the storage footprint and faster transmission
 
 ### Converting Datasets
 
@@ -62,13 +62,14 @@ Dataset conversion typically involves:
 1. Loading raw data (images, text, etc.)
 2. Preprocessing (tokenization, normalization, augmentation)
 3. Batching into appropriate slice sizes
-4. Serializing to SafeTensors files
+4. Serializing to SafeTensors files and compress with Snappy
 
 **Example: Image Dataset Conversion**
 
 ```python
 import torch
-from safetensors.torch import save_file
+from safetensors.torch import save
+from snappy import compress
 from PIL import Image
 import os
 
@@ -101,7 +102,8 @@ def save_slice(images, labels, output_dir, slice_idx):
         "images": torch.stack(images),
         "labels": torch.tensor(labels)
     }
-    save_file(tensors, os.path.join(output_dir, f"slice-{slice_idx:04d}.safetensors"))
+    with open(os.path.join(output_dir, f"slice-{slice_idx:04d}.safetensors"), 'wb') as out_file:
+        out_file.write(compress(save(tensors)))
 ```
 
 ### Dataset Organization

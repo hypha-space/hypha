@@ -26,7 +26,7 @@ Workers implement several subsystems to participate in the distributed training 
 
 **Metric Reporting**: Workers report training metrics (loss, batch processing times, data points processed) to schedulers for performance-aware scheduling decisions.
 
-**Gradient Communication**: For DiLoCo training, workers send pseudo-gradients to parameter servers at synchronization points and receive updated model weights.
+**Gradient Communication**: For DiLoCo training, workers send pseudo-gradients to parameter servers at synchronization points and receive updated global gradients.
 
 ## Installation and Setup
 
@@ -116,7 +116,7 @@ args = [
     "run",
     "--python", "3.12",
     "--no-project",
-    "--with", "https://github.com/hypha-space/hypha/releases/download/v0.1.0/hypha_accelerate_executor-0.1.0-py3-none-any.whl",
+    "--with", "hypha-accelerate-executor[<extra for CUDA/ROCm version>] @ https://github.com/hypha-space/hypha/releases/download/v<version>/hypha_accelerate_executor-<version without semver channel or metadata>-py3-none-any.whl",
     "--",
     "accelerate",
     "launch",
@@ -195,7 +195,7 @@ The Accelerate executor enables multi-GPU training through HuggingFace Accelerat
 
 The executor is distributed as a Python wheel and uses **uv** for dependency management and execution.
 
-For detailed installation instructions, configuration examples, PyTorch variant selection, and troubleshooting, see the [Accelerate Executor README](../../executors/accelerate/README.md).
+For detailed installation instructions, configuration examples, PyTorch variant selection, and troubleshooting, see the [Accelerate Executor README](https://github.com/hypha-space/hypha/tree/alpha/executors/accelerate#readme).
 
 ### Parameter Server Executor
 
