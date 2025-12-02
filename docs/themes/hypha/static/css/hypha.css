@@ -1,7 +1,14 @@
-:root {
+:root,
+:host {
     --pico-font-family: monospace;
     --pico-border-radius: 0.25rem;
     --hypha-max-width: 960px;
+
+    --hypha-color-note: #0172ad;
+    --hypha-color-tip: #007a50;
+    --hypha-color-important: #524ed2;
+    --hypha-color-warning: #ffbf00;
+    --hypha-color-caution: #c52f21;
 }
 
 header {
@@ -37,4 +44,59 @@ main ul[role="navigation"] li summary {
 footer {
     border-top: 1px solid var(--pico-color);
     font-size: 90%;
+}
+
+blockquote {
+    padding-top: 0;
+    padding-bottom: 0;
+}
+
+.markdown-alert-note {
+    border-color: var(--hypha-color-note);
+}
+.markdown-alert-note::before {
+    display: block;
+    content: "NOTE";
+    margin-bottom: var(--pico-spacing);
+    color: var(--hypha-color-note);
+}
+
+.markdown-alert-tip {
+    border-color: var(--hypha-color-tip);
+}
+.markdown-alert-tip::before {
+    display: block;
+    content: "TIP";
+    margin-bottom: var(--pico-spacing);
+    color: var(--hypha-color-tip);
+}
+
+.markdown-alert-important {
+    border-color: var(--hypha-color-important);
+}
+.markdown-alert-important::before {
+    display: block;
+    content: "IMPORTANT";
+    margin-bottom: var(--pico-spacing);
+    color: var(--hypha-color-important);
+}
+
+.markdown-alert-warning {
+    border-color: var(--hypha-color-warning);
+}
+.markdown-alert-warning::before {
+    display: block;
+    content: "WARNING";
+    margin-bottom: var(--pico-spacing);
+    color: var(--hypha-color-warning);
+}
+
+.markdown-alert-caution {
+    border-color: var(--hypha-color-caution);
+}
+.markdown-alert-caution::before {
+    display: block;
+    content: "CAUTION";
+    margin-bottom: var(--pico-spacing);
+    color: var(--hypha-color-caution);
 }

@@ -30,6 +30,7 @@ installing to ~/.local/bin
   hypha-data
   hypha-scheduler
   hypha-certutil
+  hypha-inspect
 everything's installed!
 ```
 
@@ -60,7 +61,8 @@ cargo install --git https://github.com/hypha-space/hypha \
     hypha-data \
     hypha-gateway \
     hypha-scheduler \
-    hypha-worker
+    hypha-worker \
+    hypha-inspect
 ```
 
 > [!NOTE]
@@ -75,7 +77,8 @@ rm -f ~/.local/bin/hypha-certutil \
     ~/.local/bin/hypha-data \
     ~/.local/bin/hypha-gateway \
     ~/.local/bin/hypha-scheduler \
-    ~/.local/bin/hypha-worker
+    ~/.local/bin/hypha-worker \
+    ~/.local/bin/hypha-inspect
 ```
 
 ## Next steps

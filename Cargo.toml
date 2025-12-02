@@ -12,6 +12,7 @@ members = [
     "crates/worker",
     "crates/telemetry",
     "crates/resources",
+    "crates/inspect",
 ]
 default-members = [
     "crates/certutil",
@@ -19,7 +20,7 @@ default-members = [
     "crates/gateway",
     "crates/scheduler",
     "crates/worker",
-
+    "crates/inspect",
 ]
 
 [workspace.package]
@@ -37,6 +38,8 @@ figment = { version = "0.10", features = ["toml", "env"] }
 indoc = "2"
 futures-util = "0.3"
 http-body-util = "0.1.3"
+indicatif = "0.18.3"
+console = "0.15.8"
 hypha-config = { path = "crates/config" }
 hypha-leases = { path = "crates/leases" }
 hypha-messages = { path = "crates/messages" }
@@ -93,6 +96,7 @@ toml = { version = "0.9.5" }
 tower = { version = "0.5.2", features = ["util"] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
+tracing-indicatif = "0.3.6"
 utoipa = { version = "5.4.0", features = ["axum_extras", "url", "uuid"] }
 uuid = { version = "1.17.0", features = ["serde", "v4"] }
 
