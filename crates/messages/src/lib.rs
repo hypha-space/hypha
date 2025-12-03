@@ -62,63 +62,120 @@ pub mod health {
     }
 }
 
-/// Task progress request/response messages
-pub mod progress {
-    use core::str;
-
+/// Pull-based executor control messages
+pub mod action {
     use super::*;
 
-    pub type Codec = CborCodec<Request, Response>;
+    pub type Codec = CborCodec<ActionRequest, ActionResponse>;
 
-    pub static IDENTIFIER: &str = "/hypha-progress/0.0.1";
+    pub static IDENTIFIER: &str = "/hypha-action/0.0.1";
 
+    /// Worker/PS reports its current status to the scheduler.
     #[derive(Clone, Debug, Serialize, Deserialize)]
-    pub struct Request {
+    pub struct ActionRequest {
         pub job_id: Uuid,
-        pub progress: Progress,
+        pub status: ExecutorStatus,
+    }
+
+    /// Scheduler responds with the next action for the executor.
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    pub struct ActionResponse {
+        pub job_id: Uuid,
+        pub next: ExecutorAction,
     }
 
     #[derive(Clone, Debug, Serialize, Deserialize)]
-    #[serde(rename_all = "kebab-case")]
-    pub enum Progress {
-        // after a batch
-        Status(Status),
-        // after an update
-        Metrics(Metrics),
-        // when sending updates
-        Update,
-        // parameter server after update
-        Updated,
-        // Worker when update received
-        UpdateReceived,
+    #[serde(tag = "executor", content = "details", rename_all = "kebab-case")]
+    pub enum ExecutorStatus {
+        Train(TrainStatus),
+        Aggregate(AggregateStatus),
     }
 
     #[derive(Clone, Debug, Serialize, Deserialize)]
-    pub struct Status {
-        pub batch_size: u32,
-    }
-
-    #[derive(Clone, Debug, Serialize, Deserialize)]
-    pub struct Metrics {
-        pub round: u32,
-        pub metrics: HashMap<String, f32>,
-    }
-
-    #[derive(Clone, Debug, Serialize, Deserialize)]
-    #[serde(tag = "type")]
-    pub enum Response {
-        Ok,
-        Continue,
-        ScheduleUpdate {
-            // Batch counter until update
-            counter: u32,
+    #[serde(tag = "state", rename_all = "kebab-case")]
+    pub enum TrainStatus {
+        Idle,
+        BatchCompleted {
+            batch_size: u32,
         },
-        Done,
-        Error,
-        PushToHF {
+        SentUpdate,
+        AppliedUpdate {
+            round: u32,
+            metrics: HashMap<String, f32>,
+        },
+        PushedToHub,
+        Terminated,
+        Error(TrainError),
+    }
+
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    #[serde(tag = "state", rename_all = "kebab-case")]
+    pub enum AggregateStatus {
+        Idle,
+        AggregatedUpdates {
+            metrics: Option<HashMap<String, f32>>,
+        },
+        BroadcastedUpdate {
+            metrics: Option<HashMap<String, f32>>,
+        },
+        Terminated,
+        Error(AggregateError),
+    }
+
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    #[serde(tag = "type", rename_all = "kebab-case")]
+    pub enum TrainError {
+        Connection { message: String },
+        Other { message: String },
+    }
+
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    #[serde(tag = "type", rename_all = "kebab-case")]
+    pub enum AggregateError {
+        Connection { message: String },
+        Other { message: String },
+    }
+
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    #[serde(tag = "executor", content = "action", rename_all = "kebab-case")]
+    pub enum ExecutorAction {
+        Train(TrainAction),
+        Aggregate(AggregateAction),
+    }
+
+    /// Actions targeted at training workers.
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    #[serde(tag = "kind", rename_all = "kebab-case")]
+    pub enum TrainAction {
+        Idle {
+            timeout: SystemTime,
+        },
+        ExecuteBatch,
+        SendUpdate {
+            target: Reference,
+            timeout: SystemTime,
+        },
+        ApplyUpdate {
+            source: Reference,
+            timeout: SystemTime,
+        },
+        /// DEPRECATED: Temporary path to push final weights to Hugging Face.
+        /// Prefer dedicated artifact publishing in future revisions.
+        PushToHub {
             repository: String,
             token: String,
         },
+        Terminate,
+    }
+
+    /// Actions targeted at aggregate/parameter server executors.
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    #[serde(tag = "kind", rename_all = "kebab-case")]
+    pub enum AggregateAction {
+        Idle { timeout: SystemTime },
+        AggregateUpdates { source: Reference },
+        BroadcastUpdate { target: Reference },
+        Terminate,
     }
 }
 
@@ -495,10 +552,6 @@ pub struct Preprocessor {
 pub struct TrainExecutorConfig {
     pub model: Model,
     pub data: Fetch,
-    /// Destination to send local training updates.
-    pub updates: Send,
-    /// Stream providing aggregated parameters back to the executor.
-    pub results: Receive,
     // TODO: Add support for additional optimizeres considering different executors and model types.
     pub optimizer: Adam,
     pub batch_size: u32,
@@ -510,10 +563,6 @@ pub struct TrainExecutorConfig {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AggregateExecutorConfig {
-    /// Stream of updates produced by workers.
-    pub updates: Receive,
-    /// Stream used to distribute aggregated parameters back to workers.
-    pub results: Send,
     // TODO: Add support for additional optimizeres when needed.
     pub optimizer: Nesterov,
 }

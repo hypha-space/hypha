@@ -170,8 +170,7 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
                                         .with_p2p(peer_id)
                                         .map(|a| a.with(Protocol::P2pCircuit))
                                     {
-                                        let _ =
-                                            network.listen(relay_addr).await.into_diagnostic()?;
+                                        network.listen(relay_addr).await.into_diagnostic()?;
                                     } else {
                                         return Err(miette::miette!(
                                             "Failed to construct circuit address"

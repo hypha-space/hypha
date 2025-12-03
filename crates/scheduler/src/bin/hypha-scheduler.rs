@@ -7,35 +7,34 @@ use figment::{
     providers::{Env, Format, Serialized, Toml},
     value::Map,
 };
-use futures_util::future::{join_all, select_all};
+use futures_util::{StreamExt, future::join_all};
 use hypha_config::{ConfigWithMetadata, ConfigWithMetadataTLSExt, builder, to_toml};
 use hypha_messages::{
-    AggregateExecutorConfig, AggregateExecutorDescriptor, DataRecord, Fetch, JobSpec, Receive,
-    SelectionStrategy, Send, TrainExecutorConfig, TrainExecutorDescriptor, WorkerSpec, health,
+    AggregateExecutorConfig, AggregateExecutorDescriptor, DataRecord, Fetch, JobSpec,
+    TrainExecutorConfig, TrainExecutorDescriptor, WorkerSpec, health,
 };
 use hypha_network::{
     cert::identity_from_private_key, dial::DialInterface,
     external_address::ExternalAddressInterface, kad::KademliaInterface, listen::ListenInterface,
     request_response::RequestResponseInterfaceExt, swarm::SwarmDriver,
 };
-use hypha_resources::WeightedResourceEvaluator;
+use hypha_resources::{Resources, WeightedResourceEvaluator};
 use hypha_scheduler::{
-    allocator::{Allocator, GreedyWorkerAllocator},
+    allocator::GreedyWorkerAllocator,
     config::Config,
     metrics_bridge::{AimConnector, MetricsBridge, NoOpConnector},
     network::Network,
+    pool::{Pool, PoolConfig, PoolWithStatistics},
     scheduler_config::Job as SchedulerJob,
     scheduling::{batch_scheduler::BatchScheduler, data_scheduler::DataScheduler},
     simulation::BasicSimulation,
     statistics::RunningMean,
     task::Task,
-    tracker::progress::ProgressTracker,
 };
 use hypha_telemetry as telemetry;
 use libp2p::{Multiaddr, PeerId, multiaddr::Protocol};
 use miette::{IntoDiagnostic, Result};
 use serde_json::Value;
-use tokio::{sync::Mutex, time::sleep};
 use tokio_retry::{
     Retry,
     strategy::{ExponentialBackoff, jitter},
@@ -162,8 +161,7 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
                                         .with_p2p(peer_id)
                                         .map(|a| a.with(Protocol::P2pCircuit))
                                     {
-                                        let _ =
-                                            network.listen(relay_addr).await.into_diagnostic()?;
+                                        network.listen(relay_addr).await.into_diagnostic()?;
                                     } else {
                                         return Err(miette::miette!(
                                             "Failed to construct circuit address"
@@ -204,13 +202,6 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
 
     let SchedulerJob::Diloco(diloco_config) = &config.scheduler_config().job;
 
-    // NOTE: Create allocator for resource allocation alongside existing job management
-    // TODO: Create `WeightedResourceEvaluator` for config so that the weights can be adjusted based on the job requirements.
-    let allocator =
-        GreedyWorkerAllocator::new(network.clone(), WeightedResourceEvaluator::default());
-
-    tracing::info!("Starting worker allocation and job creation process");
-
     let worker_spec = WorkerSpec {
         resources: diloco_config.resources.worker,
         executor: vec![TrainExecutorDescriptor::new(TRAIN_EXECUTOR_NAME).into()],
@@ -224,57 +215,32 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
     let worker_price = diloco_config.resources.worker_price;
     let parameter_server_price = diloco_config.resources.parameter_server_price;
 
-    // NOTE: Phase 1 - Allocate workers using the new allocator/arbiter protocol
-    // First, request worker nodes for job execution
-    let allocated_workers = match allocator
-        .request(
-            worker_spec.clone(),
-            worker_price,
-            None,
-            diloco_config.resources.num_workers as usize,
-        )
-        .await
-    {
-        Ok(allocated_workers) => {
-            tracing::info!(
-                num_workers = %allocated_workers.len(),
-                "Successfully allocated workers"
-            );
-            allocated_workers
-        }
-        Err(e) => {
-            tracing::error!(error = %e, "Failed to allocate worker");
-            Vec::new()
-        }
-    };
+    let worker_pool = Pool::new(
+        GreedyWorkerAllocator::new(network.clone(), WeightedResourceEvaluator::default()),
+        PoolConfig {
+            name: "workers".into(),
+            spec: worker_spec.clone(),
+            price: worker_price,
+            min: diloco_config.resources.worker_pool.min as usize,
+            target: diloco_config.resources.worker_pool.target as usize,
+            grace: Duration::from_millis(diloco_config.resources.worker_pool.grace_ms),
+        },
+    );
+    let worker_pool = PoolWithStatistics::<RunningMean>::new(worker_pool);
+    let worker_handle = worker_pool.handle();
 
-    // NOTE: We need to wait to allow workers to release tmp reservations before requesting parameter servers.
-    // This will be fixed once we have introduced a proper worker pool with retry allocations.
-    sleep(Duration::from_millis(1000)).await;
-
-    let allocated_parameter_servers = match allocator
-        .request(
-            parameter_server_spec.clone(),
-            parameter_server_price,
-            None,
-            1,
-        )
-        .await
-    {
-        Ok(allocated_parameter_servers) => {
-            tracing::info!(
-                num_parameter_servers = %allocated_parameter_servers.len(),
-                "Successfully allocated parameter servers"
-            );
-
-            allocated_parameter_servers
-        }
-        Err(e) => {
-            tracing::error!(error = %e, "Failed to allocate worker");
-
-            Vec::new()
-        }
-    };
+    let parameter_pool = Pool::new(
+        GreedyWorkerAllocator::new(network.clone(), WeightedResourceEvaluator::default()),
+        PoolConfig {
+            name: "parameter-servers".into(),
+            spec: parameter_server_spec.clone(),
+            price: parameter_server_price,
+            min: diloco_config.resources.parameter_server_pool.min as usize,
+            target: diloco_config.resources.parameter_server_pool.target as usize,
+            grace: Duration::from_millis(diloco_config.resources.parameter_server_pool.grace_ms),
+        },
+    );
+    let parameter_handle = parameter_pool.handle();
 
     let dataset = diloco_config.dataset.dataset.clone();
     let (data_provider, dataset_record) = get_data_provider(&network, dataset.as_str()).await?;
@@ -293,127 +259,173 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
             .expect("network ready"),
     );
 
-    let status_handle = if allocated_workers.len() >= diloco_config.resources.num_workers as usize
-        && allocated_parameter_servers.len() == 1
-    {
-        let job_id = Uuid::new_v4();
+    let job_id = Uuid::new_v4();
 
-        // Control the max allowed batch size.
-        let max_batch_size = match diloco_config.rounds.max_batch_size {
-            Some(bs) => bs as f64,
-            _ => f64::MAX,
+    // Control the max allowed batch size.
+    let max_batch_size = match diloco_config.rounds.max_batch_size {
+        Some(bs) => bs as f64,
+        _ => f64::MAX,
+    };
+    let base_gpu = worker_spec.resources.gpu();
+    let max_batch_size_cfg = diloco_config.rounds.max_batch_size;
+    let batch_sizer = Arc::new(move |resources: &Resources| {
+        let raw = if base_gpu > 0.0 {
+            (resources.gpu() / base_gpu).floor() as u32
+        } else {
+            0
         };
-
-        let worker_ids = allocated_workers
-            .iter()
-            .map(|w| w.peer_id())
-            .collect::<Vec<_>>();
-
-        let run_tracker = Arc::new(Mutex::new(ProgressTracker::<RunningMean>::new(
-            allocated_parameter_servers[0].peer_id(),
-            diloco_config.rounds.avg_samples_between_updates,
-            diloco_config.rounds.update_rounds,
-            diloco_config.model_destination.clone(),
-        )));
-
-        let (metrics_rx, batch_scheduler_handle) = BatchScheduler::run::<
-            RunningMean,
-            BasicSimulation,
-        >(
-            network.clone(), run_tracker.clone(), job_id
-        )
-        .await
-        .into_diagnostic()?;
-
-        let parameter_server = &allocated_parameter_servers[0];
-
-        let mut worker_tasks: Vec<Task> = Vec::with_capacity(allocated_workers.len());
-        for w in allocated_workers.iter() {
-            let batch_size = (w.resources().gpu() / worker_spec.resources.gpu())
-                .floor()
-                .min(max_batch_size) as u32;
-            run_tracker
-                .lock()
-                .await
-                .worker_tracker
-                .add_worker(w.peer_id(), batch_size);
-            let worker_task = Task::try_new(
-                network.clone(),
-                JobSpec {
-                    job_id,
-                    executor: TrainExecutorDescriptor::new(TRAIN_EXECUTOR_NAME)
-                        .into_executor(TrainExecutorConfig {
-                            model: diloco_config.model.clone().into(),
-                            data: Fetch::scheduler(peer_id, dataset.to_string()),
-                            updates: Send::peers(
-                                vec![parameter_server.peer_id()],
-                                SelectionStrategy::All,
-                            ),
-                            results: Receive::peers(vec![parameter_server.peer_id()]),
-                            optimizer: diloco_config.inner_optimizer.clone(),
-                            batch_size,
-                            preprocessor: diloco_config.preprocessor.clone().map(|p| p.into()),
-                            scheduler: None,
-                        })
-                        .into(),
-                },
-                &[w],
-            )
-            .await
-            .into_diagnostic()?;
-            worker_tasks.push(worker_task);
+        match max_batch_size_cfg {
+            Some(max) => raw.min(max),
+            None => raw,
         }
+    });
 
-        let _parameter_server_task = Task::try_new(
-            network.clone(),
-            JobSpec {
-                job_id,
-                executor: AggregateExecutorDescriptor::new(PARAMETER_SERVER_EXECUTOR_NAME)
-                    .into_executor(AggregateExecutorConfig {
-                        updates: Receive::peers(worker_ids.to_vec()),
-                        results: Send::peers(worker_ids.to_vec(), SelectionStrategy::All),
-                        optimizer: diloco_config.outer_optimizer.clone(),
-                    })
-                    .into(),
-            },
-            &[parameter_server],
-        )
-        .await
-        .into_diagnostic()?;
+    let mut metrics_bridge = match config.status_bridge() {
+        Some(value) => MetricsBridge::new(Box::new(AimConnector::new(value))),
+        None => MetricsBridge::new(Box::new(NoOpConnector::new())),
+    };
 
-        let mut metrics_bridge = match config.status_bridge() {
-            Some(value) => MetricsBridge::new(Box::new(AimConnector::new(value))),
-            None => MetricsBridge::new(Box::new(NoOpConnector::new())),
-        };
+    // Spawn dispatcher for parameter servers.
+    let parameter_dispatcher = {
+        let network = network.clone();
+        let diloco_config = diloco_config.clone();
 
-        metrics_bridge.register_stream(ReceiverStream::new(metrics_rx));
+        tokio::spawn(parameter_pool.for_each_concurrent(None, move |parameter_server| {
+            let network = network.clone();
+            let diloco_config = diloco_config.clone();
 
-        let cancel_token = token.clone();
-        tokio::spawn(async move {
-            tokio::select! {
-                Err(e) = metrics_bridge.run(cancel_token) => {
-                    tracing::error!(error = %e, "Status bridge failed");
-                }
-                _ = batch_scheduler_handle => {
-                    tracing::info!("Batch Scheduler finished");
+            async move {
+                match parameter_server {
+                    Ok(parameter_server) => {
+                        tracing::debug!(%job_id, peer_id = %parameter_server.peer_id, "Parameter server started");
+
+                        let job_spec = JobSpec {
+                            job_id,
+                            executor: AggregateExecutorDescriptor::new(
+                                PARAMETER_SERVER_EXECUTOR_NAME,
+                            )
+                            .into_executor(AggregateExecutorConfig {
+                                optimizer: diloco_config.outer_optimizer.clone(),
+                            })
+                            .into(),
+                        };
+
+                        match Task::try_new(network, job_spec, &[parameter_server.peer_id]).await {
+                            Ok(task) => {
+                                tracing::debug!(%job_id, peer_id = %parameter_server.peer_id,
+                                    "Dispatched parameter server job");
+                                tokio::spawn(task.for_each(|_| async {}));
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    error = %e,
+                                    %job_id,
+                                    peer_id = %parameter_server.peer_id,
+                                    "Failed to dispatch parameter server job"
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => tracing::error!(error=?e, "Worker failed"),
                 }
             }
-        })
-    } else {
-        tracing::warn!("Insufficient workers allocated for diloco training");
-        tokio::spawn(async move {})
+        }))
     };
+
+    // Spawn dispatcher for workers.
+    let worker_dispatcher = {
+        let network = network.clone();
+        let diloco_config = diloco_config.clone();
+        let worker_spec = worker_spec.clone();
+        let dataset = dataset.clone();
+
+        tokio::spawn(worker_pool.for_each_concurrent(None, move |worker| {
+            let network = network.clone();
+            let diloco_config = diloco_config.clone();
+            let worker_spec = worker_spec.clone();
+            let dataset = dataset.clone();
+
+            async move {
+                match worker {
+                    Ok(worker) => {
+                        tracing::debug!(%job_id, peer_id = %worker.peer_id, "Worker started");
+
+                        let batch_size = (worker.resources.gpu() / worker_spec.resources.gpu())
+                            .floor()
+                            .min(max_batch_size) as u32;
+
+                        let job_spec = JobSpec {
+                            job_id,
+                            executor: TrainExecutorDescriptor::new(TRAIN_EXECUTOR_NAME)
+                                .into_executor(TrainExecutorConfig {
+                                    model: diloco_config.model.clone().into(),
+                                    data: Fetch::scheduler(peer_id, dataset.clone()),
+                                    optimizer: diloco_config.inner_optimizer.clone(),
+                                    batch_size,
+                                    preprocessor: diloco_config
+                                        .preprocessor
+                                        .clone()
+                                        .map(|p| p.into()),
+                                    scheduler: None,
+                                })
+                                .into(),
+                        };
+
+                        match Task::try_new(network, job_spec, &[worker.peer_id]).await {
+                            Ok(task) => {
+                                tracing::debug!(%job_id, peer_id = %worker.peer_id,
+                                    "Dispatched worker job");
+                                tokio::spawn(task.for_each(|_| async {}));
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    error = %e,
+                                    %job_id,
+                                    peer_id = %worker.peer_id,
+                                    "Failed to dispatch worker job"
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => tracing::error!(error=?e, "💥 Worker failed"),
+                }
+            }
+        }))
+    };
+
+    let (metrics_rx, batch_scheduler_handle) = BatchScheduler::run::<RunningMean, BasicSimulation>(
+        network.clone(),
+        worker_handle.clone(),
+        parameter_handle.clone(),
+        job_id,
+        diloco_config.resources.worker_pool.min as usize,
+        Duration::from_millis(diloco_config.resources.worker_pool.grace_ms),
+        diloco_config.rounds.avg_samples_between_updates,
+        diloco_config.rounds.update_rounds,
+        diloco_config.model_destination.clone(),
+        batch_sizer.clone(),
+    )
+    .await
+    .into_diagnostic()?;
+
+    metrics_bridge.register_stream(ReceiverStream::new(metrics_rx));
+
+    let cancel_token = token.clone();
+    let status_handle = tokio::spawn(async move {
+        tokio::select! {
+            Err(e) = metrics_bridge.run(cancel_token) => {
+                tracing::error!(error = %e, "Status bridge failed");
+            }
+            _ = batch_scheduler_handle => {
+                tracing::info!("Batch Scheduler finished");
+            }
+        }
+    });
 
     // Wait for Ctrl-C or driver termination.
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {
             tracing::info!("Received SIGINT, shutting down");
-        }
-        (Err(e), index, _) = select_all(allocated_workers) => {
-            tracing::error!(error = %e, "Worker {index} failed");
-        }
-        (Err(e), _, _) = select_all(allocated_parameter_servers) => {
-            tracing::error!(error = %e, "Parameter server failed");
         }
         _ = &mut driver_task => {
             tracing::warn!("Network driver terminated, shutting down");
@@ -431,6 +443,14 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
         driver_task.abort();
     }
     let _ = driver_task.await;
+    if !parameter_dispatcher.is_finished() {
+        parameter_dispatcher.abort();
+    }
+    let _ = parameter_dispatcher.await;
+    if !worker_dispatcher.is_finished() {
+        worker_dispatcher.abort();
+    }
+    let _ = worker_dispatcher.await;
     if !tracker_task.is_finished() {
         tracker_task.abort();
     }
