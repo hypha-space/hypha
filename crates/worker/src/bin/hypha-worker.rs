@@ -29,6 +29,10 @@ use hypha_worker::{
 use libp2p::{Multiaddr, multiaddr::Protocol};
 use miette::{IntoDiagnostic, Result};
 use tokio::signal::unix::{SignalKind, signal};
+use tokio_retry::{
+    Retry,
+    strategy::{ExponentialBackoff, jitter},
+};
 use tokio_util::sync::CancellationToken;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{
@@ -141,57 +145,65 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
     )
     .await;
 
-    // Dial each gateway and, optionally, set up a relay circuit listen via it.
-    let gateway_results = join_all(
-        config
-            .gateway_addresses()
-            .iter()
-            .map(|address| {
-                let address = address.clone();
-                let network = network.clone();
-                let enable_circuit = config.relay_circuit();
-                async move {
-                    match network.dial(address.clone()).await {
-                        Ok(peer_id) => {
-                            if enable_circuit {
-                                // NOTE: When enabled, listen via the gateway relay circuit for inbound reachability.
-                                match address
-                                    .with_p2p(peer_id)
-                                    .map(|a| a.with(Protocol::P2pCircuit))
-                                {
-                                    Ok(relay_addr) => {
-                                        if let Err(e) = network.listen(relay_addr).await {
-                                            tracing::warn!(error=%e, "Failed to set up P2pCircuit listen via gateway");
-                                        }
-                                    }
-                                    Err(e) => {
-                                        tracing::warn!(error=%e, "Failed to construct relay listen address");
+    // Dial each gateway and, on success, set up a relay circuit listen via it.
+    let gateway_peer_ids = Retry::spawn(
+        ExponentialBackoff::from_millis(100).map(jitter).take(3),
+        || {
+            let network = network.clone();
+
+            let gateway_addresses = config.gateway_addresses().to_vec();
+            let enable_circuit = config.relay_circuit();
+
+            async move {
+                let gateway_results = join_all(
+                    gateway_addresses
+                        .iter()
+                        .map(|address| {
+                            let address = address.clone();
+                            let network = network.clone();
+                            async move {
+                                let peer_id =
+                                    network.dial(address.clone()).await.into_diagnostic()?;
+                                // Attempt to setup relay circuit via gateway.
+                                if enable_circuit {
+                                    if let Ok(relay_addr) = address
+                                        .with_p2p(peer_id)
+                                        .map(|a| a.with(Protocol::P2pCircuit))
+                                    {
+                                        let _ =
+                                            network.listen(relay_addr).await.into_diagnostic()?;
+                                    } else {
+                                        return Err(miette::miette!(
+                                            "Failed to construct circuit address"
+                                        ));
                                     }
                                 }
-                            } else {
-                                tracing::info!("Relay circuit listening disabled; skipping P2pCircuit listen setup");
+
+                                Ok(peer_id)
                             }
+                        })
+                        .collect::<Vec<_>>(),
+                )
+                .await;
 
-                            Ok(peer_id)
-                        }
-                        Err(e) => Err(e),
-                    }
+                let gateway_peer_ids: Vec<_> = gateway_results
+                    .into_iter()
+                    .filter_map(|result| result.ok())
+                    .collect();
+
+                if gateway_peer_ids.is_empty() {
+                    tracing::error!("Failed to connect to any gateway");
+
+                    Err(miette::miette!("Failed to connect to any gateway"))
+                } else {
+                    Ok(gateway_peer_ids)
                 }
-            })
-            .collect::<Vec<_>>(),
+            }
+        },
     )
-    .await;
+    .await?;
 
-    let gateway_peer_ids: Vec<_> = gateway_results
-        .into_iter()
-        .filter_map(|result| result.ok())
-        .collect();
-
-    if gateway_peer_ids.is_empty() {
-        return Err(miette::miette!("Failed to connect to any gateway"));
-    }
-
-    tracing::info!(gateway_ids = ?gateway_peer_ids, "Connected to gateway(s)");
+    tracing::info!(peer_ids = ?gateway_peer_ids, "Connected to gateway(s)");
 
     // NOTE: Wait until DHT bootstrapping is done.
     network.wait_for_bootstrap().await.into_diagnostic()?;

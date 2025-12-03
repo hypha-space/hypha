@@ -90,6 +90,7 @@ tokio = { version = "1.43.0", features = [
     "signal",
     "io-util",
 ] }
+tokio-retry = "0.3.0"
 tokio-stream = { version = "0.1.17", features = ["fs", "sync"] }
 tokio-util = { version = "0.7.15", features = ["compat", "rt"] }
 toml = { version = "0.9.5" }

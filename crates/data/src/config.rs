@@ -110,6 +110,16 @@ pub struct Config {
     #[serde(default = "reserved_cidrs")]
     exclude_cidr: Vec<IpNet>,
 
+    /// Enable listening via relay circuit through the gateway.
+    ///
+    /// When enabled (default), the scheduler establishes a listening address via the gateway's
+    /// relay circuit (/p2p-circuit). This allows workers to reach the scheduler even if it's
+    /// behind NAT or firewall.
+    ///
+    /// RECOMMENDATION: Keep enabled (true) unless the scheduler has public IP and external
+    /// addresses configured for direct connectivity.
+    relay_circuit: bool,
+
     /// OpenTelemetry Protocol (OTLP) endpoint for exporting telemetry data.
     ///
     /// Sends metrics, traces, and logs to an OpenTelemetry collector or compatible backend
@@ -206,6 +216,7 @@ impl Default for Config {
             ],
             dataset_path: PathBuf::new(),
             exclude_cidr: reserved_cidrs(),
+            relay_circuit: true,
             telemetry_attributes: None,
             telemetry_endpoint: None,
             telemetry_headers: None,
@@ -232,6 +243,11 @@ impl Config {
 
     pub fn exclude_cidr(&self) -> &Vec<IpNet> {
         &self.exclude_cidr
+    }
+
+    /// Whether to listen via a relay P2pCircuit through the gateway.
+    pub fn relay_circuit(&self) -> bool {
+        self.relay_circuit
     }
 
     pub fn telemetry_endpoint(&self) -> Option<Endpoint> {
