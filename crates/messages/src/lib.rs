@@ -62,6 +62,116 @@ pub mod health {
     }
 }
 
+/// Pull-based executor control messages
+pub mod action {
+    use super::*;
+
+    pub type Codec = CborCodec<ActionRequest, ActionResponse>;
+
+    pub static IDENTIFIER: &str = "/hypha-action/0.0.1";
+
+    /// Worker/PS reports its current status to the scheduler.
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    pub struct ActionRequest {
+        pub job_id: Uuid,
+        pub status: ExecutorStatus,
+    }
+
+    /// Scheduler responds with the next action for the executor.
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    pub struct ActionResponse {
+        pub job_id: Uuid,
+        pub next: ExecutorAction,
+    }
+
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    #[serde(tag = "executor", content = "details", rename_all = "kebab-case")]
+    pub enum ExecutorStatus {
+        Train(TrainStatus),
+        Aggregate(AggregateStatus),
+    }
+
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    #[serde(tag = "state", rename_all = "kebab-case")]
+    pub enum TrainStatus {
+        Idle,
+        BatchCompleted {
+            batch_size: u32,
+        },
+        SentUpdate,
+        AppliedUpdate {
+            round: u32,
+            metrics: HashMap<String, f32>,
+        },
+        Terminated,
+        Error(TrainError),
+    }
+
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    #[serde(tag = "state", rename_all = "kebab-case")]
+    pub enum AggregateStatus {
+        Idle,
+        AggregatedUpdates {
+            metrics: Option<HashMap<String, f32>>,
+        },
+        BroadcastedUpdate {
+            metrics: Option<HashMap<String, f32>>,
+        },
+        Terminated,
+        Error(AggregateError),
+    }
+
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    #[serde(tag = "type", rename_all = "kebab-case")]
+    pub enum TrainError {
+        Connection { message: String },
+        Other { message: String },
+    }
+
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    #[serde(tag = "type", rename_all = "kebab-case")]
+    pub enum AggregateError {
+        Connection { message: String },
+        Other { message: String },
+    }
+
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    #[serde(tag = "executor", content = "action", rename_all = "kebab-case")]
+    pub enum ExecutorAction {
+        Train(TrainAction),
+        Aggregate(AggregateAction),
+    }
+
+    /// Actions targeted at training workers.
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    #[serde(tag = "kind", rename_all = "kebab-case")]
+    pub enum TrainAction {
+        Idle {
+            timeout: SystemTime,
+        },
+        ExecuteBatch,
+        SendUpdate {
+            target: Reference,
+            timeout: SystemTime,
+        },
+        ApplyUpdate {
+            source: Reference,
+            timeout: SystemTime,
+        },
+        Terminate,
+    }
+
+    /// Actions targeted at aggregate/parameter server executors.
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    #[serde(tag = "kind", rename_all = "kebab-case")]
+    pub enum AggregateAction {
+        Idle { timeout: SystemTime },
+        AggregateUpdates { source: Reference },
+        BroadcastUpdate { target: Reference },
+        Terminate,
+    }
+}
+
 /// Task progress request/response messages
 pub mod progress {
     use core::str;

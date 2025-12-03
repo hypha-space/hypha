@@ -6,7 +6,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use futures_util::stream::StreamExt;
-use hypha_messages::{api, health, progress};
+use hypha_messages::{action, api, health, progress};
 use hypha_network::{
     CertificateDer, CertificateRevocationListDer, IpNet, PrivateKeyDer,
     dial::{DialAction, DialDriver, DialInterface, PendingDials},
@@ -41,6 +41,7 @@ use tokio::sync::{SetOnce, mpsc, oneshot};
 type HyphaRequestHandlers = Vec<RequestHandler<api::Codec>>;
 type HealthRequestHandlers = Vec<RequestHandler<health::Codec>>;
 type ProgressRequestHandlers = Vec<RequestHandler<progress::Codec>>;
+type ActionRequestHandlers = Vec<RequestHandler<action::Codec>>;
 
 #[derive(Clone)]
 pub struct Network {
@@ -60,6 +61,7 @@ pub struct Behaviour {
     request_response: request_response::Behaviour<api::Codec>,
     health_request_response: request_response::Behaviour<health::Codec>,
     progress_request_response: request_response::Behaviour<progress::Codec>,
+    action_request_response: request_response::Behaviour<action::Codec>,
 }
 
 pub struct NetworkDriver {
@@ -79,10 +81,13 @@ pub struct NetworkDriver {
     progress_outbound_requests_map: OutboundRequests<progress::Codec>,
     progress_outbound_responses_map: OutboundResponses,
     progress_request_handlers: ProgressRequestHandlers,
+    action_outbound_requests_map: OutboundRequests<action::Codec>,
+    action_outbound_responses_map: OutboundResponses,
+    action_request_handlers: ActionRequestHandlers,
     exclude_cidrs: Vec<IpNet>,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::large_enum_variant, clippy::enum_variant_names)]
 enum Action {
     Dial(DialAction),
     Listen(ListenAction),
@@ -91,6 +96,7 @@ enum Action {
     RequestResponse(RequestResponseAction<api::Codec>),
     HealthRequestResponse(RequestResponseAction<health::Codec>),
     ProgressRequestResponse(RequestResponseAction<progress::Codec>),
+    ActionRequestResponse(RequestResponseAction<action::Codec>),
     ExternalAddress(ExternalAddressAction),
 }
 
@@ -172,6 +178,13 @@ impl Network {
                         )],
                         request_response::Config::default(),
                     ),
+                    action_request_response: request_response::Behaviour::<action::Codec>::new(
+                        [(
+                            StreamProtocol::new(action::IDENTIFIER),
+                            request_response::ProtocolSupport::Full,
+                        )],
+                        request_response::Config::default(),
+                    ),
                 }
             })
             .map_err(|_| {
@@ -200,6 +213,9 @@ impl Network {
                 progress_outbound_requests_map: HashMap::default(),
                 progress_outbound_responses_map: HashMap::default(),
                 progress_request_handlers: Vec::new(),
+                action_outbound_requests_map: HashMap::default(),
+                action_outbound_responses_map: HashMap::default(),
+                action_request_handlers: Vec::new(),
                 action_receiver,
                 exclude_cidrs,
             },
@@ -213,7 +229,7 @@ impl SwarmDriver<Behaviour> for NetworkDriver {
             tokio::select! {
                 event = self.swarm.select_next_some() => {
                     match event {
-                        SwarmEvent::ConnectionEstablished { connection_id, peer_id, endpoint, .. } => {
+                SwarmEvent::ConnectionEstablished { connection_id, peer_id, endpoint, .. } => {
                             tracing::debug!(peer_id = %peer_id, ?endpoint, "Established new connection");
                             self.process_connection_established(peer_id, &connection_id,).await;
                         }
@@ -244,6 +260,9 @@ impl SwarmDriver<Behaviour> for NetworkDriver {
                         SwarmEvent::Behaviour(BehaviourEvent::ProgressRequestResponse(event)) => {
                             <NetworkDriver as RequestResponseDriver<Behaviour, progress::Codec>>::process_request_response_event(&mut self, event).await;
                         }
+                        SwarmEvent::Behaviour(BehaviourEvent::ActionRequestResponse(event)) => {
+                            <NetworkDriver as RequestResponseDriver<Behaviour, action::Codec>>::process_request_response_event(&mut self, event).await;
+                        }
                         SwarmEvent::Behaviour(BehaviourEvent::Dcutr(event)) => {
                             tracing::debug!("dcutr event: {:?}", event);
                         }
@@ -273,6 +292,8 @@ impl SwarmDriver<Behaviour> for NetworkDriver {
                             <NetworkDriver as RequestResponseDriver<Behaviour, health::Codec>>::process_request_response_action(&mut self, action).await,
                         Action::ProgressRequestResponse(action) =>
                             <NetworkDriver as RequestResponseDriver<Behaviour, progress::Codec>>::process_request_response_action(&mut self, action).await,
+                        Action::ActionRequestResponse(action) =>
+                            <NetworkDriver as RequestResponseDriver<Behaviour, action::Codec>>::process_request_response_action(&mut self, action).await,
                         Action::ExternalAddress(action) =>
                             self.process_external_address_action(action).await,
                     }
@@ -492,6 +513,44 @@ impl RequestResponseInterface<progress::Codec> for Network {
     ) -> Result<(), RequestResponseError> {
         self.action_sender
             .try_send(Action::ProgressRequestResponse(action))
+            .map_err(|_| RequestResponseError::Other("Failed to send action".to_string()))
+    }
+}
+
+impl RequestResponseBehaviour<action::Codec> for Behaviour {
+    fn request_response(&mut self) -> &mut libp2p::request_response::Behaviour<action::Codec> {
+        &mut self.action_request_response
+    }
+}
+
+impl RequestResponseDriver<Behaviour, action::Codec> for NetworkDriver {
+    fn outbound_requests(&mut self) -> &mut OutboundRequests<action::Codec> {
+        &mut self.action_outbound_requests_map
+    }
+
+    fn outbound_responses(&mut self) -> &mut OutboundResponses {
+        &mut self.action_outbound_responses_map
+    }
+
+    fn request_handlers(&mut self) -> &mut ActionRequestHandlers {
+        &mut self.action_request_handlers
+    }
+}
+
+impl RequestResponseInterface<action::Codec> for Network {
+    async fn send(&self, action: RequestResponseAction<action::Codec>) {
+        self.action_sender
+            .send(Action::ActionRequestResponse(action))
+            .await
+            .expect("network driver is running");
+    }
+
+    fn try_send(
+        &self,
+        action: RequestResponseAction<action::Codec>,
+    ) -> Result<(), RequestResponseError> {
+        self.action_sender
+            .try_send(Action::ActionRequestResponse(action))
             .map_err(|_| RequestResponseError::Other("Failed to send action".to_string()))
     }
 }

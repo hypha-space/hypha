@@ -4,21 +4,24 @@ use std::{
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     pin::Pin,
+    time::SystemTime,
 };
 
 use candle_core::{
     Device, Tensor,
     safetensors::{Load, MmapedSafetensors},
 };
-use futures_util::{StreamExt, TryStreamExt};
-use hypha_messages::{Executor, progress};
+use futures_util::StreamExt;
+use hypha_messages::{
+    Executor, Nesterov, Receive, Send as SendRef,
+    action::{self, AggregateError, ExecutorStatus},
+};
 use libp2p::PeerId;
 use safetensors::serialize_to_file;
 use sha2::{Digest, Sha256};
 use tokio::{
     fs,
     io::{self, AsyncWriteExt},
-    sync::mpsc,
 };
 use tokio_retry::{
     Retry,
@@ -94,10 +97,10 @@ impl JobExecutor for ParameterServerExecutor {
 
         let device = Device::Cpu;
 
-        let (updates, results, optimizer) = match &job.executor {
+        let optimizer = match &job.executor {
             Executor::Aggregate(aggregate) => {
                 let config = aggregate.config().clone();
-                (config.updates, config.results, config.optimizer)
+                config.optimizer
             }
             _ => return Err(Error::UnsupportedJobSpec()),
         };
@@ -106,193 +109,294 @@ impl JobExecutor for ParameterServerExecutor {
         let network = self.network.clone();
 
         let task_tracker = TaskTracker::new();
-        task_tracker.spawn(async move {
-            let fut = async {
-                let num_workers = updates.get_peers().len();
+        task_tracker.spawn({
+            let retry_strategy = retry_strategy.clone();
+            async move {
+                let mut current_status = ExecutorStatus::Aggregate(action::AggregateStatus::Idle);
+                let mut pending_update: Option<PathBuf> = None;
 
-                // NOTE: Receive streams in parallel, but keep processing (averaging + broadcasting)
-                // sequential to stay within memory constraints and preserve existing logic.
-                let incoming = connector.receive(updates).await?;
+                loop {
+                    tracing::debug!(job_id = %job_id, status = ?current_status, "Requesting next aggregate action");
 
-                // Channel to report finished file paths from parallel receivers to the sequenced processor.
-                let (tx, mut rx) = mpsc::channel::<(String, PathBuf)>(num_workers.max(1) * 2);
-
-                // Spawn a task to accept incoming streams and spawn per-stream copy tasks.
-                tokio::spawn( {
-                    let work_dir = work_dir.clone();
-                    let cancel = cancel.clone();
-                    async move {
-                    tokio::select! {
-                        _ = cancel.cancelled() => {
-                            tracing::debug!("stopping parameter accept handler");
+                    let action_response = match Retry::spawn(retry_strategy.clone(), || {
+                        let status = current_status.clone();
+                        let network = network.clone();
+                        async move {
+                            hypha_network::request_response::RequestResponseInterface::<
+                                action::Codec,
+                            >::request(
+                                &network,
+                                scheduler_id,
+                                action::ActionRequest { job_id, status },
+                            )
+                            .await
                         }
-                        _ = incoming.for_each_concurrent(None, |item| {
-                            let work_dir = work_dir.clone();
-                            let tx = tx.clone();
-                            async move {
-                                match item {
-                                    Ok(item) => {
-                                        let name = item.meta.name.clone();
-                                        let mut reader = item.reader;
-                                        // Don't use the name from the meta data as it could be an arbitrary path.
-                                        let hex_digest = format!("{:X}",Sha256::digest(item.meta.name));
-                                        tracing::info!(peer_id = ?name, file_name = ?hex_digest, "Received parameter server update (start)");
-                                        let file_name = work_dir.join(hex_digest);
+                    })
+                    .await
+                    {
+                        Ok(resp) => resp,
+                        Err(e) => {
+                            tracing::warn!(job_id = %job_id, error = %e, status = ?current_status, "Failed to fetch next aggregate action");
+                            current_status = ExecutorStatus::Aggregate(action::AggregateStatus::Error(AggregateError::Connection  {
+                                    message: format!("action request failed: {e}"),
+                                },
+                            ));
+                            continue;
+                        }
+                    };
 
-                                        match fs::File::create(&file_name).await {
-                                            Ok(mut file) => {
-                                                match io::copy(&mut reader, &mut file).await {
-                                                    Ok(size) => {
-                                                        file.sync_all().await.expect("file is synced");
-                                                        tracing::info!(size, path = ?file_name, "Wrote update to file");
-                                                    }
-                                                    Err(e) => {
-                                                        tracing::warn!(error = ?e, path = ?file_name, "Failed to write update to file");
-                                                        let _ = fs::remove_file(&file_name).await;
-                                                        return;
-                                                    }
-                                                }
+                    tracing::debug!(job_id = %job_id, next = ?action_response.next, "Received aggregate action");
 
-                                                if let Err(e) = fs::set_permissions(&file_name, Permissions::from_mode(0o600)).await {
-                                                    tracing::warn!(error = ?e, path = ?file_name, "Failed to set file permissions");
-                                                }
-                                                // Notify processor that this update file is ready.
-                                                let _ = tx.send((name, file_name)).await;
-                                            }
-                                            Err(e) => {
-                                                tracing::warn!(error = ?e, path = ?file_name, "Failed to create update file");
-                                            }
-                                        }
+                    match action_response.next {
+                        action::ExecutorAction::Aggregate(agg_action) => match agg_action {
+                            action::AggregateAction::Terminate => break,
+                            action::AggregateAction::Idle { timeout } => {
+                                if let Ok(duration) = timeout.duration_since(SystemTime::now()) {
+                                    tokio::select! {
+                                        _ = cancel.cancelled() => break,
+                                        _ = tokio::time::sleep(duration) => {},
+                                    }
+                                }
+                                current_status =
+                                    ExecutorStatus::Aggregate(action::AggregateStatus::Idle);
+                            }
+                            action::AggregateAction::AggregateUpdates { source } => {
+                                let receive = match Receive::try_from(source) {
+                                    Ok(r) => r,
+                                    Err(e) => {
+                                        tracing::warn!(error = %e, "Invalid receive reference");
+                                        current_status = ExecutorStatus::Aggregate(
+                                            action::AggregateStatus::Error(AggregateError::Connection {
+                                                message: e.to_string(),
+                                            }),
+                                        );
+                                        continue;
+                                    }
+                                };
+
+                                match aggregate_updates(
+                                    connector.clone(),
+                                    receive,
+                                    work_dir.clone(),
+                                    &device,
+                                    &optimizer,
+                                    cancel.clone(),
+                                )
+                                .await
+                                {
+                                    Ok(path) => {
+                                        pending_update = Some(path);
+                                        current_status = ExecutorStatus::Aggregate(
+                                            action::AggregateStatus::AggregatedUpdates {
+                                                metrics: None,
+                                            },
+                                        );
                                     }
                                     Err(e) => {
-                                        tracing::warn!(error = ?e, "Failed to receive parameter server update");
+                                        tracing::warn!(error = %e, "Failed to aggregate updates");
+                                        current_status = ExecutorStatus::Aggregate(
+                                            action::AggregateStatus::Error(AggregateError::Other {
+                                                message: e.to_string(),
+                                            }),
+                                        );
                                     }
                                 }
                             }
-                        }) => {
-                            tracing::warn!("parameter accept handler stopped");
-                        }
-                    };
-                }});
+                            action::AggregateAction::BroadcastUpdate { target } => {
+                                let Some(ref gradient_file) = pending_update else {
+                                    current_status = ExecutorStatus::Aggregate(
+                                        action::AggregateStatus::Error(AggregateError::Other {
+                                            message: "no aggregated update available".into(),
+                                        },
+                                    ));
 
-                let mut current_result_tensor_file_name: Option<PathBuf> = None;
-                let mut current_worker = 0;
-
-                // Sequentially process completed files as they arrive.
-                while let Some((name, file_name)) = rx.recv().await {
-                    // NOTE: Prefer continuing with the last good aggregation if averaging fails.
-                    // Borrow current aggregation state to avoid moving out of `result_tensor`.
-
-                    tracing::info!("Received file {:?}", name);
-                    current_result_tensor_file_name = match current_result_tensor_file_name {
-                        None => {
-                            // Just use the first file as the current name, so no copy required.
-                            Some(file_name.to_path_buf())
-                        },
-                        Some(result_tensor_file_name) => {
-                                let work_dir = work_dir.clone();
-                                let resulting_tensor_file_name = work_dir.join(format!("joined_{:?}",  Uuid::new_v4()));
-
-                                // TODO: This isn't correct. We need a weighting with the number of samples processed by
-                                // the worker. Until we have this information lets assume we traing with two workers.
-                                // Average the new tensor with an existing one
-                                let average_op = |a: &Tensor, b: &Tensor|{
-                                    // Compute (a + b) / 2.
-                                    (a + b).and_then(|t| t / 2.)
+                                    continue;
                                 };
-                                apply_tensor_op(
-                                    &file_name,
-                                    &result_tensor_file_name,
-                                    &resulting_tensor_file_name,
-                                    &work_dir,
-                                    &device,
-                                    average_op,
-                                )
-                                .await?;
-                                Some(resulting_tensor_file_name)
-                        }
-                    };
 
-                    current_worker += 1;
+                                let send = match SendRef::try_from(target) {
+                                    Ok(s) => s,
+                                    Err(e) => {
+                                        tracing::warn!(error = %e, "Invalid send reference");
+                                        current_status = ExecutorStatus::Aggregate(
+                                            action::AggregateStatus::Error(AggregateError::Connection {
+                                                message: e.to_string(),
+                                            },
+                                        ));
 
-                    // We assume that each worker sends their parameters, then waits to receive updates.
-                    // With that assumption, we can send these updates after 'num_workers' parameters have been received.
-                    // TODO: This needs more work to support more complex scenarios.
-                    if current_worker == num_workers && let Some(ref result_file_name) = current_result_tensor_file_name {
-                        // Rename the temporary result to ensure that it's available for updates again.
-                        // In edge-cases we might receive updates while still sending out results.
-                        // This will overwrite 'result_file_name'.
-                        let final_tensor_file_name = work_dir.join("avg-final");
-                        fs::rename(result_file_name.as_path(), final_tensor_file_name.as_path()).await?;
-
-                        // Do outer optimization
-                        let gradient_file =  nesterov(final_tensor_file_name.clone(),  work_dir.clone(), &device, optimizer.momentum, optimizer.learning_rate).await?;
-                        let gradient_file_path = gradient_file.as_path();
-
-                        // These need to be reset before sending out the result!
-                        current_result_tensor_file_name = None;
-                        current_worker = 0;
-
-                        Retry::spawn(retry_strategy.clone(), || {
-                            let connector = connector.clone();
-                            let results = results.clone();
-                            async move {
-                                let writer = connector.send(results).await?;
-                                writer
-                                    .map_err(Error::from)
-                                    .try_for_each_concurrent(None, |item| {
-                                        async move {
-                                        tracing::info!(peer_id = item.meta.name, "Sending parameter server update");
-                                        let mut file = fs::File::open(gradient_file_path).await?;
-                                        let mut writer = item.writer;
-                                        io::copy(&mut file, &mut writer).await?;
-                                        writer.shutdown().await?;
-                                        Ok(())
-                                    }})
-                                    .await?;
-                                Ok::<(), Error>(())
-                            }
-                        }).await?;
-
-                        fs::remove_file(gradient_file.as_path()).await?;
-                        fs::remove_file(final_tensor_file_name.as_path()).await?;
-
-                        Retry::spawn(retry_strategy.clone(), || {
-                            let network = network.clone();
-                            async move {
-                                hypha_network::request_response::RequestResponseInterface::<progress::Codec>::request(
-                                    &network,
-                                    scheduler_id,
-                                    progress::Request{
-                                        job_id,
-                                        progress: progress::Progress::Updated,
+                                        continue;
                                     }
+                                };
+
+                                match broadcast_update(
+                                    connector.clone(),
+                                    send,
+                                    gradient_file,
+                                    cancel.clone(),
                                 )
                                 .await
+                                {
+                                    Ok(()) => {
+                                        pending_update = None;
+                                        current_status = ExecutorStatus::Aggregate(
+                                            action::AggregateStatus::BroadcastedUpdate {
+                                                metrics: None,
+                                            },
+                                        );
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(error = %e, "Failed to broadcast update");
+                                        current_status = ExecutorStatus::Aggregate(
+                                            action::AggregateStatus::Error(AggregateError::Connection {
+                                                message: e.to_string(),
+                                            },
+                                        ));
+                                    }
+                                }
                             }
-                        }).await?;
+                        },
+                        other => {
+                            tracing::warn!(
+                                ?other,
+                                "Received unexpected action for parameter server"
+                            );
+                            current_status = ExecutorStatus::Aggregate(action::AggregateStatus::Error(AggregateError::Other {
+                                    message: "unexpected executor action".into(),
+                                },
+                            ));
+                        }
+                    }
+
+                    if cancel.is_cancelled() {
+                        break;
                     }
                 }
-                Ok::<(), Error>(())
-            };
 
-            tokio::select! {
-                _ = cancel.cancelled() => {
-                    tracing::debug!("stopping parameter server");
-                }
-                _ = fut => {
-                    tracing::warn!("parameter server stopped");
-                },
+                let _ = fs::remove_dir_all(&work_dir).await;
             }
-
-            // Clean up.
-            let _ = fs::remove_dir_all(&work_dir).await;
         });
 
         task_tracker.close();
 
         Ok(ParameterServerExecution { task_tracker })
     }
+}
+
+async fn aggregate_updates(
+    connector: Connector<Network>,
+    receive: Receive,
+    work_dir: PathBuf,
+    device: &Device,
+    optimizer: &Nesterov,
+    cancel: CancellationToken,
+) -> Result<PathBuf, Error> {
+    let mut incoming = connector.receive(receive.clone()).await?;
+    let expected = receive.get_peers().len().max(1);
+    let mut current_result_tensor_file_name: Option<PathBuf> = None;
+    let mut current_worker = 0usize;
+
+    while current_worker < expected {
+        let next_item = tokio::select! {
+            _ = cancel.cancelled() => return Err(Error::InvalidExecutorConfig("aggregation cancelled".to_string())),
+            item = incoming.next() => item,
+        };
+        let Some(item) = next_item else {
+            return Err(Error::InvalidExecutorConfig(
+                "update stream ended before collecting all workers".to_string(),
+            ));
+        };
+        let item = item?;
+        let name = item.meta.name.clone();
+        let mut reader = item.reader;
+
+        let hex_digest = format!("{:X}", Sha256::digest(item.meta.name));
+        let file_name = work_dir.join(hex_digest);
+        let mut file = fs::File::create(&file_name).await?;
+        let size = io::copy(&mut reader, &mut file).await?;
+        file.sync_all().await?;
+        if let Err(e) = fs::set_permissions(&file_name, Permissions::from_mode(0o600)).await {
+            tracing::warn!(error = ?e, path = ?file_name, "Failed to set file permissions");
+        }
+        tracing::info!(peer_id = ?name, size, path = ?file_name, "Received parameter server update");
+
+        current_result_tensor_file_name = match current_result_tensor_file_name {
+            None => Some(file_name.to_path_buf()),
+            Some(result_tensor_file_name) => {
+                let resulting_tensor_file_name =
+                    work_dir.join(format!("joined_{:?}", Uuid::new_v4()));
+                let average_op = |a: &Tensor, b: &Tensor| (a + b).and_then(|t| t / 2.);
+                apply_tensor_op(
+                    &file_name,
+                    &result_tensor_file_name,
+                    &resulting_tensor_file_name,
+                    &work_dir,
+                    device,
+                    average_op,
+                )
+                .await?;
+                let _ = fs::remove_file(&file_name).await;
+                let _ = fs::remove_file(&result_tensor_file_name).await;
+                Some(resulting_tensor_file_name)
+            }
+        };
+
+        current_worker += 1;
+    }
+
+    let final_tensor_file_name = work_dir.join("avg-final");
+    if let Some(result_tensor_file_name) = current_result_tensor_file_name.as_ref() {
+        fs::rename(
+            result_tensor_file_name.as_path(),
+            final_tensor_file_name.as_path(),
+        )
+        .await?;
+    } else {
+        return Err(Error::InvalidExecutorConfig(
+            "no updates available to aggregate".to_string(),
+        ));
+    }
+
+    let gradient_file = nesterov(
+        final_tensor_file_name.clone(),
+        work_dir.clone(),
+        device,
+        optimizer.momentum,
+        optimizer.learning_rate,
+    )
+    .await?;
+
+    let _ = fs::remove_file(final_tensor_file_name.as_path()).await;
+
+    Ok(gradient_file)
+}
+
+async fn broadcast_update(
+    connector: Connector<Network>,
+    send: SendRef,
+    gradient_file: &Path,
+    cancel: CancellationToken,
+) -> Result<(), Error> {
+    let mut writers = connector.send(send).await?;
+
+    loop {
+        let next_item = tokio::select! {
+            _ = cancel.cancelled() => None,
+            item = writers.next() => item,
+        };
+
+        let Some(item_result) = next_item else {
+            break;
+        };
+        let item = item_result?;
+        tracing::info!(peer_id = item.meta.name, "Sending parameter server update");
+        let mut reader = fs::File::open(gradient_file).await?;
+        let mut writer = item.writer;
+        io::copy(&mut reader, &mut writer).await?;
+        writer.shutdown().await?;
+    }
+
+    let _ = fs::remove_file(gradient_file).await;
+
+    Ok(())
 }
 
 /// Applies a binary operation to corresponding tensors from two safetensor files.

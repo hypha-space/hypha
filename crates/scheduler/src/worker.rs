@@ -84,7 +84,7 @@ impl Worker {
             let network = network.clone();
             async move {
                 loop {
-                    tracing::info!(%lease_id, %peer_id, "Refreshing lease");
+                    tracing::debug!(%lease_id, %peer_id, "Refreshing lease");
                     match network
                         .request::<api::Codec>(
                             peer_id,
@@ -106,7 +106,7 @@ impl Worker {
 
                             let safe_duration = duration / 3 * 2;
 
-                            tracing::info!(
+                            tracing::debug!(
                                 duration = duration.as_millis(),
                                 safe_duration = safe_duration.as_millis(),
                                 %lease_id,
@@ -179,5 +179,81 @@ impl Future for Worker {
 impl Drop for Worker {
     fn drop(&mut self) {
         self.lease_handler.abort();
+    }
+}
+
+#[cfg(test)]
+pub struct TestWorkerBuilder {
+    lease_id: Uuid,
+    peer_id: PeerId,
+    spec: WorkerSpec,
+    resources: Resources,
+    price: f64,
+    lease_handler: Option<JoinHandle<Result<(), WorkerError>>>,
+}
+
+#[cfg(test)]
+impl TestWorkerBuilder {
+    pub fn new() -> Self {
+        Self {
+            lease_id: Uuid::new_v4(),
+            peer_id: PeerId::random(),
+            spec: WorkerSpec {
+                resources: Resources::default(),
+                executor: Vec::new(),
+            },
+            resources: Resources::default(),
+            price: 1.0,
+            lease_handler: None,
+        }
+    }
+
+    pub fn with_lease_handler(
+        mut self,
+        lease_handler: JoinHandle<Result<(), WorkerError>>,
+    ) -> Self {
+        self.lease_handler = Some(lease_handler);
+        self
+    }
+
+    pub fn with_peer_id(mut self, peer_id: PeerId) -> Self {
+        self.peer_id = peer_id;
+        self
+    }
+
+    pub fn with_spec(mut self, spec: WorkerSpec) -> Self {
+        self.spec = spec;
+        self
+    }
+
+    pub fn with_resources(mut self, resources: Resources) -> Self {
+        self.resources = resources;
+        self
+    }
+
+    pub fn with_price(mut self, price: f64) -> Self {
+        self.price = price;
+        self
+    }
+
+    pub fn with_lease_id(mut self, lease_id: Uuid) -> Self {
+        self.lease_id = lease_id;
+        self
+    }
+
+    pub fn build(self) -> Worker {
+        Worker {
+            lease_id: self.lease_id,
+            peer_id: self.peer_id,
+            spec: self.spec,
+            resources: self.resources,
+            price: self.price,
+            lease_handler: self.lease_handler.unwrap_or_else(|| {
+                tokio::spawn(async move {
+                    futures_util::future::pending::<()>().await;
+                    Ok(())
+                })
+            }),
+        }
     }
 }

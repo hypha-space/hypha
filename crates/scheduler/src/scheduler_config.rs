@@ -100,6 +100,16 @@ impl Default for DiLoCo {
                 parameter_server: Resources::default().with_cpu(1.0).with_memory(1.0),
                 worker_price: PriceRange::default(),
                 parameter_server_price: PriceRange::default(),
+                worker_pool: PoolSettings {
+                    min: 2,
+                    target: 2,
+                    grace_ms: PoolSettings::default_grace_ms(),
+                },
+                parameter_server_pool: PoolSettings {
+                    min: 1,
+                    target: 1,
+                    grace_ms: PoolSettings::default_grace_ms(),
+                },
             },
             model_destination: None,
         }
@@ -176,6 +186,33 @@ pub struct DiLoCoRounds {
     pub max_batch_size: Option<u32>,
 }
 
+#[derive(Deserialize, Serialize, Debug, Clone, Copy)]
+pub struct PoolSettings {
+    /// Minimum number of members required.
+    pub min: u32,
+    /// Target number of members to pursue.
+    pub target: u32,
+    /// Grace period (milliseconds) before failing when below min.
+    #[serde(default = "PoolSettings::default_grace_ms")]
+    pub grace_ms: u64,
+}
+
+impl PoolSettings {
+    const fn default_grace_ms() -> u64 {
+        10_000
+    }
+}
+
+impl Default for PoolSettings {
+    fn default() -> Self {
+        Self {
+            min: 1,
+            target: 1,
+            grace_ms: Self::default_grace_ms(),
+        }
+    }
+}
+
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct DiLoCoResources {
     pub num_workers: u32,
@@ -185,4 +222,8 @@ pub struct DiLoCoResources {
     pub worker_price: PriceRange,
     #[serde(default)]
     pub parameter_server_price: PriceRange,
+    #[serde(default)]
+    pub worker_pool: PoolSettings,
+    #[serde(default)]
+    pub parameter_server_pool: PoolSettings,
 }
