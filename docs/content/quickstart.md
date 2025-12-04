@@ -179,7 +179,7 @@ With everything set up, start the Hypha nodes and begin training.
 In different terminals, start the gateway first:
 
 ```bash
-RUST_LOG=info hypha-gateway run -c gateway-config.toml
+hypha-gateway run -c gateway-config.toml
 ```
 
 ```text
@@ -191,15 +191,15 @@ WARN libp2p_kad::behaviour: Failed to trigger bootstrap: No known peers.
 
 Then start the worker and data nodes (the gateway must be running first):
 
-1. `RUST_LOG=info hypha-worker run -c worker1-config.toml`
-1. `RUST_LOG=info hypha-worker run -c worker2-config.toml`
-1. `RUST_LOG=info hypha-worker run -c worker3-config.toml`
-1. `RUST_LOG=info hypha-data run -c data-config.toml`
+1. `hypha-worker run -c worker1-config.toml`
+1. `hypha-worker run -c worker2-config.toml`
+1. `hypha-worker run -c worker3-config.toml`
+1. `hypha-data run -c data-config.toml`
 
 Finally, once all the nodes above are running properly, start the scheduler to begin training:
 
 ```bash
-RUST_LOG=info hypha-scheduler run -c scheduler-config.toml
+hypha-scheduler run -c scheduler-config.toml
 ```
 
 ### Expected Output
