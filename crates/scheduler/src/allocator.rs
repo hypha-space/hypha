@@ -26,7 +26,7 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Error)]
 pub enum AllocatorError {
-    #[error("Failed to broadcast worker request")]
+    #[error("Failed to broadcast worker request: {0}")]
     BroadcastFailed(#[source] Box<dyn std::error::Error + Send + Sync>),
     #[error("No workers available")]
     NoWorkersAvailable,
@@ -34,7 +34,7 @@ pub enum AllocatorError {
     NoOffersReceived,
     #[error("Request timeout")]
     Timeout,
-    #[error("Failed to create lease")]
+    #[error("Failed to create lease: {0}")]
     LeaseFailed(#[from] hypha_leases::LedgerError),
 }
 

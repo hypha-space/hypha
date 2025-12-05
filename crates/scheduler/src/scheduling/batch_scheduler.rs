@@ -31,11 +31,11 @@ pub enum BatchSchedulerError {
     Unregister,
     #[error("Error during scheduling {0}")]
     Scheduling(String),
-    #[error("Network error")]
+    #[error("Network error: {0}")]
     NetworkError(#[from] RequestResponseError),
-    #[error("Send Metrics Error")]
+    #[error("Send Metrics Error: {0}")]
     SendMetricsError(#[from] SendError<(PeerId, Metrics)>),
-    #[error("Tracker error")]
+    #[error("Tracker error: {0}")]
     TrackerError(#[from] WorkerTrackerError),
 }
 

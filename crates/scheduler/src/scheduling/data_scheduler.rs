@@ -15,7 +15,7 @@ use crate::tracker::slice::SliceTracker;
 pub enum DataSchedulerError {
     #[error("Disconnected")]
     Disconnected,
-    #[error("Network error")]
+    #[error("Network error: {0}")]
     NetworkError(#[from] RequestResponseError),
 }
 

@@ -12,7 +12,7 @@ use crate::resources::{ResourceManager, ResourceManagerError};
 #[derive(Debug, Clone, Error)]
 #[error("lease error")]
 pub enum LeaseError {
-    #[error("Resources reservation failed")]
+    #[error("Resources reservation failed: {0}")]
     ResourcesReservation(#[from] ResourceManagerError),
     #[error("Ledger error: {0}")]
     Ledger(#[from] LedgerError),

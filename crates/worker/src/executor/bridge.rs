@@ -45,11 +45,11 @@ use crate::{
 
 #[derive(Error, Debug)]
 pub enum Error {
-    #[error("Network error")]
+    #[error("Network error: {0}")]
     Network(#[from] RequestResponseError),
-    #[error("Connector error")]
+    #[error("Connector error: {0}")]
     Connector(#[from] ConnectorError),
-    #[error("I/O error")]
+    #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
     #[error("Invalid job status: {0}")]
     InvalidStatus(String),
