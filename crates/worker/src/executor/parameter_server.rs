@@ -1,9 +1,10 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs::Permissions,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     pin::Pin,
+    sync::Arc,
     time::SystemTime,
 };
 
@@ -22,6 +23,7 @@ use sha2::{Digest, Sha256};
 use tokio::{
     fs,
     io::{self, AsyncWriteExt},
+    sync::{Mutex, Notify},
 };
 use tokio_retry::{
     Retry,
@@ -109,6 +111,78 @@ impl JobExecutor for ParameterServerExecutor {
         let network = self.network.clone();
 
         let task_tracker = TaskTracker::new();
+
+        let incoming_dir = work_dir.join("incoming");
+        fs::create_dir_all(&incoming_dir).await?;
+        let updates_store: Arc<Mutex<HashMap<PeerId, Vec<PathBuf>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let updates_notify = Arc::new(Notify::new());
+
+        {
+            let connector = self.connector.clone();
+            let updates_store = updates_store.clone();
+            let updates_notify = updates_notify.clone();
+            let incoming_dir = incoming_dir.clone();
+            let cancel = cancel.clone();
+            task_tracker.spawn(async move {
+                let receive_any = Receive::peers(Vec::new());
+                let mut incoming = match connector.receive(receive_any).await {
+                    Ok(s) => s,
+                    Err(err) => {
+                        tracing::error!(error = %err, "Receiver failed to start");
+                        return;
+                    }
+                };
+
+                loop {
+                    let next_item = tokio::select! {
+                        _ = cancel.cancelled() => None,
+                        item = incoming.next() => item,
+                    };
+                    let Some(item_result) = next_item else { break; };
+                    let item = match item_result {
+                        Ok(it) => it,
+                        Err(err) => {
+                            tracing::error!(error = %err, "Receiver stream error");
+                            break;
+                        }
+                    };
+                    let peer = item.meta.name.clone();
+                    let peer_dir = incoming_dir.join(&peer);
+                    if let Err(e) = fs::create_dir_all(&peer_dir).await {
+                        tracing::error!(error = %e, dir = %peer_dir.display(), "Failed to create peer staging dir");
+                        continue;
+                    }
+                    let file_path = peer_dir.join(format!("{}.pt", Uuid::new_v4()));
+                    let mut reader = item.reader;
+                    match fs::File::create(&file_path).await {
+                        Ok(mut f) => {
+                            match io::copy(&mut reader, &mut f).await {
+                                Ok(n) => {
+                                    let _ = f.sync_all().await;
+                                    let _ = fs::set_permissions(&file_path, Permissions::from_mode(0o600)).await;
+                                    tracing::debug!(peer_id = %peer, size = n, file = %file_path.display(), "Received update");                                }
+                                Err(err) => {
+                                    tracing::error!(error = %err, file = %file_path.display(), "Failed to write received update");
+                                }
+                            }
+                        }
+                        Err(err) => {
+                            tracing::error!(error = %err, file = %file_path.display(), "Failed to create staging file");
+                        }
+                    }
+
+                    {
+                        let mut store = updates_store.lock().await;
+                        let pid = peer.parse().unwrap_or_else(|_| PeerId::random());
+                        let entry = store.entry(pid).or_default();
+                        entry.push(file_path.clone());
+                    }
+                    updates_notify.notify_one();
+                }
+            });
+        }
+
         task_tracker.spawn({
             let retry_strategy = retry_strategy.clone();
             async move {
@@ -145,15 +219,18 @@ impl JobExecutor for ParameterServerExecutor {
                         }
                     };
 
-                    tracing::debug!(job_id = %job_id, next = ?action_response.next, "Received aggregate action");
+                    tracing::debug!(job_id = %job_id, next = ?action_response.next,
+                        "Received aggregate action");
 
                     match action_response.next {
                         action::ExecutorAction::Aggregate(agg_action) => match agg_action {
                             action::AggregateAction::Terminate => break,
                             action::AggregateAction::Idle { timeout } => {
                                 if let Ok(duration) = timeout.duration_since(SystemTime::now()) {
+                                    // Wake early if new updates arrive; otherwise wait for timeout.
                                     tokio::select! {
                                         _ = cancel.cancelled() => break,
+                                        _ = updates_notify.notified() => {},
                                         _ = tokio::time::sleep(duration) => {},
                                     }
                                 }
@@ -174,12 +251,21 @@ impl JobExecutor for ParameterServerExecutor {
                                     }
                                 };
 
+                                // NOTE: Allowed peers come from scheduler. If empty, accept any.
+                                let allowed = receive.get_peers().clone();
+                                // TODO: These should come from the scheduler and must be configurable.
+                                let max_delay = std::time::Duration::from_millis(500);
+                                let action_deadline = std::time::Duration::from_secs(30);
+
                                 match aggregate_updates(
-                                    connector.clone(),
-                                    receive,
+                                    updates_store.clone(),
+                                    allowed,
                                     work_dir.clone(),
                                     &device,
                                     &optimizer,
+                                    max_delay,
+                                    action_deadline,
+                                    updates_notify.clone(),
                                     cancel.clone(),
                                 )
                                 .await
@@ -281,65 +367,119 @@ impl JobExecutor for ParameterServerExecutor {
     }
 }
 
+// NOTE: Aggregation requires many contextual parameters (store, peers, timers, etc.); we keep
+// them explicit to not hide important dependencies behind structs.
+#[allow(clippy::too_many_arguments)]
 async fn aggregate_updates(
-    connector: Connector<Network>,
-    receive: Receive,
+    store: Arc<Mutex<HashMap<PeerId, Vec<PathBuf>>>>,
+    allowed_peers: Vec<PeerId>,
     work_dir: PathBuf,
     device: &Device,
     optimizer: &Nesterov,
+    gap_timeout: std::time::Duration,
+    action_deadline: std::time::Duration,
+    notify: Arc<Notify>,
     cancel: CancellationToken,
 ) -> Result<PathBuf, Error> {
-    let mut incoming = connector.receive(receive.clone()).await?;
-    let expected = receive.get_peers().len().max(1);
+    let allowed: HashSet<PeerId> = allowed_peers.into_iter().collect();
+    let mut used: HashSet<PeerId> = HashSet::new();
+    let deadline = tokio::time::Instant::now() + action_deadline;
+
+    // NOTE: Max delay we allow for any peer to send an update
+    // when, if have not received an update within this time, we end the action.
+    let max_delay = tokio::time::sleep(gap_timeout);
+    tokio::pin!(max_delay);
+
     let mut current_result_tensor_file_name: Option<PathBuf> = None;
-    let mut current_worker = 0usize;
 
-    while current_worker < expected {
-        let next_item = tokio::select! {
-            _ = cancel.cancelled() => return Err(Error::InvalidExecutorConfig("aggregation cancelled".to_string())),
-            item = incoming.next() => item,
-        };
-        let Some(item) = next_item else {
-            return Err(Error::InvalidExecutorConfig(
-                "update stream ended before collecting all workers".to_string(),
-            ));
-        };
-        let item = item?;
-        let name = item.meta.name.clone();
-        let mut reader = item.reader;
+    loop {
+        let maybe_update = {
+            let mut guard = store.lock().await;
 
-        let hex_digest = format!("{:X}", Sha256::digest(item.meta.name));
-        let file_name = work_dir.join(hex_digest);
-        let mut file = fs::File::create(&file_name).await?;
-        let size = io::copy(&mut reader, &mut file).await?;
-        file.sync_all().await?;
-        if let Err(e) = fs::set_permissions(&file_name, Permissions::from_mode(0o600)).await {
-            tracing::warn!(error = ?e, path = ?file_name, "Failed to set file permissions");
-        }
-        tracing::info!(peer_id = ?name, size, path = ?file_name, "Received parameter server update");
+            // NOTE: Determine eligible peers: if allowed empty, accept any; else only allowed
+            let keys: Vec<PeerId> = if allowed.is_empty() {
+                guard.keys().cloned().collect()
+            } else {
+                guard
+                    .keys()
+                    .filter(|p| allowed.contains(p))
+                    .cloned()
+                    .collect()
+            };
 
-        current_result_tensor_file_name = match current_result_tensor_file_name {
-            None => Some(file_name.to_path_buf()),
-            Some(result_tensor_file_name) => {
-                let resulting_tensor_file_name =
-                    work_dir.join(format!("joined_{:?}", Uuid::new_v4()));
-                let average_op = |a: &Tensor, b: &Tensor| (a + b).and_then(|t| t / 2.);
-                apply_tensor_op(
-                    &file_name,
-                    &result_tensor_file_name,
-                    &resulting_tensor_file_name,
-                    &work_dir,
-                    device,
-                    average_op,
-                )
-                .await?;
-                let _ = fs::remove_file(&file_name).await;
-                let _ = fs::remove_file(&result_tensor_file_name).await;
-                Some(resulting_tensor_file_name)
+            // NOTE: Pick first with available files that we haven't used yet in this round
+            let mut chosen: Option<(PeerId, PathBuf)> = None;
+            for pid in keys {
+                if used.contains(&pid) {
+                    continue;
+                }
+                if let Some(files) = guard.get_mut(&pid)
+                    && let Some(path) = files.pop()
+                {
+                    chosen = Some((pid, path));
+                }
+                if chosen.is_some() {
+                    break;
+                }
             }
+            chosen
         };
 
-        current_worker += 1;
+        if let Some((peer_id, file_name)) = maybe_update {
+            tracing::info!(peer_id = %peer_id, file = %file_name.display(),
+                "Aggregating received update");
+            used.insert(peer_id);
+
+            // NOTE: Merge into running average
+            current_result_tensor_file_name = match current_result_tensor_file_name {
+                None => Some(file_name.to_path_buf()),
+                Some(result_tensor_file_name) => {
+                    let resulting_tensor_file_name =
+                        work_dir.join(format!("joined_{:?}", Uuid::new_v4()));
+                    let average_op = |a: &Tensor, b: &Tensor| (a + b).and_then(|t| t / 2.);
+                    apply_tensor_op(
+                        &file_name,
+                        &result_tensor_file_name,
+                        &resulting_tensor_file_name,
+                        &work_dir,
+                        device,
+                        average_op,
+                    )
+                    .await?;
+                    let _ = fs::remove_file(&file_name).await;
+                    let _ = fs::remove_file(&result_tensor_file_name).await;
+                    Some(resulting_tensor_file_name)
+                }
+            };
+
+            // NOTE: Reset gap timer after receiving an update
+            max_delay
+                .as_mut()
+                .reset(tokio::time::Instant::now() + gap_timeout);
+
+            // If we've used all allowed peers, we can stop
+            if !allowed.is_empty() && used.len() >= allowed.len() {
+                break;
+            }
+            continue;
+        }
+
+        // NOTE: No update immediately available: wait for either gap timeout, new update, deadline, or cancel
+        tokio::select! {
+            _ = cancel.cancelled() => return Err(Error::InvalidExecutorConfig("aggregation cancelled".to_string())),
+            _ = &mut max_delay => {
+                tracing::debug!("Aggregate max delay reached");
+                break;
+            },
+            _ = tokio::time::sleep_until(deadline) => {
+                tracing::warn!("Aggregate deadline reached");
+                break;
+            },
+            _ = notify.notified() => {
+                // New updates available; loop to try again
+                continue;
+            }
+        }
     }
 
     let final_tensor_file_name = work_dir.join("avg-final");
