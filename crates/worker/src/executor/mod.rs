@@ -16,22 +16,22 @@ use crate::{connector::ConnectorError, executor::parameter_server::TensorOpError
 
 #[derive(Error, Debug)]
 pub enum Error {
-    #[error("Bridge error")]
+    #[error("Bridge error: {0}")]
     Bridge(#[from] bridge::Error),
     // NOTE: Bridge::try_new returns std::io::Result; map it here for `?` ergonomics
-    #[error("I/O error")]
+    #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
     #[error("Unsupported job spec")]
     UnsupportedJobSpec(),
     #[error("Unsupported optimizer")]
     UnsupportedOptimizer(),
-    #[error("Tensor error")]
+    #[error("Tensor error: {0}")]
     Tensor(#[from] TensorOpError),
     #[error("Executor configuration invalid: {0}")]
     InvalidExecutorConfig(String),
-    #[error("Request/Response error")]
+    #[error("Request/Response error: {0}")]
     RequestResponse(#[from] hypha_network::request_response::RequestResponseError),
-    #[error("Connector error")]
+    #[error("Connector error: {0}")]
     Connector(#[from] ConnectorError),
 }
 

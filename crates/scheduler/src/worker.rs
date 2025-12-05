@@ -49,7 +49,7 @@ pub enum WorkerError {
     DispatchFailed(String),
     #[error("Lease expired")]
     LeaseExpired,
-    #[error("Network error")]
+    #[error("Network error: {0}")]
     NetworkError(#[from] RequestResponseError),
 }
 
