@@ -1,6 +1,6 @@
 use std::{
     fs::Permissions,
-    os::unix::fs::PermissionsExt,
+    os::unix::fs::{MetadataExt, PermissionsExt},
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
@@ -226,7 +226,9 @@ async fn fetch_resource(
 
     match resource.as_ref() {
         // Resolve scheduler fetches:
-        // We request a data slice from the scheduler
+        // We request a data slice from the scheduler.
+        // If we already downloaded that slice, we use the existing one,
+        // otherwise we download it from a data provider.
         Reference::Scheduler { peer, dataset } => {
             tracing::debug!(peer_id = %peer, dataset, "Requesting data slice index from scheduler");
             match <Network as RequestResponseInterface<api::Codec>>::request(
@@ -254,31 +256,54 @@ async fn fetch_resource(
                             fs::create_dir_all(&dir_abs).await?;
 
                             let file_name = hash.clone();
-                            let mut reader = state
-                                .network
-                                .stream_pull(
-                                    data_provider,
-                                    &DataSlice {
-                                        dataset: dataset.clone(),
-                                        hash: hash.clone(),
-                                    },
-                                )
-                                .await
-                                .unwrap();
-
                             let rel = format!("{}/{}", dir_rel, file_name);
                             let abs = safe_join(&state.work_dir, &rel)?;
-                            if let Some(parent) = abs.parent() {
-                                fs::create_dir_all(parent).await?;
-                            }
 
-                            let mut file = fs::File::create(&abs).await?;
-                            let size = tokio::io::copy(&mut reader, &mut file).await?;
-                            file.sync_all().await?;
-                            tracing::info!(size, file = %abs.display(), "Copied resource");
-                            set_permissions(&abs, Permissions::from_mode(0o600)).await?;
+                            match fs::try_exists(&abs).await {
+                                // Cache hit!
+                                Ok(true) => {
+                                    tracing::debug!(
+                                        peer_id = %peer, data_peer_id = %data_provider,
+                                        dataset,
+                                        hash,
+                                        "File already exists, skipping data slice download"
+                                    );
 
-                            out.push(FileResponse { path: rel, size });
+                                    let metadata = fs::metadata(&abs).await?;
+
+                                    out.push(FileResponse {
+                                        path: rel,
+                                        size: metadata.size(),
+                                    });
+                                }
+                                // Cache miss!
+                                _ => {
+                                    tracing::debug!(peer_id = %peer, data_peer_id = %data_provider, dataset, hash, "Downloading data slice");
+
+                                    let mut reader = state
+                                        .network
+                                        .stream_pull(
+                                            data_provider,
+                                            &DataSlice {
+                                                dataset: dataset.clone(),
+                                                hash: hash.clone(),
+                                            },
+                                        )
+                                        .await.map_err(|e| Error::Connector(ConnectorError::OpenStream(e)))?;
+
+                                    if let Some(parent) = abs.parent() {
+                                        fs::create_dir_all(parent).await?;
+                                    }
+
+                                    let mut file = fs::File::create(&abs).await?;
+                                    let size = tokio::io::copy(&mut reader, &mut file).await?;
+                                    file.sync_all().await?;
+                                    tracing::info!(size, file = %abs.display(), "Copied resource");
+                                    set_permissions(&abs, Permissions::from_mode(0o600)).await?;
+
+                                    out.push(FileResponse { path: rel, size });
+                                }
+                            };
 
                             Ok::<std::vec::Vec<FileResponse>, Error>(out)
                         }
