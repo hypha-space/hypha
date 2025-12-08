@@ -474,23 +474,23 @@ where
                     {
                         Ok(api::Response::Data(data::Response::Success {
                             data_provider,
-                            index,
+                            hash,
                         })) => {
-                            tracing::debug!(peer_id = %peer, data_peer_id = %data_provider, dataset, index, "Received slice index and data provider");
+                            tracing::debug!(peer_id = %peer, data_peer_id = %data_provider, dataset, hash, "Received slice hash and data provider");
                             let stream = self
                                 .network
                                 .stream_pull(
                                     data_provider,
                                     &DataSlice {
                                         dataset: dataset.clone(),
-                                        index,
+                                        hash: hash.clone(),
                                     },
                                 )
                                 .await?;
                             let item = ReadItem {
                                 meta: ItemMeta {
                                     kind: "peer",
-                                    name: index.to_string(),
+                                    name: hash,
                                 },
                                 reader: Box::pin(stream),
                             };

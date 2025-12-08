@@ -6,8 +6,7 @@ edition.workspace = true
 license = "Apache-2.0"
 
 [dependencies]
+hypha-resources.workspace = true
 libp2p.workspace = true
 serde.workspace = true
 uuid.workspace = true
-hypha-network.workspace = true
-hypha-resources.workspace = true

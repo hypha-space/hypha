@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{collections::HashMap, io, path::PathBuf, time::Duration};
 
 use clap::Parser;
 use figment::{
@@ -7,7 +7,9 @@ use figment::{
 };
 use futures_util::{StreamExt, future::join_all};
 use hypha_config::{ConfigWithMetadata, ConfigWithMetadataTLSExt, builder, to_toml};
-use hypha_data::{config::Config, network::Network, tensor_data::serialize_file};
+use hypha_data::{
+    config::Config, hash::get_file_sha256, network::Network, tensor_data::serialize_file,
+};
 use hypha_messages::{DataRecord, health};
 use hypha_network::{
     dial::DialInterface, kad::KademliaInterface, listen::ListenInterface,
@@ -17,6 +19,7 @@ use hypha_network::{
 use hypha_telemetry as telemetry;
 use libp2p::{Multiaddr, kad, multiaddr::Protocol};
 use miette::{IntoDiagnostic, Result};
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use tokio::{
     fs,
     signal::unix::{SignalKind, signal},
@@ -188,13 +191,28 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
         return Err(miette::miette!("Dataset directory is empty"));
     }
 
+    let dataset_hashes = tokio::task::spawn_blocking(move || {
+        // Hash the dataset files
+        dataset_files
+            .par_iter()
+            .map(|file| {
+                let hash = get_file_sha256(file);
+                hash.map(|h| (h, file.clone()))
+            })
+            .collect::<Result<Vec<_>, io::Error>>()
+    })
+    .await
+    .into_diagnostic()?
+    .into_diagnostic()?;
+    let dataset_hashes: HashMap<String, PathBuf> = HashMap::from_iter(dataset_hashes);
+
     // Announce our dataset
     tracing::info!(dataset_name, "Announcing");
     let _ = network
         .store(kad::Record::new(
             kad::RecordKey::new(&dataset_name),
             serde_json::to_vec(&DataRecord {
-                num_slices: dataset_files.len() as u64,
+                slice_hashes: dataset_hashes.keys().cloned().collect(),
             })
             .map_err(|err| miette::miette!("Failed to serialize dataset record: {}", err))?,
         ))
@@ -202,20 +220,21 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
 
     let stream_pulls = network.streams_pull().expect("an unregistered pull stream").for_each_concurrent(None, {
         |(peer_id, resource, mut stream)| {
-            let dataset_files = dataset_files.clone();
+            let dataset_hashes = dataset_hashes.clone();
             async move {
-                tracing::info!(peer_id = %peer_id, dataset = resource.dataset, slice= resource.index, "Sending tensor to peer");
+                tracing::info!(peer_id = %peer_id, dataset = resource.dataset, slice = resource.hash, "Sending tensor to peer");
 
                 if dataset_name == resource.dataset.as_str() {
-                    // Use the provided offsets to select a subset of the available dataset files.
-                    if resource.index as usize > dataset_files.len() {
-                        tracing::warn!(peer_id = %peer_id, dataset = resource.dataset, "Invalid index for dataset");
-                        return;
-                    }
-                    let dataset_slice = &dataset_files[resource.index as usize];
-
-                    if let Err(e) = serialize_file(dataset_slice, &mut stream).await {
-                        tracing::warn!(peer_id = %peer_id, dataset = resource.dataset, "Failed to serialize dataset: {}", e);
+                    // Use the provided hash to select a subset of the available dataset files.
+                    match dataset_hashes.get(&resource.hash) {
+                        None => {
+                            tracing::warn!(peer_id = %peer_id, dataset = resource.dataset, "Invalid hash for dataset");
+                        }
+                        Some(dataset_slice) => {
+                            if let Err(e) = serialize_file(dataset_slice, &mut stream).await {
+                                tracing::warn!(peer_id = %peer_id, dataset = resource.dataset, "Failed to serialize dataset: {}", e);
+                            }
+                        },
                     }
                 } else {
                     tracing::warn!(peer_id = %peer_id, dataset = resource.dataset, "No dataset found with that name");

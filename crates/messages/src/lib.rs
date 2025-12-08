@@ -803,7 +803,7 @@ pub mod data {
     /// Data server responds with data or error
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub enum Response {
-        Success { data_provider: PeerId, index: u64 },
+        Success { data_provider: PeerId, hash: String },
         NotFound,
         Error(String),
     }
@@ -818,11 +818,11 @@ pub struct ParameterStreamHeader {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DataRecord {
-    pub num_slices: u64,
+    pub slice_hashes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DataSlice {
     pub dataset: String,
-    pub index: u64,
+    pub hash: String,
 }
