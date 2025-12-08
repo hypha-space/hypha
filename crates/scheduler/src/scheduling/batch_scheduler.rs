@@ -124,10 +124,11 @@ where
                 worker_pool.update(&peer_id, since_start);
 
                 let snapshot = worker_pool.statistics();
-                let mut training = training_state.lock().await;
-                training.record_batch(batch_size);
-                let samples_remaining = training.samples_remaining();
-                drop(training);
+                let samples_remaining = {
+                  let mut training = training_state.lock().await;
+                  training.record_batch(batch_size);
+                  training.samples_remaining()
+                };
 
                 if parameter_servers.is_empty() {
                     return Ok(action::ActionResponse {
