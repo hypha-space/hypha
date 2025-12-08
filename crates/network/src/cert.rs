@@ -3,7 +3,10 @@
 use std::io;
 
 use ed25519_dalek::{SigningKey, pkcs8::DecodePrivateKey};
-use rustls::pki_types::{CertificateDer, CertificateRevocationListDer, PrivateKeyDer};
+use rustls::pki_types::{
+    CertificateDer, CertificateRevocationListDer, PrivateKeyDer, PrivatePkcs8KeyDer,
+    pem::{Error as PemError, PemObject},
+};
 use thiserror::Error;
 
 /// Errors that can occur when parsing certificates.
@@ -24,6 +27,9 @@ pub enum ParseError {
     /// IO error
     #[error("IO error: {0}")]
     Io(#[from] io::Error),
+    /// PEM File error
+    #[error("Error processing PEM file: {0}")]
+    Pem(#[from] PemError),
 }
 
 /// Create a libp2p identity from a private key
@@ -49,8 +55,10 @@ pub fn identity_from_private_key(
 }
 
 /// Load certificates from PEM data
-pub fn load_certs_from_pem(pem_data: &[u8]) -> Result<Vec<CertificateDer<'static>>, io::Error> {
-    rustls_pemfile::certs(&mut io::Cursor::new(pem_data)).collect::<Result<Vec<_>, _>>()
+pub fn load_certs_from_pem(pem_data: &[u8]) -> Result<Vec<CertificateDer<'static>>, ParseError> {
+    CertificateDer::pem_reader_iter(&mut io::Cursor::new(pem_data))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(ParseError::from)
 }
 
 /// Load private key from PEM data
@@ -60,7 +68,7 @@ pub fn load_private_key_from_pem(
     let mut cursor = io::Cursor::new(pem_data);
 
     // TODO: Try different key formats once we support more key types and formats
-    if let Some(Ok(key)) = rustls_pemfile::pkcs8_private_keys(&mut cursor).next() {
+    if let Some(Ok(key)) = PrivatePkcs8KeyDer::pem_reader_iter(&mut cursor).next() {
         return Ok(rustls::pki_types::PrivateKeyDer::Pkcs8(key));
     }
 
@@ -73,10 +81,11 @@ pub fn load_private_key_from_pem(
 /// Load CRLs from PEM data
 pub fn load_crls_from_pem(
     pem_data: &[u8],
-) -> Result<Vec<CertificateRevocationListDer<'static>>, io::Error> {
-    rustls_pemfile::crls(&mut io::Cursor::new(pem_data))
+) -> Result<Vec<CertificateRevocationListDer<'static>>, ParseError> {
+    CertificateRevocationListDer::pem_reader_iter(&mut io::Cursor::new(pem_data))
         .map(|crl| crl.map(|c| c.to_owned()))
         .collect::<Result<Vec<_>, _>>()
+        .map_err(ParseError::from)
 }
 
 #[cfg(test)]
