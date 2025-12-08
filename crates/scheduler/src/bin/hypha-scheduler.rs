@@ -304,7 +304,7 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
             async move {
                 match worker {
                     Ok(worker) => {
-                        tracing::debug!(%job_id, peer_id = %worker.peer_id, "Worker started");
+                        tracing::debug!(%job_id, peer_id = %worker.peer_id, "Parameter server started");
 
                         let worker_ids: Vec<PeerId> =
                             worker_handle.members().iter().map(|w| w.peer_id).collect();
