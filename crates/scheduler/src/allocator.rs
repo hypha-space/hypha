@@ -22,7 +22,7 @@ use uuid::Uuid;
 use crate::{network::Network, scheduler_config::PriceRange, worker::Worker};
 
 const WORKER_TOPIC: &str = "hypha/worker";
-const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
+pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Error)]
 pub enum AllocatorError {

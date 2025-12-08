@@ -2,6 +2,7 @@ pub mod allocator;
 pub mod config;
 pub mod metrics_bridge;
 pub mod network;
+pub mod pool;
 pub mod scheduler_config;
 pub mod scheduling;
 pub mod simulation;

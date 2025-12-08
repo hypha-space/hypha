@@ -1,7 +1,6 @@
-use std::pin::Pin;
+use std::{collections::HashMap, pin::Pin};
 
 use futures_util::{Stream, StreamExt, stream::SelectAll};
-use hypha_messages::progress::Metrics;
 use libp2p::PeerId;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -13,6 +12,12 @@ pub enum MetricsError {
     ConnectionLost,
     #[error("Error when sending request: {0}")]
     Request(#[from] reqwest::Error),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Metrics {
+    pub round: u32,
+    pub metrics: HashMap<String, f32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

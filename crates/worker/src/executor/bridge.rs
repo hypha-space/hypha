@@ -19,7 +19,7 @@ use axum::{
 use futures_util::{StreamExt, stream};
 use hypha_messages::{
     Fetch, Receive, Reference, Send,
-    progress::{self, Request},
+    action::{self, ActionRequest},
 };
 use hypha_network::request_response::RequestResponseError;
 use libp2p::PeerId;
@@ -116,7 +116,6 @@ struct SockState {
     connector: Connector<Network>,
     network: Network,
     job_id: Uuid,
-    // task_id: Uuid,
     scheduler: PeerId,
     task_tracker: TaskTracker,
     cancel: CancellationToken,
@@ -160,13 +159,10 @@ impl Bridge {
             .route("/resources/fetch", post(fetch_resource))
             .route("/resources/send", post(send_resource))
             .route("/resources/receive", post(receive_subscribe))
-            .route("/status/send", post(send_status))
+            .route("/action/update", post(send_action))
             .with_state(state);
 
-        // This will create a file that we later delete as part of 'wait'.
         let listener = UnixListener::bind(&socket_path)?;
-
-        // Access is restricted to the current user.
         set_permissions(&socket_path, Permissions::from_mode(0o600)).await?;
 
         let shutdown = cancel_token.clone();
@@ -190,7 +186,7 @@ impl Bridge {
         self.task_tracker.close();
         self.task_tracker.wait().await;
 
-        // If for some reason we can't remove the socket, ignore the error.
+        // NOTE: If for some reason we can't remove the socket, ignore the error.
         let _ = std::fs::remove_file(&self.socket_path);
         Ok(())
     }
@@ -221,9 +217,7 @@ async fn fetch_resource(
     State(state): State<Arc<SockState>>,
     Json(resource): Json<Fetch>,
 ) -> Result<Json<Vec<FileResponse>>, Error> {
-    let retry_strategy = ExponentialBackoff::from_millis(100)
-        .map(jitter) // add jitter to delays
-        .take(3); // limit to 3 retries
+    let retry_strategy = ExponentialBackoff::from_millis(100).map(jitter).take(3);
     validate_fetch(&resource)?;
 
     let out = Retry::spawn(retry_strategy, || {
@@ -408,6 +402,10 @@ async fn receive_subscribe(
         };
         let mut index = 0usize;
         while let Some(item_result) = tokio::select! {
+            _ = tx.closed() => {
+                tracing::debug!(path = %dir_rel_clone, "receive_subscribe: client stream dropped");
+                None
+            }
             _ = cancel.cancelled() => {
                 tracing::debug!(path = %dir_rel_clone, "receive_subscribe: task cancelled");
                 None
@@ -494,26 +492,25 @@ async fn receive_subscribe(
     ))
 }
 
-async fn send_status(
+async fn send_action(
     State(state): State<Arc<SockState>>,
-    Json(req): Json<progress::Progress>,
-) -> Result<Json<progress::Response>, Error> {
-    let retry_strategy = ExponentialBackoff::from_millis(100)
-        .map(jitter) // add jitter to delays
-        .take(3); // limit to 3 retries
+    Json(req): Json<ActionRequest>,
+) -> Result<Json<action::ActionResponse>, Error> {
+    if req.job_id != state.job_id {
+        return Err(Error::InvalidStatus("job_id mismatch".to_string()));
+    }
+
+    let retry_strategy = ExponentialBackoff::from_millis(100).map(jitter).take(3);
 
     // TODO we should ensure that a message is not received repeatedly. Otherwise it will distort the training.
     let result = Retry::spawn(retry_strategy, || {
         let req_clone = req.clone();
         let state = state.clone();
         async move {
-            hypha_network::request_response::RequestResponseInterface::<progress::Codec>::request(
+            hypha_network::request_response::RequestResponseInterface::<action::Codec>::request(
                 &state.network,
                 state.scheduler,
-                Request {
-                    job_id: state.job_id,
-                    progress: req_clone,
-                },
+                req_clone,
             )
             .await
         }
