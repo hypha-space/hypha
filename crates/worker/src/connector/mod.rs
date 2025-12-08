@@ -5,7 +5,7 @@ use std::{io, pin::Pin, sync::Arc};
 use futures_util::{Stream, StreamExt, TryStreamExt};
 use hf_hub::api::tokio::ApiBuilder;
 use hypha_messages::{
-    DataSlice, Fetch, Receive, Reference, SelectionStrategy, Send as SendRef, api, data,
+    DataSlice, Fetch, Receive, Reference, SelectionStrategy, Send as SendRef, api,
 };
 use hypha_network::{
     request_response::RequestResponseInterface,
@@ -128,9 +128,6 @@ where
         };
         // Register built-ins
         this.fetchers.push(Arc::new(HttpHfFetcher));
-        this.fetchers.push(Arc::new(PeerStreamPullConnector {
-            network: network.clone(),
-        }));
         let peer = PeerStreamPushConnector {
             network: network.clone(),
         };
@@ -427,80 +424,6 @@ where
                     Ok(Box::pin(stream) as ReadItemStream)
                 }
                 _ => Err(ConnectorError::UnsupportedReceive(recv.as_ref().clone())),
-            }
-        })
-    }
-}
-
-#[derive(Clone)]
-struct PeerStreamPullConnector<T>
-where
-    T: Clone + StreamPullInterface + StreamPullSenderInterface<DataSlice> + Send + Sync + 'static,
-{
-    network: T,
-}
-
-impl<T> FetchConnector for PeerStreamPullConnector<T>
-where
-    T: Clone
-        + RequestResponseInterface<api::Codec>
-        + StreamPullInterface
-        + StreamPullSenderInterface<DataSlice>
-        + Send
-        + Sync
-        + 'static,
-{
-    fn supports(&self, r: &Reference) -> bool {
-        matches!(r, Reference::Scheduler { .. })
-    }
-
-    fn fetch<'a>(
-        &'a self,
-        fetch: &'a Fetch,
-    ) -> Pin<Box<dyn Future<Output = Result<ReadItemStream, ConnectorError>> + Send + 'a>> {
-        Box::pin(async move {
-            match fetch.as_ref() {
-                Reference::Scheduler { peer, dataset } => {
-                    tracing::debug!(peer_id = %peer, dataset, "Requesting data slice index from scheduler");
-                    match self
-                        .network
-                        .request(
-                            *peer,
-                            api::Request::Data(data::Request {
-                                dataset: dataset.clone(),
-                            }),
-                        )
-                        .await
-                    {
-                        Ok(api::Response::Data(data::Response::Success {
-                            data_provider,
-                            hash,
-                        })) => {
-                            tracing::debug!(peer_id = %peer, data_peer_id = %data_provider, dataset, hash, "Received slice hash and data provider");
-                            let stream = self
-                                .network
-                                .stream_pull(
-                                    data_provider,
-                                    &DataSlice {
-                                        dataset: dataset.clone(),
-                                        hash: hash.clone(),
-                                    },
-                                )
-                                .await?;
-                            let item = ReadItem {
-                                meta: ItemMeta {
-                                    kind: "peer",
-                                    name: hash,
-                                },
-                                reader: Box::pin(stream),
-                            };
-                            let s = futures_util::stream::once(async move { Ok(item) });
-                            Ok(Box::pin(s) as ReadItemStream)
-                        }
-                        _ => Err(ConnectorError::UnsupportedFetch(fetch.as_ref().clone())),
-                    }
-                }
-                _ => Err(ConnectorError::UnsupportedFetch(fetch.as_ref().clone())),
             }
         })
     }
