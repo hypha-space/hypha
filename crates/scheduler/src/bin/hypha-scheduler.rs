@@ -307,12 +307,6 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
                         tracing::debug!(%job_id, peer_id = %worker.peer_id, "Parameter server started");
 
                         let worker_ids: Vec<PeerId> =
-                            worker_handle.members().iter().map(|w| w.peer_id).collect();
-
-                        {
-                            let mut guard = parameter_server_id.write().await;
-                            *guard = Some(worker.peer_id);
-                        }
 
                         let job_spec = JobSpec {
                             job_id,
