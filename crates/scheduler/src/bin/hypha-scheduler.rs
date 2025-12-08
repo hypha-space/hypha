@@ -320,8 +320,6 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
                                 PARAMETER_SERVER_EXECUTOR_NAME,
                             )
                             .into_executor(AggregateExecutorConfig {
-                                updates: Receive::peers(worker_ids.clone()),
-                                results: Send::peers(worker_ids, SelectionStrategy::All),
                                 optimizer: diloco_config.outer_optimizer.clone(),
                             })
                             .into(),
