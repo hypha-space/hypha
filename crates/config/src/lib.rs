@@ -275,6 +275,7 @@ use std::sync::Arc;
 
 use documented::{Documented, DocumentedFieldsOpt};
 use figment::{Figment, Provider, Source};
+use hypha_network::cert::ParseError;
 use miette::{Diagnostic, NamedSource, SourceSpan};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -331,6 +332,11 @@ pub enum ConfigError {
     /// the configuration cannot be serialized.
     #[error("Failed to serialize configuration")]
     Toml(#[from] Box<toml::ser::Error>),
+    // Error parsing a cert-file
+    ///
+    /// This occurs when cert-file can't be parsed.
+    #[error("Failed to serialize configuration")]
+    ParseError(#[from] ParseError),
     /// Semantic validation error produced by configuration checks.
     #[error("Invalid configuration: {0}")]
     #[diagnostic(help("Update the configuration value to satisfy validation rules"))]

@@ -125,9 +125,9 @@ where
 
                 let snapshot = worker_pool.statistics();
                 let samples_remaining = {
-                  let mut training = training_state.lock().await;
-                  training.record_batch(batch_size);
-                  training.samples_remaining()
+                    let mut training = training_state.lock().await;
+                    training.record_batch(batch_size);
+                    training.samples_remaining()
                 };
 
                 if parameter_servers.is_empty() {
