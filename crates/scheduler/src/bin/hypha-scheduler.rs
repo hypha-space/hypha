@@ -295,7 +295,7 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
         let parameter_server_id = parameter_server_id.clone();
         let worker_handle = worker_handle.clone();
 
-        tokio::spawn(parameter_pool.for_each_concurrent(None, move |worker| {
+        tokio::spawn(parameter_pool.for_each_concurrent(None, move |parameter_server| {
             let network = network.clone();
             let diloco_config = diloco_config.clone();
             let parameter_server_id = parameter_server_id.clone();
