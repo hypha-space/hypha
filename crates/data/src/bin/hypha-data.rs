@@ -1,4 +1,13 @@
-use std::{collections::HashMap, io, path::PathBuf, time::Duration};
+use std::{
+    collections::HashMap,
+    io,
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 use clap::Parser;
 use figment::{
@@ -86,12 +95,32 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
 
     let exclude_cidrs = config.exclude_cidr().clone();
 
+    // NOTE: Healthy (readiness) is defined as:
+    // - listening on all addresses
+    // - DHT bootstrap complete
+    let ready = Arc::new(AtomicBool::new(false));
+
     // Load certificates and private key
     let (network, network_driver) =
         Network::create(cert_chain, private_key, ca_certs, crls, exclude_cidrs)
             .into_diagnostic()?;
 
     let network_handle = tokio::spawn(network_driver.run());
+
+    // Register health handler responding with readiness (listen + DHT bootstrap)
+    let ready_clone = ready.clone();
+    let health_handle = network
+        .on::<health::Codec, _>(|_: &health::Request| true)
+        .into_stream()
+        .await
+        .into_diagnostic()?
+        .respond_with_concurrent(None, move |(_, _)| {
+            let ready = ready_clone.clone();
+            async move {
+                let flag = ready.load(Ordering::Relaxed);
+                health::Response { healthy: flag }
+            }
+        });
 
     join_all(
         config
@@ -168,6 +197,9 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
 
     // NOTE: Wait until DHT bootstrapping is done.
     network.wait_for_bootstrap().await.into_diagnostic()?;
+
+    // NOTE: Mark data as ready only after listening + bootstrap complete.
+    ready.store(true, Ordering::Relaxed);
 
     // Treat each file in the directory as a subset of the dataset.
     // TODO: determine subset ordering by, e.g., a naming convention of the files in the dataset folder.
@@ -261,6 +293,9 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
         }
         _ = stream_pulls => {
             tracing::warn!("Stream pull error, shutting down");
+        }
+        _ = health_handle => {
+            tracing::info!("Health handler terminated, shutting down");
         }
     }
 
