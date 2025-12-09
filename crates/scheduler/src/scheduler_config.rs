@@ -202,16 +202,6 @@ impl PoolSettings {
     }
 }
 
-impl Default for PoolSettings {
-    fn default() -> Self {
-        Self {
-            min: 1,
-            target: 1,
-            grace_ms: Self::default_grace_ms(),
-        }
-    }
-}
-
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct DiLoCoResources {
     pub worker: Resources,
@@ -220,8 +210,6 @@ pub struct DiLoCoResources {
     pub worker_price: PriceRange,
     #[serde(default)]
     pub parameter_server_price: PriceRange,
-    #[serde(default)]
     pub worker_pool: PoolSettings,
-    #[serde(default)]
     pub parameter_server_pool: PoolSettings,
 }
