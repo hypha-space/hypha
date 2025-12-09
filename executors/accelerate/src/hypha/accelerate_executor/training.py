@@ -134,17 +134,6 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR09
                         "details": {"state": "batch-completed", "batch_size": 0},
                     }
             elif kind == "send-update":
-                if last_gradient is None:
-                    current_status = {
-                        "executor": "train",
-                        "details": {
-                            "state": "error",
-                            "type": "other",
-                            "message": "SendUpdate requested but no gradients available",
-                        },
-                    }
-                    continue
-
                 target = action.get("target")
                 if target is None:
                     current_status = {
@@ -167,6 +156,17 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR09
                 save_file(extract_gradients(state_cpu, previous_model_path, weight), result_path)
                 last_gradient = file_name
                 last_metrics = {"loss": float(loss.detach().cpu().numpy())}
+
+                if last_gradient is None:
+                    current_status = {
+                        "executor": "train",
+                        "details": {
+                            "state": "error",
+                            "type": "other",
+                            "message": "SendUpdate requested but no gradients available",
+                        },
+                    }
+                    continue
 
                 timeout_ms = system_time_to_epoch_ms(action.get("timeout"))
                 timeout_sec = (timeout_ms - int(time.time() * 1000.0)) / 1000.0 if timeout_ms else None

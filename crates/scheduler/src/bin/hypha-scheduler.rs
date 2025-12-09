@@ -393,21 +393,22 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
         }))
     };
 
-    let (metrics_rx, mut batch_scheduler_handle) = BatchScheduler::run::<RunningMean, BasicSimulation>(
-        network.clone(),
-        worker_handle.clone(),
-        parameter_handle.clone(),
-        job_id,
-        diloco_config.resources.worker_pool.min as usize,
-        Duration::from_millis(diloco_config.resources.worker_pool.grace_ms),
-        diloco_config.rounds.avg_samples_between_updates,
-        diloco_config.rounds.update_rounds,
-        diloco_config.model_destination.clone(),
-        batch_sizer.clone(),
-        token.clone(),
-    )
-    .await
-    .into_diagnostic()?;
+    let (metrics_rx, mut batch_scheduler_handle) =
+        BatchScheduler::run::<RunningMean, BasicSimulation>(
+            network.clone(),
+            worker_handle.clone(),
+            parameter_handle.clone(),
+            job_id,
+            diloco_config.resources.worker_pool.min as usize,
+            Duration::from_millis(diloco_config.resources.worker_pool.grace_ms),
+            diloco_config.rounds.avg_samples_between_updates,
+            diloco_config.rounds.update_rounds,
+            diloco_config.model_destination.clone(),
+            batch_sizer.clone(),
+            token.clone(),
+        )
+        .await
+        .into_diagnostic()?;
 
     metrics_bridge.register_stream(ReceiverStream::new(metrics_rx));
 

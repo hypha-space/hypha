@@ -237,7 +237,6 @@ where
                     ExecutorAction::Train(TrainAction::Terminate)
                 } else if state.push_assigned.is_none()
                     && state.applied_final_update.contains(&peer_id)
-                    && push_destination.is_some()
                 {
                     state.push_assigned = Some(peer_id);
                     if let Some(destination) = push_destination.as_ref().as_ref() {
