@@ -21,7 +21,7 @@ This document contains the help content for the `hypha-inspect` command-line pro
 
 ## `hypha-inspect`
 
-Hypha Inspect is a CLI tool for diagnosing network connectivity,
+Hypha Inspector is a CLI tool for diagnosing network connectivity,
 inspecting routing tables, and verifying identities within the Hypha network.
 
 
