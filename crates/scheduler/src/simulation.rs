@@ -8,7 +8,7 @@ pub trait Simulation {
         target: u32,
         time_cap: u64,
         steps_cap: u32,
-    ) -> (u64, u32, Vec<u32>, bool);
+    ) -> (u64, i32, Vec<u32>, bool);
 }
 
 pub struct BasicSimulation {}
@@ -21,7 +21,7 @@ impl Simulation for BasicSimulation {
         data_points_left: u32,
         time_cap: u64,
         steps_cap: u32,
-    ) -> (u64, u32, Vec<u32>, bool) {
+    ) -> (u64, i32, Vec<u32>, bool) {
         // NOTE: `time` and `next_update` are u64 to represent time in ms.
         // Counters remain u32 to reflect counts/steps within practical bounds.
         let mut updates = vec![0u32; batch_sizes.len()];
@@ -31,7 +31,7 @@ impl Simulation for BasicSimulation {
             .map(|(a, b)| a + b)
             .collect();
         let mut time: u64 = 0;
-        let mut to_go: u32 = data_points_left;
+        let mut to_go = data_points_left as i32;
         let mut capped = false;
         while to_go > 0 {
             let min_set = next_update
@@ -50,7 +50,7 @@ impl Simulation for BasicSimulation {
             let min_indices: Vec<usize> = min_set.iter().map(|(_, idx)| *idx).collect();
             for idx in min_indices.iter() {
                 let idx = *idx;
-                to_go = to_go.saturating_sub(batch_sizes[idx]);
+                to_go -= batch_sizes[idx] as i32;
                 updates[idx] = updates[idx].saturating_add(1);
 
                 if updates[idx] >= steps_cap {
@@ -129,7 +129,7 @@ mod tests {
         // Loop terminates *before* next event.
 
         assert_eq!(time, 80, "Stops at t=80 when done 0");
-        assert_eq!(done, 0, "Final done count");
+        assert_eq!(done, -1, "Final done count");
         assert_eq!(updates, vec![4, 2, 1], "Updates at t=80");
         assert_eq!(capped, false, "Limit not reached")
     }

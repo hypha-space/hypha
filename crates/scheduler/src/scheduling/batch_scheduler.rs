@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet, hash_map::Entry},
     sync::Arc,
     time::{Duration, Instant, SystemTime},
 };
@@ -22,6 +22,7 @@ use tokio::{
     },
     task::JoinHandle,
 };
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::{
@@ -53,26 +54,46 @@ struct RoundState {
 struct TrainingState {
     update_target: u32,
     counter: u32,
+    peer_updates: HashMap<PeerId, u32>,
 }
 
 impl TrainingState {
     fn new(update_target: u32) -> Self {
         Self {
             update_target,
-            counter: update_target,
+            counter: 0,
+            peer_updates: HashMap::new(),
         }
     }
 
-    fn record_batch(&mut self, batch_size: u32) {
-        self.counter = self.counter.saturating_sub(batch_size);
+    fn record_batch(&mut self, batch_size: u32, peer_id: PeerId) {
+        self.counter = self.counter.saturating_add(batch_size);
+        match self.peer_updates.entry(peer_id) {
+            Entry::Occupied(mut entry) => {
+                let processed = entry.get();
+                entry.insert(processed.saturating_add(batch_size));
+            }
+            Entry::Vacant(entry) => {
+                entry.insert(batch_size);
+            }
+        }
     }
 
-    fn samples_remaining(&self) -> u32 {
+    fn get_count(&self) -> u32 {
         self.counter
     }
 
+    fn get_update_target(&self) -> u32 {
+        self.update_target
+    }
+
     fn reset_round(&mut self) {
-        self.counter = self.update_target;
+        self.counter = 0;
+        self.peer_updates = HashMap::new();
+    }
+
+    fn get_peer_updates(&self, peer_id: &PeerId) -> u32 {
+        *self.peer_updates.get(peer_id).unwrap_or(&0u32)
     }
 }
 
@@ -108,6 +129,7 @@ async fn schedule<T, S>(
     push_destination: Arc<Option<ModelDestiantion>>,
     start: std::time::Instant,
     request: (PeerId, action::ActionRequest),
+    cancel: CancellationToken,
 ) -> Result<action::ActionResponse, BatchSchedulerError>
 where
     T: RuntimeStatistic + 'static,
@@ -129,28 +151,92 @@ where
             TrainStatus::Idle => {
                 let mut state = round_state.lock().await;
                 if !state.training_complete {
-                    let samples_remaining = training_state.lock().await.samples_remaining();
-                    if samples_remaining > 0 {
+                    let snapshot = worker_pool.statistics();
+                    let peer_position = snapshot
+                        .iter()
+                        .position(|w| w.peer_id == peer_id)
+                        .unwrap_or(0);
+
+                    let (count, update_target, peer_contribution) = {
+                        let training = training_state.lock().await;
+                        (
+                            training.get_count(),
+                            training.get_update_target(),
+                            training.get_peer_updates(&peer_id),
+                        )
+                    };
+
+                    let stats: Vec<u64> =
+                        snapshot.iter().map(|w| w.statistic.unwrap_or(0)).collect();
+                    let progress: Vec<u64> = snapshot
+                        .iter()
+                        .map(|w| w.last_updated.unwrap_or(0))
+                        .collect();
+                    let batch_sizes: Vec<u32> = snapshot
+                        .iter()
+                        .map(|w| (batch_sizer)(&w.resources))
+                        .collect();
+
+                    let (should_update, projected_target) = if update_target <= count {
+                        (true, count)
+                    } else if !snapshot.is_empty()
+                        && batch_sizes.iter().all(|&b| b > 0)
+                        && stats.iter().all(|&s| s > 0 && s < u64::MAX)
+                    {
+                        let (time, cnt, projection, capped) = S::project(
+                            &progress,
+                            &batch_sizes,
+                            stats,
+                            update_target.saturating_sub(count),
+                            SIM_TIME_CAP_MS,
+                            SIM_UPDATE_CAP,
+                        );
+
+                        tracing::debug!(
+                            time = %time,
+                            count = %cnt,
+                            peer = %peer_id,
+                            "Simulation with projection {:?} and {:?}",
+                            projection,
+                            update_target.saturating_sub(count)
+                        );
+                        (
+                            cnt <= 0
+                                && !capped
+                                && peer_position < projection.len()
+                                && projection[peer_position] == 0,
+                            count.saturating_add(cnt.unsigned_abs()),
+                        )
+                    } else {
+                        (false, count)
+                    };
+
+                    if !should_update {
                         ExecutorAction::Train(TrainAction::ExecuteBatch)
                     } else if parameter_servers.is_empty() {
+                        // NOTE: If we need to send an update but there are no parameter servers,
+                        // we must wait (idle) until one becomes available.
                         ExecutorAction::Train(TrainAction::Idle {
                             timeout: now + Duration::from_secs(1),
                         })
                     } else {
                         ExecutorAction::Train(TrainAction::SendUpdate {
                             target: Reference::Peers {
+                                // Selecting a single PS to avoid that workers send updates to multiple PS
                                 peers: vec![parameter_servers[0]],
                                 strategy: SelectionStrategy::One,
                                 resource: None,
                             },
+                            weight: peer_contribution as f32 / projected_target as f32,
+                            // TODO: We need a way to properly determine a good sent timeout
                             timeout: now + Duration::from_secs(30),
                         })
                     }
                 } else if state.push_done {
+                    cancel.cancel();
                     ExecutorAction::Train(TrainAction::Terminate)
                 } else if state.push_assigned.is_none()
                     && state.applied_final_update.contains(&peer_id)
-                    && push_destination.is_some()
                 {
                     state.push_assigned = Some(peer_id);
                     if let Some(destination) = push_destination.as_ref().as_ref() {
@@ -173,10 +259,19 @@ where
                 worker_pool.update(&peer_id, since_start);
 
                 let snapshot = worker_pool.statistics();
-                let samples_remaining = {
+                let peer_position = snapshot
+                    .iter()
+                    .position(|w| w.peer_id == peer_id)
+                    .unwrap_or(0);
+
+                let (count, update_target, peer_contribution) = {
                     let mut training = training_state.lock().await;
-                    training.record_batch(batch_size);
-                    training.samples_remaining()
+                    training.record_batch(batch_size, peer_id);
+                    (
+                        training.get_count(),
+                        training.get_update_target(),
+                        training.get_peer_updates(&peer_id),
+                    )
                 };
 
                 if round_state.lock().await.training_complete {
@@ -195,8 +290,8 @@ where
                         .map(|w| (batch_sizer)(&w.resources))
                         .collect();
 
-                    let should_update = if samples_remaining == 0 {
-                        true
+                    let (should_update, projected_target) = if update_target <= count {
+                        (true, count)
                     } else if !snapshot.is_empty()
                         && batch_sizes.iter().all(|&b| b > 0)
                         && stats.iter().all(|&s| s > 0 && s < u64::MAX)
@@ -205,14 +300,10 @@ where
                             &progress,
                             &batch_sizes,
                             stats,
-                            samples_remaining,
+                            update_target.saturating_sub(count),
                             SIM_TIME_CAP_MS,
                             SIM_UPDATE_CAP,
                         );
-                        let peer_position = snapshot
-                            .iter()
-                            .position(|w| w.peer_id == peer_id)
-                            .unwrap_or(0);
 
                         tracing::debug!(
                             time = %time,
@@ -220,14 +311,17 @@ where
                             peer = %peer_id,
                             "Simulation with projection {:?} and {:?}",
                             projection,
-                            samples_remaining
+                            update_target.saturating_sub(count)
                         );
-                        cnt == 0
-                            && !capped
-                            && peer_position < projection.len()
-                            && projection[peer_position] == 0
+                        (
+                            cnt <= 0
+                                && !capped
+                                && peer_position < projection.len()
+                                && projection[peer_position] == 0,
+                            count.saturating_add(cnt.unsigned_abs()),
+                        )
                     } else {
-                        false
+                        (false, count)
                     };
 
                     if !should_update {
@@ -246,6 +340,7 @@ where
                                 strategy: SelectionStrategy::One,
                                 resource: None,
                             },
+                            weight: peer_contribution as f32 / projected_target as f32,
                             // TODO: We need a way to properly determine a good sent timeout
                             timeout: now + Duration::from_secs(30),
                         })
@@ -544,6 +639,7 @@ impl BatchScheduler {
         update_rounds: u32,
         push_destination: Option<ModelDestiantion>,
         batch_sizer: BatchSizer,
+        cancel: CancellationToken,
     ) -> Result<(mpsc::Receiver<(PeerId, Metrics)>, JoinHandle<()>), BatchSchedulerError>
     where
         T: RuntimeStatistic + 'static,
@@ -591,6 +687,7 @@ impl BatchScheduler {
                     let training_state = training_state.clone();
                     let batch_sizer = batch_sizer.clone();
                     let push_destination = push_destination.clone();
+                    let cancel = cancel.clone();
                     async move {
                         match schedule::<T, S>(
                             tx,
@@ -602,6 +699,7 @@ impl BatchScheduler {
                             push_destination,
                             start,
                             request,
+                            cancel,
                         )
                         .await
                         {
@@ -642,6 +740,7 @@ mod batch_scheduler_tests {
     use hypha_resources::Resources;
     use libp2p::PeerId;
     use tokio::time::Duration;
+    use tokio_util::sync::CancellationToken;
     use uuid::Uuid;
 
     use super::{RoundState, TrainingState, schedule};
@@ -762,6 +861,7 @@ mod batch_scheduler_tests {
         let training_state = std::sync::Arc::new(tokio::sync::Mutex::new(TrainingState::new(10)));
         let batch_sizer = std::sync::Arc::new(|_: &Resources| 1u32);
         let push_destination = std::sync::Arc::new(None);
+        let token = CancellationToken::new();
         let resp = schedule::<RunningMean, BasicSimulation>(
             tx,
             worker_handle,
@@ -778,6 +878,7 @@ mod batch_scheduler_tests {
                     status: ExecutorStatus::Train(TrainStatus::Idle),
                 },
             ),
+            token.clone(),
         )
         .await
         .unwrap();
@@ -827,6 +928,7 @@ mod batch_scheduler_tests {
         let training_state = std::sync::Arc::new(tokio::sync::Mutex::new(TrainingState::new(100)));
         let batch_sizer = std::sync::Arc::new(|_: &Resources| 1u32);
         let push_destination = std::sync::Arc::new(None);
+        let token = CancellationToken::new();
         let resp = schedule::<RunningMean, BasicSimulation>(
             tx,
             worker_handle,
@@ -843,6 +945,7 @@ mod batch_scheduler_tests {
                     status: ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 4 }),
                 },
             ),
+            token.clone(),
         )
         .await
         .unwrap();
@@ -892,6 +995,7 @@ mod batch_scheduler_tests {
         let training_state = std::sync::Arc::new(tokio::sync::Mutex::new(TrainingState::new(10)));
         let batch_sizer = std::sync::Arc::new(|_: &Resources| 1u32);
         let push_destination = std::sync::Arc::new(None);
+        let token = CancellationToken::new();
         let resp = schedule::<RunningMean, BasicSimulation>(
             tx,
             worker_handle,
@@ -908,6 +1012,7 @@ mod batch_scheduler_tests {
                     status: ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 10 }),
                 },
             ),
+            token.clone(),
         )
         .await
         .unwrap();
@@ -958,6 +1063,7 @@ mod batch_scheduler_tests {
         let training_state = std::sync::Arc::new(tokio::sync::Mutex::new(TrainingState::new(0)));
         let batch_sizer = std::sync::Arc::new(|_: &Resources| 1u32);
         let push_destination = std::sync::Arc::new(None);
+        let token = CancellationToken::new();
         let resp = schedule::<RunningMean, BasicSimulation>(
             tx,
             worker_handle,
@@ -974,6 +1080,7 @@ mod batch_scheduler_tests {
                     status: ExecutorStatus::Train(TrainStatus::Idle),
                 },
             ),
+            token.clone(),
         )
         .await
         .unwrap();
@@ -1169,6 +1276,7 @@ mod batch_scheduler_tests {
                         strategy: SelectionStrategy::One,
                         resource: None,
                     },
+                    weight: 0.3,
                     timeout: SystemTime::now(),
                 }),
                 2000,
@@ -1182,6 +1290,7 @@ mod batch_scheduler_tests {
                         strategy: SelectionStrategy::One,
                         resource: None,
                     },
+                    weight: 0.3,
                     timeout: SystemTime::now(),
                 }),
                 2400,
@@ -1293,6 +1402,7 @@ mod batch_scheduler_tests {
         ];
 
         for (idx, step) in steps.iter().enumerate() {
+            let token = CancellationToken::new();
             let resp = schedule::<TestStat, BasicSimulation>(
                 tx.clone(),
                 worker_handle.clone(),
@@ -1309,6 +1419,7 @@ mod batch_scheduler_tests {
                         status: step.status.clone(),
                     },
                 ),
+                token.clone(),
             )
             .await
             .expect("schedule");
@@ -1324,7 +1435,7 @@ mod batch_scheduler_tests {
         {
             let state = training_state.lock().await;
             assert_eq!(
-                state.samples_remaining(),
+                state.get_update_target().saturating_sub(state.get_count()),
                 800,
                 "counter reset for new round"
             );
@@ -1340,6 +1451,7 @@ mod batch_scheduler_tests {
 
         // Workers acknowledge the broadcast with AppliedUpdate and should resume executing batches.
         for peer in [w1_id, w2_id, w3_id] {
+            let token = CancellationToken::new();
             let resp = schedule::<TestStat, BasicSimulation>(
                 tx.clone(),
                 worker_handle.clone(),
@@ -1359,6 +1471,7 @@ mod batch_scheduler_tests {
                         }),
                     },
                 ),
+                token.clone(),
             )
             .await
             .expect("applied update");

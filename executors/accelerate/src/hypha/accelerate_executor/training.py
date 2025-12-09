@@ -128,32 +128,12 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR09
                         "executor": "train",
                         "details": {"state": "batch-completed", "batch_size": batch_size},
                     }
-                    # Prepare gradients for potential SendUpdate
-                    file_name = f"{epoch_counter}_local_gradients.pt"
-                    result_path = os.path.join(work_dir, file_name)
-                    # Copy weights to CPU without moving the live model off-device.
-                    model_state = accelerator.unwrap_model(model).state_dict()
-                    state_cpu = {k: v.detach().cpu() for k, v in model_state.items()}
-                    save_file(extract_gradients(state_cpu, previous_model_path), result_path)
-                    last_gradient = file_name
-                    last_metrics = {"loss": float(loss.detach().cpu().numpy())}
                 else:
                     current_status = {
                         "executor": "train",
                         "details": {"state": "batch-completed", "batch_size": 0},
                     }
             elif kind == "send-update":
-                if last_gradient is None:
-                    current_status = {
-                        "executor": "train",
-                        "details": {
-                            "state": "error",
-                            "type": "other",
-                            "message": "SendUpdate requested but no gradients available",
-                        },
-                    }
-                    continue
-
                 target = action.get("target")
                 if target is None:
                     current_status = {
@@ -162,6 +142,28 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR09
                             "state": "error",
                             "type": "other",
                             "message": "SendUpdate missing target reference",
+                        },
+                    }
+                    continue
+
+                # Prepare gradients for SendUpdate
+                weight = action.get("weight")
+                file_name = f"{epoch_counter}_local_gradients.pt"
+                result_path = os.path.join(work_dir, file_name)
+                # Copy weights to CPU without moving the live model off-device.
+                model_state = accelerator.unwrap_model(model).state_dict()
+                state_cpu = {k: v.detach().cpu() for k, v in model_state.items()}
+                save_file(extract_gradients(state_cpu, previous_model_path, weight), result_path)
+                last_gradient = file_name
+                last_metrics = {"loss": float(loss.detach().cpu().numpy())}
+
+                if last_gradient is None:
+                    current_status = {
+                        "executor": "train",
+                        "details": {
+                            "state": "error",
+                            "type": "other",
+                            "message": "SendUpdate requested but no gradients available",
                         },
                     }
                     continue

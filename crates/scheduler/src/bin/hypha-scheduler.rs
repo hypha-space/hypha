@@ -405,6 +405,7 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
             diloco_config.rounds.update_rounds,
             diloco_config.model_destination.clone(),
             batch_sizer.clone(),
+            token.clone(),
         )
         .await
         .into_diagnostic()?;
