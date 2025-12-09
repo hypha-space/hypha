@@ -60,7 +60,7 @@ where
         let d = self.dataset.clone();
         let data_provider = self.data_provider;
         let tracker = self.slice_tracker.clone();
-        let stream_handle = tokio::spawn({
+        let mut stream_handle = tokio::spawn({
             self.network
                 .on::<api::Codec, _>(move |req: &api::Request| {
                     matches!(
@@ -90,11 +90,13 @@ where
 
         let handle = tokio::spawn(async move {
             tokio::select! {
-                _ = stream_handle => {
+                _ = &mut stream_handle => {
                     tracing::info!("Data handler finished.");
                 },
                 _ = cancel_token.cancelled() => {
                     tracing::info!("Job is completed.");
+                    // NOTE: Cancelling the token should also abort the stream handler.
+                    stream_handle.abort();
                 }
             }
         });
