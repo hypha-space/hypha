@@ -2128,6 +2128,7 @@ dependencies = [
  "hf-hub",
  "http-body-util",
  "hypha-config",
+ "hypha-data",
  "hypha-leases",
  "hypha-messages",
  "hypha-network",
