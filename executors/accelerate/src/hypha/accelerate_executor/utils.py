@@ -115,9 +115,13 @@ def merge_models(old_model: str, weight_path: str) -> dict[str, torch.Tensor]:
     return state_dict
 
 
-def extract_gradients(state_dict: dict[str, torch.Tensor], previous_model_path: str) -> dict[str, torch.Tensor]:
+def extract_gradients(
+    state_dict: dict[str, torch.Tensor], previous_model_path: str, weight: float = 1
+) -> dict[str, torch.Tensor]:
     with safe_open(previous_model_path, framework="pt", device="cpu") as p:  # type: ignore[no-untyped-call]
         for name in p.keys():  # noqa: SIM118
             # This results in \theta_{t} - \theta_{t-1} = -\nabla
             state_dict[name] -= p.get_tensor(name).to(state_dict[name].dtype)
+            if weight != 1:
+                state_dict[name] *= weight
     return state_dict

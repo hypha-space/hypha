@@ -128,15 +128,6 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR09
                         "executor": "train",
                         "details": {"state": "batch-completed", "batch_size": batch_size},
                     }
-                    # Prepare gradients for potential SendUpdate
-                    file_name = f"{epoch_counter}_local_gradients.pt"
-                    result_path = os.path.join(work_dir, file_name)
-                    # Copy weights to CPU without moving the live model off-device.
-                    model_state = accelerator.unwrap_model(model).state_dict()
-                    state_cpu = {k: v.detach().cpu() for k, v in model_state.items()}
-                    save_file(extract_gradients(state_cpu, previous_model_path), result_path)
-                    last_gradient = file_name
-                    last_metrics = {"loss": float(loss.detach().cpu().numpy())}
                 else:
                     current_status = {
                         "executor": "train",
@@ -165,6 +156,17 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR09
                         },
                     }
                     continue
+
+                # Prepare gradients for SendUpdate
+                weight = action.get("weight")
+                file_name = f"{epoch_counter}_local_gradients.pt"
+                result_path = os.path.join(work_dir, file_name)
+                # Copy weights to CPU without moving the live model off-device.
+                model_state = accelerator.unwrap_model(model).state_dict()
+                state_cpu = {k: v.detach().cpu() for k, v in model_state.items()}
+                save_file(extract_gradients(state_cpu, previous_model_path, weight), result_path)
+                last_gradient = file_name
+                last_metrics = {"loss": float(loss.detach().cpu().numpy())}
 
                 timeout_ms = system_time_to_epoch_ms(action.get("timeout"))
                 timeout_sec = (timeout_ms - int(time.time() * 1000.0)) / 1000.0 if timeout_ms else None

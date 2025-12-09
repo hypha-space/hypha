@@ -153,6 +153,7 @@ pub mod action {
         ExecuteBatch,
         SendUpdate {
             target: Reference,
+            weight: f32,
             timeout: SystemTime,
         },
         ApplyUpdate {

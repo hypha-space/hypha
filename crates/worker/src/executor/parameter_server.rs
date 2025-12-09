@@ -436,14 +436,14 @@ async fn aggregate_updates(
                 Some(result_tensor_file_name) => {
                     let resulting_tensor_file_name =
                         work_dir.join(format!("joined_{:?}", Uuid::new_v4()));
-                    let average_op = |a: &Tensor, b: &Tensor| (a + b).and_then(|t| t / 2.);
+                    let sum_op = |a: &Tensor, b: &Tensor| a + b;
                     apply_tensor_op(
                         &file_name,
                         &result_tensor_file_name,
                         &resulting_tensor_file_name,
                         &work_dir,
                         device,
-                        average_op,
+                        sum_op,
                     )
                     .await?;
                     let _ = fs::remove_file(&file_name).await;
