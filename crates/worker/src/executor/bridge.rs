@@ -17,6 +17,7 @@ use axum::{
     routing::{get, post},
 };
 use futures_util::{StreamExt, stream};
+use hypha_data::hash::get_file_sha256;
 use hypha_messages::{
     DataSlice, Fetch, Receive, Reference, Send,
     action::{self, ActionRequest},
@@ -36,7 +37,7 @@ use tokio::{
 };
 use tokio_retry::{
     Retry,
-    strategy::{ExponentialBackoff, jitter},
+    strategy::{ExponentialBackoff, FibonacciBackoff, jitter},
 };
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use utoipa::OpenApi;
@@ -55,6 +56,8 @@ pub enum Error {
     Connector(#[from] ConnectorError),
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("Hash mismatch: expected {expected}, got {found}")]
+    HashMismatch { expected: String, found: String },
     #[error("Invalid job status: {0}")]
     InvalidStatus(String),
 }
@@ -107,6 +110,17 @@ impl IntoResponse for Error {
                     Json(ApiError {
                         error: "io_error",
                         detail: e.to_string(),
+                    }),
+                )
+                    .into_response()
+            }
+            Error::HashMismatch { expected, found } => {
+                tracing::warn!(expected, found, "bridge error: hash_mismatch");
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(ApiError {
+                        error: "hash_mismatch",
+                        detail: format!("Expected hash {}, but got {}", expected, found),
                     }),
                 )
                     .into_response()
@@ -221,7 +235,7 @@ async fn fetch_resource(
     State(state): State<Arc<SockState>>,
     Json(resource): Json<Fetch>,
 ) -> Result<Json<Vec<FileResponse>>, Error> {
-    let retry_strategy = ExponentialBackoff::from_millis(100).map(jitter).take(3);
+    let retry_strategy = FibonacciBackoff::from_millis(100).map(jitter).take(6);
     validate_fetch(&resource)?;
 
     match resource.as_ref() {
@@ -298,6 +312,20 @@ async fn fetch_resource(
                                     let mut file = fs::File::create(&abs).await?;
                                     let size = tokio::io::copy(&mut reader, &mut file).await?;
                                     file.sync_all().await?;
+
+                                    // Validate file against hash
+                                    let calculated_hash = get_file_sha256(&abs)?;
+
+                                    if calculated_hash != hash {
+                                        // Delete file
+                                        fs::remove_file(&abs).await?;
+
+                                        return Err(Error::HashMismatch {
+                                            expected: hash.clone(),
+                                            found: calculated_hash,
+                                        });
+                                    }
+
                                     tracing::info!(size, file = %abs.display(), "Copied resource");
                                     set_permissions(&abs, Permissions::from_mode(0o600)).await?;
 

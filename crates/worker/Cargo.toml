@@ -17,6 +17,7 @@ futures-util.workspace = true
 # Use a pre-relase of v0.4.3 because older versions depend on `number_prefix` which is unmaintained
 hf-hub = { git = "https://github.com/huggingface/hf-hub.git", rev = "94b8385", default-features = false, features = ["tokio", "rustls-tls"] }
 hypha-config.workspace = true
+hypha-data.workspace = true
 hypha-leases.workspace = true
 hypha-messages.workspace = true
 hypha-network.workspace = true
