@@ -313,13 +313,18 @@ impl JobExecutor for ParameterServerExecutor {
                                     }
                                 };
 
-                                match broadcast_update(
+                                match Retry::spawn(retry_strategy.clone(), || {
+                                    let connector = connector.clone();
+                                    let send = send.clone();
+                                    let cancel = cancel.clone();
+                                    async move { broadcast_update(
                                     connector.clone(),
                                     send,
                                     gradient_file,
                                     cancel.clone(),
-                                )
-                                .await
+                                ).await
+                                    }
+                                }).await
                                 {
                                     Ok(()) => {
                                         pending_update = None;
