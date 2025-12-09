@@ -22,6 +22,7 @@ use tokio::{
     },
     task::JoinHandle,
 };
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::{
@@ -128,6 +129,7 @@ async fn schedule<T, S>(
     push_destination: Arc<Option<ModelDestiantion>>,
     start: std::time::Instant,
     request: (PeerId, action::ActionRequest),
+    cancel: CancellationToken,
 ) -> Result<action::ActionResponse, BatchSchedulerError>
 where
     T: RuntimeStatistic + 'static,
@@ -231,6 +233,7 @@ where
                         })
                     }
                 } else if state.push_done {
+                    cancel.cancel();
                     ExecutorAction::Train(TrainAction::Terminate)
                 } else if state.push_assigned.is_none()
                     && state.applied_final_update.contains(&peer_id)
@@ -637,6 +640,7 @@ impl BatchScheduler {
         update_rounds: u32,
         push_destination: Option<ModelDestiantion>,
         batch_sizer: BatchSizer,
+        cancel: CancellationToken,
     ) -> Result<(mpsc::Receiver<(PeerId, Metrics)>, JoinHandle<()>), BatchSchedulerError>
     where
         T: RuntimeStatistic + 'static,
@@ -684,6 +688,7 @@ impl BatchScheduler {
                     let training_state = training_state.clone();
                     let batch_sizer = batch_sizer.clone();
                     let push_destination = push_destination.clone();
+                    let cancel = cancel.clone();
                     async move {
                         match schedule::<T, S>(
                             tx,
@@ -695,6 +700,7 @@ impl BatchScheduler {
                             push_destination,
                             start,
                             request,
+                            cancel,
                         )
                         .await
                         {
@@ -735,6 +741,7 @@ mod batch_scheduler_tests {
     use hypha_resources::Resources;
     use libp2p::PeerId;
     use tokio::time::Duration;
+    use tokio_util::sync::CancellationToken;
     use uuid::Uuid;
 
     use super::{RoundState, TrainingState, schedule};
@@ -855,6 +862,7 @@ mod batch_scheduler_tests {
         let training_state = std::sync::Arc::new(tokio::sync::Mutex::new(TrainingState::new(10)));
         let batch_sizer = std::sync::Arc::new(|_: &Resources| 1u32);
         let push_destination = std::sync::Arc::new(None);
+        let token = CancellationToken::new();
         let resp = schedule::<RunningMean, BasicSimulation>(
             tx,
             worker_handle,
@@ -871,6 +879,7 @@ mod batch_scheduler_tests {
                     status: ExecutorStatus::Train(TrainStatus::Idle),
                 },
             ),
+            token.clone(),
         )
         .await
         .unwrap();
@@ -920,6 +929,7 @@ mod batch_scheduler_tests {
         let training_state = std::sync::Arc::new(tokio::sync::Mutex::new(TrainingState::new(100)));
         let batch_sizer = std::sync::Arc::new(|_: &Resources| 1u32);
         let push_destination = std::sync::Arc::new(None);
+        let token = CancellationToken::new();
         let resp = schedule::<RunningMean, BasicSimulation>(
             tx,
             worker_handle,
@@ -936,6 +946,7 @@ mod batch_scheduler_tests {
                     status: ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 4 }),
                 },
             ),
+            token.clone(),
         )
         .await
         .unwrap();
@@ -985,6 +996,7 @@ mod batch_scheduler_tests {
         let training_state = std::sync::Arc::new(tokio::sync::Mutex::new(TrainingState::new(10)));
         let batch_sizer = std::sync::Arc::new(|_: &Resources| 1u32);
         let push_destination = std::sync::Arc::new(None);
+        let token = CancellationToken::new();
         let resp = schedule::<RunningMean, BasicSimulation>(
             tx,
             worker_handle,
@@ -1001,6 +1013,7 @@ mod batch_scheduler_tests {
                     status: ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 10 }),
                 },
             ),
+            token.clone(),
         )
         .await
         .unwrap();
@@ -1051,6 +1064,7 @@ mod batch_scheduler_tests {
         let training_state = std::sync::Arc::new(tokio::sync::Mutex::new(TrainingState::new(0)));
         let batch_sizer = std::sync::Arc::new(|_: &Resources| 1u32);
         let push_destination = std::sync::Arc::new(None);
+        let token = CancellationToken::new();
         let resp = schedule::<RunningMean, BasicSimulation>(
             tx,
             worker_handle,
@@ -1067,6 +1081,7 @@ mod batch_scheduler_tests {
                     status: ExecutorStatus::Train(TrainStatus::Idle),
                 },
             ),
+            token.clone(),
         )
         .await
         .unwrap();
@@ -1388,6 +1403,7 @@ mod batch_scheduler_tests {
         ];
 
         for (idx, step) in steps.iter().enumerate() {
+            let token = CancellationToken::new();
             let resp = schedule::<TestStat, BasicSimulation>(
                 tx.clone(),
                 worker_handle.clone(),
@@ -1404,6 +1420,7 @@ mod batch_scheduler_tests {
                         status: step.status.clone(),
                     },
                 ),
+                token.clone(),
             )
             .await
             .expect("schedule");
@@ -1435,6 +1452,7 @@ mod batch_scheduler_tests {
 
         // Workers acknowledge the broadcast with AppliedUpdate and should resume executing batches.
         for peer in [w1_id, w2_id, w3_id] {
+            let token = CancellationToken::new();
             let resp = schedule::<TestStat, BasicSimulation>(
                 tx.clone(),
                 worker_handle.clone(),
@@ -1454,6 +1472,7 @@ mod batch_scheduler_tests {
                         }),
                     },
                 ),
+                token.clone(),
             )
             .await
             .expect("applied update");
