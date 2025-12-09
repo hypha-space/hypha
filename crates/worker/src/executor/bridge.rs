@@ -28,6 +28,7 @@ use hypha_network::{
     stream_pull::StreamPullSenderInterface,
 };
 use libp2p::PeerId;
+use rand::seq::IndexedRandom;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::{
@@ -245,7 +246,7 @@ async fn fetch_resource(
         // otherwise we download it from a data provider.
         Reference::Scheduler { peer, dataset } => {
             tracing::debug!(peer_id = %peer, dataset, "Requesting data slice index from scheduler");
-            let (data_provider, hash) = Retry::spawn(retry_strategy.clone(), || {
+            let (data_providers, hash) = Retry::spawn(retry_strategy.clone(), || {
                 let network = state.network.clone();
                 async move {
                     match <Network as RequestResponseInterface<api::Codec>>::request(
@@ -258,9 +259,9 @@ async fn fetch_resource(
                     .await
                     {
                         Ok(api::Response::Data(data::Response::Success {
-                            data_provider,
+                            data_providers,
                             hash,
-                        })) => Ok((data_provider, hash)),
+                        })) => Ok((data_providers, hash)),
                         Ok(r) => Err(Error::Io(std::io::Error::other(format!(
                             "Unexpected response \"{:?}\"",
                             r
@@ -274,10 +275,11 @@ async fn fetch_resource(
             })
             .await?;
 
-            tracing::debug!(peer_id = %peer, data_peer_id = %data_provider, dataset, hash, "Received slice index and data provider");
+            tracing::debug!(peer_id = %peer, data_peer_ids = ?data_providers, dataset, hash, "Received slice index and data provider");
 
             let out = Retry::spawn(retry_strategy, || {
                 let hash = hash.clone();
+                let data_providers = data_providers.clone();
                 let state = state.clone();
                 let dir_rel = "artifacts".to_string();
                 let mut out: Vec<FileResponse> = Vec::new();
@@ -293,7 +295,7 @@ async fn fetch_resource(
                         // Cache hit!
                         Ok(true) => {
                             tracing::debug!(
-                                peer_id = %peer, data_peer_id = %data_provider,
+                                peer_id = %peer, data_peer_ids = ?data_providers,
                                 dataset,
                                 hash,
                                 "File already exists, skipping data slice download"
@@ -308,7 +310,9 @@ async fn fetch_resource(
                         }
                         // Cache miss!
                         _ => {
-                            tracing::debug!(peer_id = %peer, data_peer_id = %data_provider, dataset, hash, "Downloading data slice");
+                            tracing::debug!(peer_id = %peer, data_peer_ids = ?data_providers, dataset, hash, "Downloading data slice");
+
+                            let data_provider = data_providers.choose(&mut rand::rng()).copied().ok_or_else(|| Error::Io(io::Error::other("no peers provided")))?;
 
                             let mut reader = state
                                 .network

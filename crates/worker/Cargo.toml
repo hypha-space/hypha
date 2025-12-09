@@ -29,6 +29,7 @@ libp2p-stream.workspace = true
 miette.workspace = true
 nix.workspace = true
 ordered-float = "5"
+rand.workspace = true
 reqwest.workspace = true
 safetensors.workspace = true
 serde.workspace = true

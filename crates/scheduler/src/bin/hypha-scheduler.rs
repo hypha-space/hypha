@@ -1,6 +1,6 @@
 //! Scheduler binary.
 
-use std::{fs, sync::Arc, time::Duration};
+use std::{collections::HashSet, fs, sync::Arc, time::Duration};
 
 use clap::Parser;
 use figment::{
@@ -243,11 +243,11 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
     let parameter_handle = parameter_pool.handle();
 
     let dataset = diloco_config.dataset.dataset.clone();
-    let (data_provider, dataset_record) = get_data_provider(&network, dataset.as_str()).await?;
+    let (data_providers, dataset_record) = get_data_providers(&network, dataset.as_str()).await?;
 
     let data_scheduler = DataScheduler::new(
         network.clone(),
-        data_provider,
+        data_providers,
         dataset.clone(),
         dataset_record.slice_hashes,
     );
@@ -480,26 +480,32 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
 }
 
 // Find the data provider for the requested dataset
-async fn get_data_provider(
+async fn get_data_providers(
     network: &Network,
     dataset: &str,
-) -> miette::Result<(PeerId, DataRecord)> {
-    let record = network.get(dataset).await.map_err(|e| {
+) -> miette::Result<(HashSet<PeerId>, DataRecord)> {
+    let providers = network.find_provider(dataset).await.map_err(|e| {
         miette::miette!("No data provider found for dataset \"{}\": {}", dataset, e)
     })?;
 
-    match record.publisher {
-        Some(data_provider) => match serde_json::from_slice(&record.value) {
-            Ok(dataset_record) => Ok((data_provider, dataset_record)),
-            Err(e) => Err(miette::miette!(
-                "Failed to parse dataset record for dataset \"{}\": {}",
-                dataset,
-                e
-            )),
-        },
-        None => Err(miette::miette!(
+    if providers.is_empty() {
+        return Err(miette::miette!(
             "No data provider found for dataset \"{}\"",
             dataset
+        ));
+    }
+
+    let record = network
+        .get(dataset)
+        .await
+        .map_err(|e| miette::miette!("No record found for dataset \"{}\": {}", dataset, e))?;
+
+    match serde_json::from_slice(&record.value) {
+        Ok(dataset_record) => Ok((providers, dataset_record)),
+        Err(e) => Err(miette::miette!(
+            "Failed to parse dataset record for dataset \"{}\": {}",
+            dataset,
+            e
         )),
     }
 }

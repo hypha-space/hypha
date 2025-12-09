@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 
 use hypha_messages::{api, data};
 use hypha_network::request_response::{
@@ -30,7 +30,7 @@ where
     TBehaviour: RequestResponseInterface<api::Codec> + Clone + Send + Sync + 'static,
 {
     network: TBehaviour,
-    data_provider: PeerId,
+    data_providers: HashSet<PeerId>,
     dataset: String,
     slice_tracker: Arc<Mutex<SliceTracker>>,
 }
@@ -41,13 +41,13 @@ where
 {
     pub fn new(
         network: TBehaviour,
-        data_provider: PeerId,
+        data_providers: HashSet<PeerId>,
         dataset: String,
         slice_hashes: Vec<String>,
     ) -> Self {
         Self {
             network,
-            data_provider,
+            data_providers,
             dataset,
             slice_tracker: Arc::new(Mutex::new(SliceTracker::new(slice_hashes))),
         }
@@ -58,7 +58,7 @@ where
         cancel_token: CancellationToken,
     ) -> Result<JoinHandle<()>, DataSchedulerError> {
         let d = self.dataset.clone();
-        let data_provider = self.data_provider;
+        let data_providers = Vec::from_iter(self.data_providers.iter().cloned());
         let tracker = self.slice_tracker.clone();
         let mut stream_handle = tokio::spawn({
             self.network
@@ -75,13 +75,14 @@ where
                 .map_err(DataSchedulerError::from)?
                 .respond_with_concurrent(None, move |request| {
                     let tracker = tracker.clone();
+                    let data_providers = data_providers.clone();
                     async move {
                         let peer_id = request.0;
                         tracing::debug!(%peer_id, "Received data slice request");
                         let hash = tracker.lock().await.next(&peer_id);
                         tracing::debug!(%peer_id, "Picked data slice {}", hash);
                         api::Response::Data(data::Response::Success {
-                            data_provider,
+                            data_providers,
                             hash,
                         })
                     }
