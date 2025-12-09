@@ -5,6 +5,7 @@ use hypha_messages::{DataSlice, health};
 use hypha_network::{
     CertificateDer, CertificateRevocationListDer, IpNet, PrivateKeyDer,
     dial::{DialAction, DialDriver, DialInterface, PendingDials},
+    external_address::{ExternalAddressAction, ExternalAddressDriver, ExternalAddressInterface},
     kad::{KademliaAction, KademliaBehavior, KademliaDriver, KademliaInterface, PendingQueries},
     listen::{ListenAction, ListenDriver, ListenInterface, PendingListens},
     request_response::{
@@ -63,6 +64,7 @@ enum Action {
     Listen(ListenAction),
     Kademlia(KademliaAction),
     HealthRequestResponse(RequestResponseAction<health::Codec>),
+    ExternalAddress(ExternalAddressAction),
 }
 
 impl Network {
@@ -195,6 +197,8 @@ impl SwarmDriver<Behaviour> for NetworkDriver {
                         Action::Kademlia(action) => self.process_kademlia_action(action).await,
                         Action::HealthRequestResponse(action) =>
                             <NetworkDriver as RequestResponseDriver<Behaviour, health::Codec>>::process_request_response_action(&mut self, action).await,
+                        Action::ExternalAddress(action) =>
+                            self.process_external_address_action(action).await,
                     }
                 }
                 else => break
@@ -240,6 +244,8 @@ impl ListenDriver<Behaviour> for NetworkDriver {
         &mut self.pending_listen_map
     }
 }
+
+impl ExternalAddressDriver<Behaviour> for NetworkDriver {}
 
 impl StreamPullInterface for Network {
     fn stream_control(&self) -> stream::Control {
@@ -312,5 +318,17 @@ impl RequestResponseInterface<health::Codec> for Network {
         self.action_sender
             .try_send(Action::HealthRequestResponse(action))
             .map_err(|_| RequestResponseError::Other("Failed to send action".to_string()))
+    }
+}
+
+impl ExternalAddressInterface for Network {
+    async fn send(&self, action: ExternalAddressAction) {
+        if let Err(e) = self
+            .action_sender
+            .send(Action::ExternalAddress(action))
+            .await
+        {
+            tracing::error!(?e, "failed to send external address action");
+        }
     }
 }
