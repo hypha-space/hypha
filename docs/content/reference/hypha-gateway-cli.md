@@ -66,6 +66,15 @@ IMPORTANT: If the output file exists, it will be overwritten without warning.
 
    Optional CRL for rejecting compromised certificates. If not provided,
    uses crls_pem from the configuration file if present.
+* `--gateway <GATEWAY_ADDRESSES>` — Gateway addresses to connect to (repeatable, overrides config)
+
+   Gateways provide network bootstrapping, DHT access, and relay functionality.
+   Must include the peer ID in the multiaddr.
+
+   Examples:
+     --gateway /ip4/203.0.113.10/tcp/8080/p2p/12D3KooWAbc...
+     --gateway /dns4/gateway.hypha.example/tcp/443/p2p/12D3KooWAbc...
+   Required: connect to at least one gateway.
 * `--listen <LISTEN_ADDRESSES>` — Addresses to listen on (repeatable, overrides config)
 
    Where this gateway accepts incoming connections.
@@ -169,6 +178,15 @@ and runs until interrupted (SIGINT/SIGTERM) with a graceful shutdown.
 
    Optional CRL for rejecting compromised certificates. If not provided,
    uses crls_pem from the configuration file if present.
+* `--gateway <GATEWAY_ADDRESSES>` — Gateway addresses to connect to (repeatable, overrides config)
+
+   Gateways provide network bootstrapping, DHT access, and relay functionality.
+   Must include the peer ID in the multiaddr.
+
+   Examples:
+     --gateway /ip4/203.0.113.10/tcp/8080/p2p/12D3KooWAbc...
+     --gateway /dns4/gateway.hypha.example/tcp/443/p2p/12D3KooWAbc...
+   Required: connect to at least one gateway.
 * `--listen <LISTEN_ADDRESSES>` — Addresses to listen on (repeatable, overrides config)
 
    Where this gateway accepts incoming connections.
