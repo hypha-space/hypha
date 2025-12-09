@@ -98,11 +98,11 @@ pub mod action {
         BatchCompleted {
             batch_size: u32,
         },
-        SentUpdate,
-        AppliedUpdate {
+        SentUpdate {
             round: u32,
             metrics: HashMap<String, f32>,
         },
+        AppliedUpdate,
         PushedToHub,
         Terminated,
         Error(TrainError),

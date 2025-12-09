@@ -347,7 +347,10 @@ where
                     }
                 }
             }
-            TrainStatus::SentUpdate => {
+            TrainStatus::SentUpdate { round, metrics } => {
+                tx.send((peer_id, Metrics { round, metrics }))
+                    .await
+                    .map_err(BatchSchedulerError::from)?;
                 // NOTE: Track workers that have sent their update for the current round.
                 let mut state = round_state.lock().await;
                 state.sent_updates.insert(peer_id);
@@ -385,11 +388,7 @@ where
                     })
                 }
             }
-            TrainStatus::AppliedUpdate { round, metrics } => {
-                tx.send((peer_id, Metrics { round, metrics }))
-                    .await
-                    .map_err(BatchSchedulerError::from)?;
-
+            TrainStatus::AppliedUpdate => {
                 let training_complete = {
                     let mut state = round_state.lock().await;
 
@@ -1297,7 +1296,10 @@ mod batch_scheduler_tests {
             ),
             Step::new(
                 w1_id,
-                ExecutorStatus::Train(TrainStatus::SentUpdate),
+                ExecutorStatus::Train(TrainStatus::SentUpdate {
+                    round: 0,
+                    metrics: HashMap::new(),
+                }),
                 hypha_messages::action::ExecutorAction::Train(TrainAction::ApplyUpdate {
                     source: Reference::Peers {
                         peers: vec![ps_id],
@@ -1310,7 +1312,10 @@ mod batch_scheduler_tests {
             ),
             Step::new(
                 w2_id,
-                ExecutorStatus::Train(TrainStatus::SentUpdate),
+                ExecutorStatus::Train(TrainStatus::SentUpdate {
+                    round: 0,
+                    metrics: HashMap::new(),
+                }),
                 hypha_messages::action::ExecutorAction::Train(TrainAction::ApplyUpdate {
                     source: Reference::Peers {
                         peers: vec![ps_id],
@@ -1323,7 +1328,10 @@ mod batch_scheduler_tests {
             ),
             Step::new(
                 w3_id,
-                ExecutorStatus::Train(TrainStatus::SentUpdate),
+                ExecutorStatus::Train(TrainStatus::SentUpdate {
+                    round: 0,
+                    metrics: HashMap::new(),
+                }),
                 hypha_messages::action::ExecutorAction::Train(TrainAction::ApplyUpdate {
                     source: Reference::Peers {
                         peers: vec![ps_id],
@@ -1374,28 +1382,19 @@ mod batch_scheduler_tests {
             ),
             Step::new(
                 w1_id,
-                ExecutorStatus::Train(TrainStatus::AppliedUpdate {
-                    round: 0,
-                    metrics: HashMap::new(),
-                }),
+                ExecutorStatus::Train(TrainStatus::AppliedUpdate),
                 hypha_messages::action::ExecutorAction::Train(TrainAction::ExecuteBatch),
                 2530,
             ),
             Step::new(
                 w2_id,
-                ExecutorStatus::Train(TrainStatus::AppliedUpdate {
-                    round: 0,
-                    metrics: HashMap::new(),
-                }),
+                ExecutorStatus::Train(TrainStatus::AppliedUpdate),
                 hypha_messages::action::ExecutorAction::Train(TrainAction::ExecuteBatch),
                 2530,
             ),
             Step::new(
                 w3_id,
-                ExecutorStatus::Train(TrainStatus::AppliedUpdate {
-                    round: 0,
-                    metrics: HashMap::new(),
-                }),
+                ExecutorStatus::Train(TrainStatus::AppliedUpdate),
                 hypha_messages::action::ExecutorAction::Train(TrainAction::ExecuteBatch),
                 2530,
             ),
@@ -1465,10 +1464,7 @@ mod batch_scheduler_tests {
                     peer,
                     ActionRequest {
                         job_id: Uuid::new_v4(),
-                        status: ExecutorStatus::Train(TrainStatus::AppliedUpdate {
-                            round: 0,
-                            metrics: HashMap::new(),
-                        }),
+                        status: ExecutorStatus::Train(TrainStatus::AppliedUpdate),
                     },
                 ),
                 token.clone(),
