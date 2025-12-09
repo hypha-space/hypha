@@ -4,6 +4,7 @@ import os
 import time
 import uuid
 
+import numpy as np
 import torch
 import torch.utils.data
 from accelerate import Accelerator
@@ -96,6 +97,7 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR09
             loop_start_ms = time.time() * 1000.0
             action_resp = session.send_action({"job_id": job_id, "status": current_status})
             next_action = action_resp.get("next", {})
+            loss_list = []
 
             if next_action.get("executor") != "train":
                 raise RuntimeError(f"Unexpected executor action: {next_action}")
@@ -128,11 +130,7 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR09
                         "executor": "train",
                         "details": {"state": "batch-completed", "batch_size": batch_size},
                     }
-                else:
-                    current_status = {
-                        "executor": "train",
-                        "details": {"state": "batch-completed", "batch_size": 0},
-                    }
+                    loss_list.append(loss.detach().cpu().numpy())
             elif kind == "send-update":
                 target = action.get("target")
                 if target is None:
@@ -155,7 +153,8 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR09
                 state_cpu = {k: v.detach().cpu() for k, v in model_state.items()}
                 save_file(extract_gradients(state_cpu, previous_model_path, weight), result_path)
                 last_gradient = file_name
-                last_metrics = {"loss": float(loss.detach().cpu().numpy())}
+
+                last_metrics = {"loss": float(np.mean(loss_list))} if loss_list else {}
 
                 if last_gradient is None:
                     current_status = {
@@ -175,7 +174,14 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR09
 
                 try:
                     session.send_resource(target, last_gradient, timeout=timeout_sec)
-                    current_status = {"executor": "train", "details": {"state": "sent-update"}}
+                    current_status = {
+                        "executor": "train",
+                        "details": {
+                            "state": "sent-update",
+                            "metrics": last_metrics,
+                            "round": epoch_counter,
+                        },
+                    }
                 except Exception as exc:  # noqa: BLE001
                     current_status = {
                         "executor": "train",
@@ -256,7 +262,7 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR09
 
                 current_status = {
                     "executor": "train",
-                    "details": {"state": "applied-update", "round": epoch_counter, "metrics": last_metrics},
+                    "details": {"state": "applied-update"},
                 }
                 epoch_counter += 1
             elif kind == "push-to-hub":
