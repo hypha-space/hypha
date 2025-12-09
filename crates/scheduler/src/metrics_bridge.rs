@@ -61,13 +61,24 @@ where
     }
 
     pub async fn run(mut self, cancel: CancellationToken) -> Result<(), MetricsError> {
-        while !cancel.is_cancelled() {
-            if let Some((per_id, metrics)) = self.streams.next().await {
-                tracing::debug!("Forwarding metric");
-                self.connector
-                    .forward_metrics(per_id, metrics)
-                    .await
-                    .expect("Status forwarded");
+        loop {
+            tokio::select! {
+                _ = cancel.cancelled() => {
+                    break;
+                }
+                item = self.streams.next() => {
+                    match item {
+                        Some((per_id, metrics)) => {
+                            tracing::debug!("Forwarding metric");
+                            if let Err(e) = self.connector.forward_metrics(per_id, metrics).await {
+                                tracing::warn!("Failed to forward metrics: {}", e);
+                            }
+                        }
+                        None => {
+                            break;
+                        }
+                    }
+                }
             }
         }
         Ok(())

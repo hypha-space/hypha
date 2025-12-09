@@ -191,6 +191,14 @@ impl Pool {
     }
 }
 
+impl Drop for Pool {
+    fn drop(&mut self) {
+        if let Some(task) = self.task.take() {
+            task.abort();
+        }
+    }
+}
+
 impl Stream for Pool {
     type Item = Result<WorkerDescriptor, PoolError>;
 

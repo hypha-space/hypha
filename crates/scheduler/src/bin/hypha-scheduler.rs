@@ -393,32 +393,28 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
         }))
     };
 
-    let (metrics_rx, batch_scheduler_handle) = BatchScheduler::run::<RunningMean, BasicSimulation>(
-        network.clone(),
-        worker_handle.clone(),
-        parameter_handle.clone(),
-        job_id,
-        diloco_config.resources.worker_pool.min as usize,
-        Duration::from_millis(diloco_config.resources.worker_pool.grace_ms),
-        diloco_config.rounds.avg_samples_between_updates,
-        diloco_config.rounds.update_rounds,
-        diloco_config.model_destination.clone(),
-        batch_sizer.clone(),
-    )
-    .await
-    .into_diagnostic()?;
+    let (metrics_rx, mut batch_scheduler_handle) =
+        BatchScheduler::run::<RunningMean, BasicSimulation>(
+            network.clone(),
+            worker_handle.clone(),
+            parameter_handle.clone(),
+            job_id,
+            diloco_config.resources.worker_pool.min as usize,
+            Duration::from_millis(diloco_config.resources.worker_pool.grace_ms),
+            diloco_config.rounds.avg_samples_between_updates,
+            diloco_config.rounds.update_rounds,
+            diloco_config.model_destination.clone(),
+            batch_sizer.clone(),
+        )
+        .await
+        .into_diagnostic()?;
 
     metrics_bridge.register_stream(ReceiverStream::new(metrics_rx));
 
     let cancel_token = token.clone();
-    let status_handle = tokio::spawn(async move {
-        tokio::select! {
-            Err(e) = metrics_bridge.run(cancel_token) => {
-                tracing::error!(error = %e, "Status bridge failed");
-            }
-            _ = batch_scheduler_handle => {
-                tracing::info!("Batch Scheduler finished");
-            }
+    let mut status_handle = tokio::spawn(async move {
+        if let Err(e) = metrics_bridge.run(cancel_token).await {
+            tracing::error!(error = %e, "Status bridge failed");
         }
     });
 
@@ -430,36 +426,55 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
         _ = &mut driver_task => {
             tracing::warn!("Network driver terminated, shutting down");
         }
-        _ = status_handle => {
-            tracing::debug!("Scheduler terminated")
+        _ = &mut status_handle => {
+            tracing::error!("Status bridge terminated, shutting down");
+        }
+        _ = &mut batch_scheduler_handle => {
+            tracing::info!("Batch scheduler finished, shutting down");
         }
     }
 
     // NOTE: Graceful shutdown sequence:
     //
-    // 1. Stop network interfaces and ensure the driver is completed before telemetry shutdown.
+    // 1. Stop components
+    // 2. Stop network interfaces and ensure the driver is completed
+    // 3. Flush any remaining telemetry and shutdown providers
+    //
+    // IMPORTANT: Do not log anything after shutting down the telemetry providers
+
+    if !batch_scheduler_handle.is_finished() {
+        batch_scheduler_handle.abort();
+    }
+    let _ = batch_scheduler_handle.await;
+
+    if !parameter_dispatcher.is_finished() {
+        parameter_dispatcher.abort();
+    }
+    let _ = parameter_dispatcher.await;
+
+    if !worker_dispatcher.is_finished() {
+        worker_dispatcher.abort();
+    }
+    let _ = worker_dispatcher.await;
+
+    if !status_handle.is_finished() {
+        status_handle.abort();
+    }
+    let _ = status_handle.await;
+
+    if !tracker_task.is_finished() {
+        tracker_task.abort();
+    }
+    let _ = tracker_task.await;
     drop(network);
     if !driver_task.is_finished() {
         driver_task.abort();
     }
     let _ = driver_task.await;
-    if !parameter_dispatcher.is_finished() {
-        parameter_dispatcher.abort();
-    }
-    let _ = parameter_dispatcher.await;
-    if !worker_dispatcher.is_finished() {
-        worker_dispatcher.abort();
-    }
-    let _ = worker_dispatcher.await;
-    if !tracker_task.is_finished() {
-        tracker_task.abort();
-    }
-    let _ = tracker_task.await;
-    // 2. Flush any remaining telemetry and shutdown providers, do not log anything after this point
+
     metrics.shutdown().into_diagnostic()?;
     tracing.shutdown().into_diagnostic()?;
     logging.shutdown().into_diagnostic()?;
-
     Ok(())
 }
 
