@@ -1,6 +1,6 @@
 use std::{
     fs::Permissions,
-    os::unix::fs::PermissionsExt,
+    os::unix::fs::{MetadataExt, PermissionsExt},
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
@@ -18,10 +18,14 @@ use axum::{
 };
 use futures_util::{StreamExt, stream};
 use hypha_messages::{
-    Fetch, Receive, Reference, Send,
+    DataSlice, Fetch, Receive, Reference, Send,
     action::{self, ActionRequest},
+    api, data,
 };
-use hypha_network::request_response::RequestResponseError;
+use hypha_network::{
+    request_response::{RequestResponseError, RequestResponseInterface},
+    stream_pull::StreamPullSenderInterface,
+};
 use libp2p::PeerId;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -220,39 +224,135 @@ async fn fetch_resource(
     let retry_strategy = ExponentialBackoff::from_millis(100).map(jitter).take(3);
     validate_fetch(&resource)?;
 
-    let out = Retry::spawn(retry_strategy, || {
-        let state = state.clone();
-        let resource = resource.clone();
-        let dir_rel = "artifacts".to_string();
-        let mut out: Vec<FileResponse> = Vec::new();
-        async move {
-            let dir_abs = safe_join(&state.work_dir, &dir_rel)?;
-            fs::create_dir_all(&dir_abs).await?;
-            let mut items = state.connector.fetch(resource).await?;
-            let mut idx: usize = 0;
-            while let Some(item) = items.next().await.transpose().map_err(Error::Io)? {
-                let (file_name, mut reader) = derive_name_and_reader(item, idx);
-                let rel = format!("{}/{}", dir_rel, file_name);
-                let abs = safe_join(&state.work_dir, &rel)?;
-                if let Some(parent) = abs.parent() {
-                    fs::create_dir_all(parent).await?;
+    match resource.as_ref() {
+        // Resolve scheduler fetches:
+        // We request a data slice from the scheduler.
+        // If we already downloaded that slice, we use the existing one,
+        // otherwise we download it from a data provider.
+        Reference::Scheduler { peer, dataset } => {
+            tracing::debug!(peer_id = %peer, dataset, "Requesting data slice index from scheduler");
+            match <Network as RequestResponseInterface<api::Codec>>::request(
+                &state.network,
+                *peer,
+                api::Request::Data(data::Request {
+                    dataset: dataset.clone(),
+                }),
+            )
+            .await
+            {
+                Ok(api::Response::Data(data::Response::Success {
+                    data_provider,
+                    hash,
+                })) => {
+                    tracing::debug!(peer_id = %peer, data_peer_id = %data_provider, dataset, hash, "Received slice index and data provider");
+
+                    let out = Retry::spawn(retry_strategy, || {
+                        let hash = hash.clone();
+                        let state = state.clone();
+                        let dir_rel = "artifacts".to_string();
+                        let mut out: Vec<FileResponse> = Vec::new();
+                        async move {
+                            let dir_abs = safe_join(&state.work_dir, &dir_rel)?;
+                            fs::create_dir_all(&dir_abs).await?;
+
+                            let file_name = hash.clone();
+                            let rel = format!("{}/{}", dir_rel, file_name);
+                            let abs = safe_join(&state.work_dir, &rel)?;
+
+                            match fs::try_exists(&abs).await {
+                                // Cache hit!
+                                Ok(true) => {
+                                    tracing::debug!(
+                                        peer_id = %peer, data_peer_id = %data_provider,
+                                        dataset,
+                                        hash,
+                                        "File already exists, skipping data slice download"
+                                    );
+
+                                    let metadata = fs::metadata(&abs).await?;
+
+                                    out.push(FileResponse {
+                                        path: rel,
+                                        size: metadata.size(),
+                                    });
+                                }
+                                // Cache miss!
+                                _ => {
+                                    tracing::debug!(peer_id = %peer, data_peer_id = %data_provider, dataset, hash, "Downloading data slice");
+
+                                    let mut reader = state
+                                        .network
+                                        .stream_pull(
+                                            data_provider,
+                                            &DataSlice {
+                                                dataset: dataset.clone(),
+                                                hash: hash.clone(),
+                                            },
+                                        )
+                                        .await.map_err(|e| Error::Connector(ConnectorError::OpenStream(e)))?;
+
+                                    if let Some(parent) = abs.parent() {
+                                        fs::create_dir_all(parent).await?;
+                                    }
+
+                                    let mut file = fs::File::create(&abs).await?;
+                                    let size = tokio::io::copy(&mut reader, &mut file).await?;
+                                    file.sync_all().await?;
+                                    tracing::info!(size, file = %abs.display(), "Copied resource");
+                                    set_permissions(&abs, Permissions::from_mode(0o600)).await?;
+
+                                    out.push(FileResponse { path: rel, size });
+                                }
+                            };
+
+                            Ok::<std::vec::Vec<FileResponse>, Error>(out)
+                        }
+                    })
+                    .await?;
+
+                    Ok(Json(out))
                 }
-
-                let mut file = fs::File::create(&abs).await?;
-                let size = tokio::io::copy(&mut reader, &mut file).await?;
-                file.sync_all().await?;
-                tracing::info!(size, file = %abs.display(), "Copied resource");
-                set_permissions(&abs, Permissions::from_mode(0o600)).await?;
-
-                out.push(FileResponse { path: rel, size });
-                idx += 1;
+                _ => Err(Error::Connector(ConnectorError::UnsupportedFetch(
+                    resource.as_ref().clone(),
+                ))),
             }
-            Ok::<std::vec::Vec<FileResponse>, Error>(out)
         }
-    })
-    .await?;
+        _ => {
+            let out = Retry::spawn(retry_strategy, || {
+                let state = state.clone();
+                let resource = resource.clone();
+                let dir_rel = "artifacts".to_string();
+                let mut out: Vec<FileResponse> = Vec::new();
+                async move {
+                    let dir_abs = safe_join(&state.work_dir, &dir_rel)?;
+                    fs::create_dir_all(&dir_abs).await?;
+                    let mut items = state.connector.fetch(resource).await?;
+                    let mut idx: usize = 0;
+                    while let Some(item) = items.next().await.transpose().map_err(Error::Io)? {
+                        let (file_name, mut reader) = derive_name_and_reader(item, idx);
+                        let rel = format!("{}/{}", dir_rel, file_name);
+                        let abs = safe_join(&state.work_dir, &rel)?;
+                        if let Some(parent) = abs.parent() {
+                            fs::create_dir_all(parent).await?;
+                        }
 
-    Ok(Json(out))
+                        let mut file = fs::File::create(&abs).await?;
+                        let size = tokio::io::copy(&mut reader, &mut file).await?;
+                        file.sync_all().await?;
+                        tracing::info!(size, file = %abs.display(), "Copied resource");
+                        set_permissions(&abs, Permissions::from_mode(0o600)).await?;
+
+                        out.push(FileResponse { path: rel, size });
+                        idx += 1;
+                    }
+                    Ok::<std::vec::Vec<FileResponse>, Error>(out)
+                }
+            })
+            .await?;
+
+            Ok(Json(out))
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Clone)]
