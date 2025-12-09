@@ -26,7 +26,7 @@ We will use the AMD Developer Cloud to provision a "GPU Droplet" with the follow
 Begin by logging in to the [AMD Developer Cloud Console](https://amd.digitalocean.com). Navigate to **GPU Droplets** and select **Create GPU Droplet**. Choose the **MI300X** (1 GPU) plan and then select the preinstalled **ROCm™ Software** package, with version **6.4**. Before creating the droplet, add your public SSH key. Once configured, click **Create**.
 
 > [!IMPORTANT]
-> Ensure the ROCm version matches is set to 6.4, matching the executor variant (`rocm64`) we will configure later.
+> Ensure the ROCm version matches is set to 6.4, matching the PyTorch index URL we will configure later.
 
 ## 2. Install & Configure Hypha
 
@@ -69,7 +69,7 @@ storage = 5000 # GB (Scratch Disk)
 
 **Executor Configuration (ROCm):**
 
-Within the `[[executors]]` block for `diloco-transformer`, explicitly set the `[rocm64]` variant. This ensures `uv` installs the correct PyTorch/ROCm compatible packages.
+Within the `[[executors]]` block for `diloco-transformer`, configure the `args` to use the ROCm PyTorch index. This ensures `uv` installs the correct PyTorch/ROCm compatible packages.
 
 ```toml
 [[executors]]
@@ -81,7 +81,9 @@ args = [
     "run",
     "--python", "3.12",
     "--no-project",
-    "--with", "hypha-accelerate-executor[rocm64] @ https://github.com/hypha-space/hypha/releases/download/v<VERSION>/hypha_accelerate_executor-<VERSION without semver channel or metadata>-py3-none-any.whl",
+    "--with", "https://github.com/hypha-space/hypha/releases/download/v<version>/hypha_accelerate_executor-<PEP 440-ish version derived from the release version (e.g., `1.0.0a19` for `v1.0.0-alpha.19`)>-py3-none-any.whl",
+    "--index", "https://download.pytorch.org/whl/rocm6.4",
+    "--index-strategy", "unsafe-best-match",
     "--",
     "accelerate",
     "launch",
