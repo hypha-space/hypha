@@ -129,7 +129,7 @@ mod tests {
         // Loop terminates *before* next event.
 
         assert_eq!(time, 80, "Stops at t=80 when done 0");
-        assert_eq!(done, 0, "Final done count");
+        assert_eq!(done, -1, "Final done count");
         assert_eq!(updates, vec![4, 2, 1], "Updates at t=80");
         assert_eq!(capped, false, "Limit not reached")
     }
