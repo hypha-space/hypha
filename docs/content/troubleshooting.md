@@ -8,10 +8,10 @@ track = ["reference"]
 
 # Troubleshooting
 
-Something not working? This guide helps you diagnose issues, verify your setup, and find fixes for problems others have encountered. Work through the tools below to gather evidence, then match your symptoms to known failure signatures—or open an issue if you hit something new.
+Something not working? This guide helps you diagnose issues, verify your setup, and find fixes for problems others have encountered. Work through the tools below to gather evidence, then match your symptoms to known failure signatures—or [open an issue](https://github.com/hypha-space/hypha/issues/new?template=bug.md) if you hit something new.
 
 > [!TIP]
-> If you're still provisioning a new environment, complete the [Quick Start](../quickstart.md) first so the baseline configuration is correct before diving into debugging.
+> If you're still provisioning a new environment, complete the [Quick Start](@/quickstart.md) first so the baseline configuration is correct before diving into debugging.
 
 ## Troubleshooting Tools
 
@@ -112,13 +112,13 @@ Peer 12D3KooWExamplePeerId is healthy (response time: 23ms)
 
 If the probe fails, check firewall rules, confirm both nodes use certificates from the same trust chain, and verify the target peer is running.
 
-See also: [hypha-inspect CLI reference](../cli/hypha-inspect.md) for all available options.
+See also: [hypha-inspect CLI reference](@/reference/hypha-inspect-cli.md) for all available options.
 
 ## Failure Signatures
 
 This section documents issues we've seen in the field—bugs that have since been fixed, common misconfigurations, and edge cases. Some entries simply require upgrading to a newer release; others need configuration changes on your end.
 
-If your error isn't listed here, please [open an issue](https://github.com/hypha-space/hypha/issues) with debug logs attached. Either we'll help you fix a misconfiguration, or you've found something new that we should address and document.
+If your error isn't listed here, please [open an issue](https://github.com/hypha-space/hypha/issues/new?template=bug.md) with debug logs attached. Either we'll help you fix a misconfiguration, or you've found something new that we should address and document.
 
 ### Snappy decompression failure
 
@@ -146,7 +146,7 @@ cramjam.DecompressionError: snappy: corrupt input (expected valid offset but got
 1. **Confirm the dataset fully downloaded.** Run `cat <file>` in the dataset repository. If the output looks like a Git LFS pointer (starts with `version https://git-lfs.github.com/spec/v1`), delete the repo, install/configure `git lfs`, and clone again so the binary artifacts download instead of pointers.
 2. **Verify compression format.** When the logged `size` matches the on-disk dataset file size, ensure every dataset file is compressed with [Snappy](https://github.com/google/snappy). Recompress offending files and re-upload them before retrying the training run.
 
-See also: [Training guide](../training.md) for dataset packaging and [Worker reference](../worker.md) for artifact mounting paths.
+See also: [Training guide](@/training.md) for dataset packaging and [Worker reference](@/worker.md) for artifact mounting paths.
 
 ### GLIBC version mismatch
 
@@ -166,7 +166,7 @@ hypha-gateway: /lib64/libc.so.6: version `GLIBC_2.38' not found (required by hyp
 
 1. **Upgrade Hypha to alpha.17 or newer.** Starting with `v1.0.0-alpha.17`, all Linux releases are built with MUSL and statically linked.
 
-See also: [Installation](../installation.md) for supported platforms and package formats.
+See also: [Installation](@/installation.md) for supported platforms and package formats.
 
 ### Relay circuit exhaustion
 
@@ -199,8 +199,8 @@ See also: [Installation](../installation.md) for supported platforms and package
 
 #### How to fix it
 
-1. **Allow direct LAN/localhost connectivity.** Update each node's `exclude_cidr` so the relevant private ranges or `127.0.0.1` addresses are advertised, and ensure every peer listens on a unique port. See the [Multiple Nodes on Localhost or Private Network](../deploy/local_multi_node.md) guide for detailed steps.
+1. **Allow direct LAN/localhost connectivity.** Update each node's `exclude_cidr` so the relevant private ranges or `127.0.0.1` addresses are advertised, and ensure every peer listens on a unique port. See the [Multiple Nodes on Localhost or Private Network](@/deploy/local_multi_node.md) guide for detailed steps.
 2. **Verify firewall/NAT rules.** Ensure workers, data nodes, and schedulers can reach each other directly or via DCUtR. Relays should only serve for DCUtR and as DHT anchors, not the primary channel for dataset transfers.
 3. **Monitor for residual relays.** With direct routes in place, you should no longer see `Max circuit bytes reached` events. If they persist, double-check that all peers restarted with the new configuration and that no infrastructure component forces traffic back through the gateway.
 
-See also: [Gateway reference](../gateway.md) for relay settings and [Worker reference](../worker.md) for `exclude_cidr` options.
+See also: [Gateway reference](@/gateway.md) for relay settings and [Worker reference](@/worker.md) for `exclude_cidr` options.

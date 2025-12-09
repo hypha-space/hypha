@@ -16,7 +16,7 @@ Worker nodes execute training and inference tasks in the Hypha network. They eva
 
 Workers implement several subsystems to participate in the distributed training workflow:
 
-**Request Management**: Subscribes to advertisements on the `hypha/worker` topic and evaluates incoming requests against configurable criteria. The arbiter maintains a pricing threshold and only responds to requests meeting resource requirements and price expectations. When multiple schedulers compete for resources simultaneously, the evaluation system scores and ranks requests using configurable strategies — prioritizing profit maximization. See the [Decentralized Resource Allocation Protocol RFC](../rfc/2025-08-04_decentralized_resource_allocation_protocol.md) for details on the negotiation mechanism.
+**Request Management**: Subscribes to advertisements on the `hypha/worker` topic and evaluates incoming requests against configurable criteria. The arbiter maintains a pricing threshold and only responds to requests meeting resource requirements and price expectations. When multiple schedulers compete for resources simultaneously, the evaluation system scores and ranks requests using configurable strategies — prioritizing profit maximization. See the [Decentralized Resource Allocation Protocol RFC](https://github.com/hypha-space/hypha/blob/alpha/rfc/2025-08-04_decentralized_resource_allocation_protocol.md) for details on the negotiation mechanism.
 
 **Lease Management**: The LeaseManager handles time-bounded resource reservations. Temporary leases prevent double-booking during offer negotiation. Accepted offers transition to renewable leases maintained through periodic scheduler renewal.
 
