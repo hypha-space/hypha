@@ -32,14 +32,16 @@ Begin by logging in to the [AMD Developer Cloud Console](https://amd.digitalocea
 
 ### 2.1 Install Dependencies
 
-Install `uv` for Python package management by running the official install script. Subsequently, install the `hypha-worker` binary, remembering to replace `<VERSION>` with your target version in the install script URL.
+First, install `uv` using the [official installation guide](https://astral.sh/docs/uv/install/). A quick way to do this is:
 
 ```bash
-# Install uv
 curl -LsSf https://astral.sh/uv/install.sh | sh
+```
 
-# Install Hypha Worker (replace <VERSION> with your target version)
-curl -fsSL https://github.com/hypha-space/hypha/releases/download/v<VERSION>/install.sh | sh
+Next, install the `hypha-worker` binary. You can find detailed instructions in the [installation guide](@/installation.md), or use the following command to install the latest version:
+
+```bash
+curl -LsSf https://hypha-space.org/install.sh | sh
 ```
 
 ### 2.2 Configuration

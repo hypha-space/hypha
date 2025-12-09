@@ -85,10 +85,10 @@ First, install `uv` using the [official installation guide](https://astral.sh/do
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-Next, install the `hypha-worker` binary. You can find detailed instructions in the [installation guide](@/installation.md), or use the following command (remember to adapt `<VERSION>`):
+Next, install the `hypha-worker` binary. You can find detailed instructions in the [installation guide](@/installation.md), or use the following command to install the latest version:
 
 ```bash
-curl -fsSL https://github.com/hypha-space/hypha/releases/download/v<VERSION>/install.sh | sh
+curl -LsSf https://hypha-space.org/install.sh | sh
 ```
 
 ### 3.2 Setup Configuration

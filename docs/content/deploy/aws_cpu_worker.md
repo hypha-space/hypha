@@ -36,10 +36,10 @@ Connect to your instance via SSH. For instructions, see [AWS Guide: Connect to y
 
 ### 3.1 Install Hypha
 
-You can find detailed instructions in the [installation guide](@/installation.md), or use the following command (remember to replace `<VERSION>` with the desired version):
+You can find detailed instructions in the [installation guide](@/installation.md), or use the following command to install the latest version:
 
 ```bash
-curl -fsSL https://github.com/hypha-space/hypha/releases/download/v<VERSION>/install.sh | sh
+curl -LsSf https://hypha-space.org/install.sh | sh
 ```
 
 ### 3.2 Setup Configuration
