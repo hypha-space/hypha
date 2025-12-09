@@ -43,13 +43,13 @@ where
         network: TBehaviour,
         data_provider: PeerId,
         dataset: String,
-        num_slices: u64,
+        slice_hashes: Vec<String>,
     ) -> Self {
         Self {
             network,
             data_provider,
             dataset,
-            slice_tracker: Arc::new(Mutex::new(SliceTracker::new(num_slices))),
+            slice_tracker: Arc::new(Mutex::new(SliceTracker::new(slice_hashes))),
         }
     }
 
@@ -78,11 +78,11 @@ where
                     async move {
                         let peer_id = request.0;
                         tracing::debug!(%peer_id, "Received data slice request");
-                        let index = tracker.lock().await.next(&peer_id);
-                        tracing::debug!(%peer_id, "Picked data slice {}", index);
+                        let hash = tracker.lock().await.next(&peer_id);
+                        tracing::debug!(%peer_id, "Picked data slice {}", hash);
                         api::Response::Data(data::Response::Success {
                             data_provider,
-                            index,
+                            hash,
                         })
                     }
                 })

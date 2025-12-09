@@ -19,17 +19,19 @@ indoc.workspace = true
 libp2p.workspace = true
 libp2p-stream.workspace = true
 miette.workspace = true
+rayon.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 tokio.workspace = true
 tokio-retry.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [build-dependencies]
-indoc.workspace = true
 clap.workspace = true
+clap-markdown = "0.1.5"
 hypha-network.workspace = true
+indoc.workspace = true
 libp2p.workspace = true
 serde.workspace = true
-clap-markdown = "0.1.5"

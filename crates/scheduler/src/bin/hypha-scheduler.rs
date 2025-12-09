@@ -249,7 +249,7 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
         network.clone(),
         data_provider,
         dataset.clone(),
-        dataset_record.num_slices,
+        dataset_record.slice_hashes,
     );
 
     let tracker_task = tokio::spawn(

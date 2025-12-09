@@ -19,6 +19,6 @@ thiserror.workspace = true
 time = "0.3.41"
 
 [build-dependencies]
-indoc.workspace = true
 clap.workspace = true
 clap-markdown = "0.1.5"
+indoc.workspace = true
