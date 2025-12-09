@@ -226,6 +226,10 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR09
                                 path = os.path.join(work_dir, rel_path)
                                 model.load_state_dict(merge_models(previous_model_path, path))
                                 save_model(model, previous_model_path)
+
+                                # Once we updated the model, we no longer need the parameter file.
+                                os.remove(path)
+
                                 model = accelerator.prepare(model)
                 except StopIteration:
                     current_status = {

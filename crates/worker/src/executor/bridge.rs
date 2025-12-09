@@ -392,6 +392,10 @@ async fn send_resource(
                         if cancel.is_cancelled() {
                             tracing::debug!(file = %file_path.display(), "send_resource: task cancelled");
                         }
+
+                        // We no longer need the file once it has been sent, so remove it.
+                        fs::remove_file(&file_path).await?;
+
                         break Ok::<(), Error>(());
                     };
                     let item = item_result?;
