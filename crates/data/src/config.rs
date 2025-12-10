@@ -73,6 +73,16 @@ pub struct Config {
     /// * "/ip4/0.0.0.0/udp/0/quic-v1" - QUIC on all interfaces, OS-assigned port
     listen_addresses: Vec<Multiaddr>,
 
+    /// External addresses to advertise for peer discovery (optional).
+    ///
+    /// Only advertise addresses that schedulers can reliably reach. Most workers rely on
+    /// relay circuits and don't need external addresses.
+    ///
+    /// Examples:
+    /// * "/ip4/203.0.113.30/tcp/9091"
+    /// * "/dns4/worker.example.com/tcp/9091"
+    external_addresses: Vec<Multiaddr>,
+
     /// Path to the dataset directory.
     ///
     /// Directory containing dataset files (slices) to serve to workers. Each file in the
@@ -214,6 +224,7 @@ impl Default for Config {
                     .parse()
                     .expect("default address parses into a Multiaddr"),
             ],
+            external_addresses: vec![],
             dataset_path: PathBuf::new(),
             exclude_cidr: reserved_cidrs(),
             relay_circuit: true,
@@ -234,6 +245,10 @@ impl Config {
 
     pub fn listen_addresses(&self) -> &Vec<Multiaddr> {
         &self.listen_addresses
+    }
+
+    pub fn external_addresses(&self) -> &Vec<Multiaddr> {
+        &self.external_addresses
     }
 
     /// Base directory for per-job working directories.

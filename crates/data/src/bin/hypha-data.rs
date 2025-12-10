@@ -21,9 +21,9 @@ use hypha_data::{
 };
 use hypha_messages::{DataRecord, health};
 use hypha_network::{
-    dial::DialInterface, kad::KademliaInterface, listen::ListenInterface,
-    request_response::RequestResponseInterfaceExt, stream_pull::StreamPullReceiverInterface,
-    swarm::SwarmDriver,
+    dial::DialInterface, external_address::ExternalAddressInterface, kad::KademliaInterface,
+    listen::ListenInterface, request_response::RequestResponseInterfaceExt,
+    stream_pull::StreamPullReceiverInterface, swarm::SwarmDriver,
 };
 use hypha_telemetry as telemetry;
 use libp2p::{Multiaddr, kad, multiaddr::Protocol};
@@ -135,6 +135,17 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
     .into_diagnostic()?;
 
     tracing::info!("Successfully listening on all addresses");
+
+    // NOTE: Add configured external addresses (e.g., public IPs or DNS names)
+    // so peers can discover and connect to us.
+    join_all(
+        config
+            .external_addresses()
+            .iter()
+            .map(|address| network.add_external_address(address.clone()))
+            .collect::<Vec<_>>(),
+    )
+    .await;
 
     // Dial each gateway and, on success, set up a relay circuit listen via it.
     let gateway_peer_ids = Retry::spawn(
