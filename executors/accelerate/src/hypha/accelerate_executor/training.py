@@ -87,6 +87,7 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR09
         job_id = job_spec["job_id"]
         last_gradient: str | None = None
         last_metrics: dict[str, float] = {}
+        loss_list = []
 
         current_status = {
             "executor": "train",
@@ -97,7 +98,6 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR09
             loop_start_ms = time.time() * 1000.0
             action_resp = session.send_action({"job_id": job_id, "status": current_status})
             next_action = action_resp.get("next", {})
-            loss_list = []
 
             if next_action.get("executor") != "train":
                 raise RuntimeError(f"Unexpected executor action: {next_action}")
@@ -155,6 +155,8 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR09
                 last_gradient = file_name
 
                 last_metrics = {"loss": float(np.mean(loss_list))} if loss_list else {}
+                # Reset Losses
+                loss_list = []
 
                 if last_gradient is None:
                     current_status = {
