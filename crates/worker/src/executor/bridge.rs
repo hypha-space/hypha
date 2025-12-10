@@ -340,9 +340,14 @@ async fn fetch_resource(
 
                     Ok(Json(out))
                 }
-                _ => Err(Error::Connector(ConnectorError::UnsupportedFetch(
-                    resource.as_ref().clone(),
-                ))),
+                Err(e) => Err(Error::Io(std::io::Error::other(format!(
+                    "Failed to request data slice for dataset \"{}\": {}",
+                    dataset, e
+                )))),
+                Ok(r) => Err(Error::Io(std::io::Error::other(format!(
+                    "Unexpected response \"{:?}\"",
+                    r
+                )))),
             }
         }
         _ => {
