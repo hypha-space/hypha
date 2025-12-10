@@ -161,8 +161,8 @@ args = [
     "run",
     "--python", "3.12",
     "--no-project",
-    "--with", "hypha-accelerate-executor[<extra for CUDA/ROCm version>] @ https://github.com/hypha-space/hypha/releases/download/v<version>/hypha_accelerate_executor-<version without semver channel or metadata>-py3-none-any.whl",
-    # Optional: add `--extra`, "<variant>" here to pin a specific torch build (see docs below)
+    "--with", "https://github.com/hypha-space/hypha/releases/download/v<version>/hypha_accelerate_executor-<PEP 440-ish version derived from the release version (e.g., `1.0.0a19` for `v1.0.0-alpha.19`)>-py3-none-any.whl",
+    # Optional: Configure `index` to use a specific torch variant. See executor README for details: https://github.com/hypha-space/hypha/blob/alpha/executors/accelerate/README.md
     "--", # N.B. this standalone `--` is the separator between `uv` opts and the cmd to be executed
     "accelerate",
     "launch",

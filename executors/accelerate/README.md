@@ -36,7 +36,8 @@ args = [
     "run",
     "--python", "3.12",
     "--no-project",
-    "--with", "hypha-accelerate-executor[<variant>] @ https://github.com/hypha-space/hypha/releases/download/v<version>/hypha_accelerate_executor-<PEP 440-compliant version derived from the release version (e.g., `1.0.0a19` for `v1.0.0-alpha.19`)>-py3-none-any.whl", # Specify variant matching the worker's hardware configuration
+    "--with", "https://github.com/hypha-space/hypha/releases/download/v<version>/hypha_accelerate_executor-<PEP 440-ish version derived from the release version (e.g., `1.0.0a19` for `v1.0.0-alpha.19`)>-py3-none-any.whl", 
+    # Optional: For non-default variants (e.g. rocm64), add `--index` and `--index-strategy` here (see docs below)
     "--", # N.B. this standalone `--` is the separator between `uv` opts and the cmd to be executed
     "accelerate",
     "launch",
@@ -62,21 +63,37 @@ Let's break down the important parts of this configuration:
 - `--with "https://github.com/..."` — The URL to the executor wheel. Replace `<version>` with the actual release version you want to use (e.g., `0.1.0`). Find available releases and the exact wheel URL, including the PEP 440-compliant version string, on the [GitHub Releases page](https://github.com/hypha-space/hypha/releases).
 
 **PyTorch variant**
-To ensure `uv` installs the correct PyTorch build for your hardware, you must specify the variant directly in the `--with` argument using the `'package[variant] @ url'` format. This explicitly tells `uv` which compatible wheels to pull.
+To ensure `uv` installs the correct PyTorch build for your hardware, you must specify the correct package index ( `--index`) and strategy (`--index-strategy`). 
 
-The format for the `--with` argument is:
-`hypha-accelerate-executor[<variant>] @ https://github.com/hypha-space/hypha/releases/download/v<version>/hypha_accelerate_executor-<PEP 440-compliant version derived from the release version (e.g., '1.0.0a19' for 'v1.0.0-alpha.19')>-py3-none-any.whl`
+- `mps_cu128` (default) — Apple Silicon with Metal (MPS) acceleration and CUDA 12.8 drivers. No additional arguments needed.
 
-Available variants for `<variant>` include:
+For other variants, add the following arguments to the `args` list (before the standalone `--` separator):
 
-- `mps_cu128` (default if no variant specified) — Apple Silicon with Metal (MPS) acceleration and CUDA 12.8 drivers
-- `cpu` — CPU-only environments
-- `cu126` — NVIDIA GPUs with CUDA 12.6 drivers
-- `cu129` — NVIDIA GPUs with CUDA 12.9 drivers
-- `rocm64` — AMD GPUs with ROCm 6.4
+```bash
+"--index", "<INDEX_URL>",
+"--index-strategy", "unsafe-best-match",
+```
 
-For example, to install the `rocm64` variant, the `--with` argument would be:
-`hypha-accelerate-executor[rocm64] @ https://github.com/hypha-space/hypha/releases/download/v<version>/hypha_accelerate_executor-<PEP 440-compliant version derived from the release version (e.g., '1.0.0a19' for 'v1.0.0-alpha.19')>-py3-none-any.whl`
+| Variant | Hardware | Index URL |
+|---|---|---|
+| `cpu` | CPU-only | `https://download.pytorch.org/whl/cpu` |
+| `cu126` | NVIDIA (CUDA 12.6) | `https://download.pytorch.org/whl/cu126` |
+| `cu129` | NVIDIA (CUDA 12.9) | `https://download.pytorch.org/whl/cu129` |
+| `rocm64` | AMD (ROCm 6.4) | `https://download.pytorch.org/whl/rocm6.4` |
+
+For example, to configure for **ROCm 6.4**:
+
+```toml
+args = [
+    "run",
+    # ...
+    "--with", "https://github.com/hypha-space/h...",
+    "--index", "https://download.pytorch.org/whl/rocm6.4",
+    "--index-strategy", "unsafe-best-match",
+    "--",
+    # ...
+]
+```
 
 **Accelerate configuration**:
 - `--config_file "<path/to/accelerate.yaml>"` — Path to your Accelerate configuration file that defines the distributed training setup. This must match your machine's hardware configuration (number of GPUs, distributed training strategy, etc.)
