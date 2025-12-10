@@ -116,7 +116,7 @@ impl Network {
                     health_request_response: request_response::Behaviour::<health::Codec>::new(
                         [(
                             StreamProtocol::new(health::IDENTIFIER),
-                            request_response::ProtocolSupport::Outbound,
+                            request_response::ProtocolSupport::Full,
                         )],
                         request_response::Config::default(),
                     ),
