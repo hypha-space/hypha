@@ -93,7 +93,7 @@ impl Default for DiLoCo {
             },
             resources: DiLoCoResources {
                 worker: Resources::default()
-                    .with_gpu(10.0)
+                    .with_gpu(0.11)
                     .with_cpu(1.0)
                     .with_memory(1.0),
                 parameter_server: Resources::default().with_cpu(1.0).with_memory(1.0),
