@@ -204,3 +204,20 @@ See also: [Installation](@/installation.md) for supported platforms and package 
 3. **Monitor for residual relays.** With direct routes in place, you should no longer see `Max circuit bytes reached` events. If they persist, double-check that all peers restarted with the new configuration and that no infrastructure component forces traffic back through the gateway.
 
 See also: [Gateway reference](@/gateway.md) for relay settings and [Worker reference](@/worker.md) for `exclude_cidr` options.
+
+
+## Worker failed error=GraceExpired
+
+**Scheduler Logs**
+```log
+2025-12-10T10:35:37.933340Z ERROR hypha_scheduler: Worker failed error=GraceExpired { name: "parameter-servers", min: 1 }
+```
+
+#### What this indicates
+
+- The Scheduler couldn't find enough Worker to start the Job.
+
+#### How to fix it
+
+1. **Check the ressource pool configuration** Check the values in the Scheduler's `scheduler.job.resources.<worker/parameter_server>_pool` config. If `min` and `target` don't represent you currecnt setup, e.g., `target = 3` for the `worker_pool` but you only have 2 Worker. Reduce the `target` to 2.
+2. **Frequent restarts** When restarting the Scheduler too often in a short time, this can lead to network errors and the network will need some time to recover. To quickly fix the problem. Restart all component, e.g., Gateway, Data Node, Worker, Scheduler.
