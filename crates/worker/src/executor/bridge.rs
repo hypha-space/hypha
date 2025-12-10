@@ -245,105 +245,116 @@ async fn fetch_resource(
         // otherwise we download it from a data provider.
         Reference::Scheduler { peer, dataset } => {
             tracing::debug!(peer_id = %peer, dataset, "Requesting data slice index from scheduler");
-            match <Network as RequestResponseInterface<api::Codec>>::request(
-                &state.network,
-                *peer,
-                api::Request::Data(data::Request {
-                    dataset: dataset.clone(),
-                }),
-            )
-            .await
-            {
-                Ok(api::Response::Data(data::Response::Success {
-                    data_provider,
-                    hash,
-                })) => {
-                    tracing::debug!(peer_id = %peer, data_peer_id = %data_provider, dataset, hash, "Received slice index and data provider");
-
-                    let out = Retry::spawn(retry_strategy, || {
-                        let hash = hash.clone();
-                        let state = state.clone();
-                        let dir_rel = "artifacts".to_string();
-                        let mut out: Vec<FileResponse> = Vec::new();
-                        async move {
-                            let dir_abs = safe_join(&state.work_dir, &dir_rel)?;
-                            fs::create_dir_all(&dir_abs).await?;
-
-                            let file_name = hash.clone();
-                            let rel = format!("{}/{}", dir_rel, file_name);
-                            let abs = safe_join(&state.work_dir, &rel)?;
-
-                            match fs::try_exists(&abs).await {
-                                // Cache hit!
-                                Ok(true) => {
-                                    tracing::debug!(
-                                        peer_id = %peer, data_peer_id = %data_provider,
-                                        dataset,
-                                        hash,
-                                        "File already exists, skipping data slice download"
-                                    );
-
-                                    let metadata = fs::metadata(&abs).await?;
-
-                                    out.push(FileResponse {
-                                        path: rel,
-                                        size: metadata.size(),
-                                    });
-                                }
-                                // Cache miss!
-                                _ => {
-                                    tracing::debug!(peer_id = %peer, data_peer_id = %data_provider, dataset, hash, "Downloading data slice");
-
-                                    let mut reader = state
-                                        .network
-                                        .stream_pull(
-                                            data_provider,
-                                            &DataSlice {
-                                                dataset: dataset.clone(),
-                                                hash: hash.clone(),
-                                            },
-                                        )
-                                        .await.map_err(|e| Error::Connector(ConnectorError::OpenStream(e)))?;
-
-                                    if let Some(parent) = abs.parent() {
-                                        fs::create_dir_all(parent).await?;
-                                    }
-
-                                    let mut file = fs::File::create(&abs).await?;
-                                    let size = tokio::io::copy(&mut reader, &mut file).await?;
-                                    file.sync_all().await?;
-
-                                    // Validate file against hash
-                                    let calculated_hash = get_file_sha256(&abs)?;
-
-                                    if calculated_hash != hash {
-                                        // Delete file
-                                        fs::remove_file(&abs).await?;
-
-                                        return Err(Error::HashMismatch {
-                                            expected: hash.clone(),
-                                            found: calculated_hash,
-                                        });
-                                    }
-
-                                    tracing::info!(size, file = %abs.display(), "Copied resource");
-                                    set_permissions(&abs, Permissions::from_mode(0o600)).await?;
-
-                                    out.push(FileResponse { path: rel, size });
-                                }
-                            };
-
-                            Ok::<std::vec::Vec<FileResponse>, Error>(out)
-                        }
-                    })
-                    .await?;
-
-                    Ok(Json(out))
+            let (data_provider, hash) = Retry::spawn(retry_strategy.clone(), || {
+                let network = state.network.clone();
+                async move {
+                    match <Network as RequestResponseInterface<api::Codec>>::request(
+                        &network,
+                        *peer,
+                        api::Request::Data(data::Request {
+                            dataset: dataset.clone(),
+                        }),
+                    )
+                    .await
+                    {
+                        Ok(api::Response::Data(data::Response::Success {
+                            data_provider,
+                            hash,
+                        })) => Ok((data_provider, hash)),
+                        Ok(r) => Err(Error::Io(std::io::Error::other(format!(
+                            "Unexpected response \"{:?}\"",
+                            r
+                        )))),
+                        Err(e) => Err(Error::Io(std::io::Error::other(format!(
+                            "Failed to request data slice for dataset \"{}\": {}",
+                            dataset, e
+                        )))),
+                    }
                 }
-                _ => Err(Error::Connector(ConnectorError::UnsupportedFetch(
-                    resource.as_ref().clone(),
-                ))),
-            }
+            })
+            .await?;
+
+            tracing::debug!(peer_id = %peer, data_peer_id = %data_provider, dataset, hash, "Received slice index and data provider");
+
+            let out = Retry::spawn(retry_strategy, || {
+                let hash = hash.clone();
+                let state = state.clone();
+                let dir_rel = "artifacts".to_string();
+                let mut out: Vec<FileResponse> = Vec::new();
+                async move {
+                    let dir_abs = safe_join(&state.work_dir, &dir_rel)?;
+                    fs::create_dir_all(&dir_abs).await?;
+
+                    let file_name = hash.clone();
+                    let rel = format!("{}/{}", dir_rel, file_name);
+                    let abs = safe_join(&state.work_dir, &rel)?;
+
+                    match fs::try_exists(&abs).await {
+                        // Cache hit!
+                        Ok(true) => {
+                            tracing::debug!(
+                                peer_id = %peer, data_peer_id = %data_provider,
+                                dataset,
+                                hash,
+                                "File already exists, skipping data slice download"
+                            );
+
+                            let metadata = fs::metadata(&abs).await?;
+
+                            out.push(FileResponse {
+                                path: rel,
+                                size: metadata.size(),
+                            });
+                        }
+                        // Cache miss!
+                        _ => {
+                            tracing::debug!(peer_id = %peer, data_peer_id = %data_provider, dataset, hash, "Downloading data slice");
+
+                            let mut reader = state
+                                .network
+                                .stream_pull(
+                                    data_provider,
+                                    &DataSlice {
+                                        dataset: dataset.clone(),
+                                        hash: hash.clone(),
+                                    },
+                                )
+                                .await.map_err(|e| Error::Connector(ConnectorError::OpenStream(e)))?;
+
+                            if let Some(parent) = abs.parent() {
+                                fs::create_dir_all(parent).await?;
+                            }
+
+                            let mut file = fs::File::create(&abs).await?;
+                            let size = tokio::io::copy(&mut reader, &mut file).await?;
+                            file.sync_all().await?;
+
+                            // Validate file against hash
+                            let calculated_hash = get_file_sha256(&abs)?;
+
+                            if calculated_hash != hash {
+                                // Delete file
+                                fs::remove_file(&abs).await?;
+
+                                return Err(Error::HashMismatch {
+                                    expected: hash.clone(),
+                                    found: calculated_hash,
+                                });
+                            }
+
+                            tracing::info!(size, file = %abs.display(), "Copied resource");
+                            set_permissions(&abs, Permissions::from_mode(0o600)).await?;
+
+                            out.push(FileResponse { path: rel, size });
+                        }
+                    };
+
+                    Ok::<std::vec::Vec<FileResponse>, Error>(out)
+                }
+            })
+            .await?;
+
+            Ok(Json(out))
         }
         _ => {
             let out = Retry::spawn(retry_strategy, || {
