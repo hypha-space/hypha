@@ -30,7 +30,7 @@ Workers implement several subsystems to participate in the distributed training 
 
 ## Installation and Setup
 
-Install the data node binary following the [Installation](@/installation.md) guide.
+Install the worker binary following the [Installation](@/installation.md) guide.
 
 ### Work Directory Setup
 
@@ -128,6 +128,13 @@ args = [
     "--job", "{JOB_JSON}",
 ]
 ```
+
+Use the latest compatible executor version from the Hypha [Releases](https://github.com/hypha-space/hypha/releases) page (e.g., v1.0.0-alpha.34). Optionally configure an extra `index` to install the torch variant that matches your environment. For details on how to configure the executor please refer to the [executor documentation](https://github.com/hypha-space/hypha/blob/alpha/executors/accelerate/README.md).
+
+> [!TIP]
+>  You can copy the wheel filename from the release artifacts.
+
+
 
 **Example: Parameter Server Executor**
 

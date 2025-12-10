@@ -83,7 +83,7 @@ input_names = ["images"]                # Input names to the model
 > [!IMPORTANT]
 > The token will be shared with all workers. Only use a token with limited rights and invalidate the token at the end.
 
-All transformers Auto Classe are supported.
+All transformers Auto Classes are supported.
 
 **Preprocessor Configuration** (optional):
 
@@ -124,7 +124,7 @@ momentum = 0.9
 ```
 
 **Upload Trained Model To HF**:
-To upload the trained model to Hugging Face provide a repository and a token with with the correct rights:
+To upload the trained model to Hugging Face provide a repository and a token with the correct rights:
 
 ```toml
 [scheduler.job.model_destination]
@@ -133,15 +133,15 @@ token="hf_*"
 ```
 
 > [!IMPORTANT]
-> This will override any existing model and model weights in the repositry and if the repository doesn't exist, it will
-try to create a new repository with the account defaults (if not changed it will be a public repositry). Additionally,
+> This will override any existing model and model weights in the repository and if the repository doesn't exist, it will
+try to create a new repository with the account defaults (if not changed it will be a public repository). Additionally,
 the token will be shared with a worker. Only use a token with limited rights and invalidate the token at the end.
 
 **Training Duration**:
 
-To controll the training process, there are two essential parameters. First, the number of DiLoCo rounds and second, the
+To control the training process, there are two essential parameters. First, the number of DiLoCo rounds and second, the
 number of data samples that should be processed between updates. The Scheduler determines batch size automatically, 
-that can be processes by a worker depending on it's capabilities. To prevent a single worker to run with an extremly
+that can be processed by a worker depending on it's capabilities. To prevent a single worker to run with an extremely
 large batch size, one can also cap the batch size with a `max_batch_size`.
 
 ```toml
@@ -188,10 +188,10 @@ min = 16.0
 kind = "parameter-server"
 ```
 
-Each `[[...worker]]` or `[[...parameter_server]]` table serializes directly into a woreker`Requirement`.
+Each `[[...worker]]` or `[[...parameter_server]]` table serializes directly into a worker `Requirement`.
 
 > [!NOTE]
-> Make sure that the GPU requirements for the worker match the required GPU memory for training with a batch size of 1 on a GPU. A good estimat in GB is #number of parameters * 24 * 9e-10. This is equal to the model memory (1 fp32) + AdamW state (4 fp32) + gradient (1 fp32) and activation (1 fp32). For a better estimation consult [Transformer math](https://blog.eleuther.ai/transformer-math/). The number of paramters can be easily computed in `torch` with `sum(v.shape.numel() for v in model.state_dict().values())`.
+> Make sure that the GPU requirements for the worker match the required GPU memory for training with a batch size of 1 on a GPU. A good estimate in GB is #number of parameters * 24 * 9e-10. This is equal to the model memory (1 fp32) + AdamW state (4 fp32) + gradient (1 fp32) and activation (1 fp32). For a better estimation consult [Transformer math](https://blog.eleuther.ai/transformer-math/). The number of parameters can be easily computed in `torch` with `sum(v.shape.numel() for v in model.state_dict().values())`.
 
 **Price Ranges**: Configure bid/maximum pairs for workers and parameter servers to express how far the scheduler is willing to counter-offer without revealing the cap to workers:
 

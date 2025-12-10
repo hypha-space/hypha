@@ -75,6 +75,7 @@ Next, initialize a base configuration file:
 ```bash
 hypha-gateway init \
   -n gateway-1 \
+  -o gateway.toml \
   --cert-path /etc/hypha/certs/cert.pem \
   --key-path /etc/hypha/certs/key.pem \
   --ca-path /etc/hypha/certs/ca.pem

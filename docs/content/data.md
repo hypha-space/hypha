@@ -148,7 +148,7 @@ OpenTelemetry enables distributed tracing and metrics collection for debugging a
 **Configuration File (Example uses Grafana Cloud)**: Specify telemetry settings in your `data.toml`:
 
 ```toml
-telemetry_attributes = "service.name=<Node Name>,service.namespace=<Namespace>>,deployment.environment=<Environment>"
+telemetry_attributes = "service.name=<Node Name>,service.namespace=<Namespace>,deployment.environment=<Environment>"
 telemetry_endpoint = "https://otlp-gateway-prod-eu-west-2.grafana.net/otlp"
 telemetry_headers = "Authorization=Basic <Api Key>"
 telemetry_protocol = "http/protobuf"

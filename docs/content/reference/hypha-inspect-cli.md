@@ -103,8 +103,8 @@ Prints the routing table information (closest peers, addresses) found.
    Gateways provide network bootstrapping, DHT access, and optional relay.
 
    Examples:
-     --gateway /ip4/203.0.113.10/tcp/8080/
-     --gateway /dns4/gateway.hypha.example/tcp/443/
+     --gateway /ip4/203.0.113.10/tcp/8080
+     --gateway /dns4/gateway.hypha.example/tcp/443
 * `--cert <CERT_PEM>` — Path to the certificate PEM file (overrides config)
 
    Must be a valid X.509 certificate in PEM format. If not provided, uses
@@ -159,8 +159,8 @@ Creates a TOML configuration file with sensible defaults.
    Gateways provide network bootstrapping, DHT access, and optional relay.
 
    Examples:
-     --gateway /ip4/203.0.113.10/tcp/8080/
-     --gateway /dns4/gateway.hypha.example/tcp/443/
+     --gateway /ip4/203.0.113.10/tcp/8080
+     --gateway /dns4/gateway.hypha.example/tcp/443
 * `--cert <CERT_PEM>` — Path to the certificate PEM file (overrides config)
 
    Must be a valid X.509 certificate in PEM format. If not provided, uses

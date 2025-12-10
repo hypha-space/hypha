@@ -58,8 +58,8 @@ IMPORTANT: If the output file exists, it will be overwritten without warning.
    Gateways provide network bootstrapping, DHT access, and optional relay.
 
    Examples:
-     --gateway /ip4/203.0.113.10/tcp/8080/
-     --gateway /dns4/gateway.hypha.example/tcp/443/
+     --gateway /ip4/203.0.113.10/tcp/8080
+     --gateway /dns4/gateway.hypha.example/tcp/443
 * `--listen <LISTEN_ADDRESSES>` — Addresses to listen on (repeatable, overrides config)
 
    Where the scheduler accepts incoming connections.
@@ -110,8 +110,8 @@ NOTE: It's not possible to self-probe using the same certificate used to run the
 * `<ADDRESS>` — Target peer multiaddr to probe
 
    Examples:
-     /ip4/192.168.1.100/tcp/8080/
-     /dns4/scheduler.example.com/tcp/443/p2p/12D3KooW...
+     /ip4/192.168.1.100/tcp/8080
+     /dns4/scheduler.example.com/tcp/443
 
 ###### **Options:**
 
@@ -167,8 +167,8 @@ training jobs. Runs until interrupted (SIGINT/SIGTERM) with a graceful shutdown.
    Gateways provide network bootstrapping, DHT access, and optional relay.
 
    Examples:
-     --gateway /ip4/203.0.113.10/tcp/8080/
-     --gateway /dns4/gateway.hypha.example/tcp/443/
+     --gateway /ip4/203.0.113.10/tcp/8080
+     --gateway /dns4/gateway.hypha.example/tcp/443
 * `--listen <LISTEN_ADDRESSES>` — Addresses to listen on (repeatable, overrides config)
 
    Where the scheduler accepts incoming connections.

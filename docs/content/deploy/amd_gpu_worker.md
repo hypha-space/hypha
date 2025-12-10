@@ -100,5 +100,5 @@ args = [
 Once all configurations are complete, start the worker using the command:
 
 ```bash
-hypha-worker run -c worker.toml
+hypha-worker run -c config.toml
 ```

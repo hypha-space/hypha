@@ -69,11 +69,10 @@ IMPORTANT: If the output file exists, it will be overwritten without warning.
 * `--gateway <GATEWAY_ADDRESSES>` — Gateway addresses to connect to (repeatable, overrides config)
 
    Gateways provide network bootstrapping, DHT access, and relay functionality.
-   Must include the peer ID in the multiaddr.
 
    Examples:
-     --gateway /ip4/203.0.113.10/tcp/8080/p2p/12D3KooWAbc...
-     --gateway /dns4/gateway.hypha.example/tcp/443/p2p/12D3KooWAbc...
+     --gateway /ip4/203.0.113.10/tcp/8080
+     --gateway /dns4/gateway.hypha.example/tcp/443
    Required: connect to at least one gateway.
 * `--listen <LISTEN_ADDRESSES>` — Addresses to listen on (repeatable, overrides config)
 
@@ -112,8 +111,8 @@ NOTE: It's not possible to self-probe using the same certificate used to run the
 * `<ADDRESS>` — Target peer multiaddr to probe
 
    Examples:
-     /ip4/192.168.1.100/tcp/8080/
-     /dns4/gateway.example.com/tcp/443/p2p/12D3KooW...
+     /ip4/192.168.1.100/tcp/8080
+     /dns4/gateway.example.com/tcp/443
 
 ###### **Options:**
 
@@ -181,11 +180,10 @@ and runs until interrupted (SIGINT/SIGTERM) with a graceful shutdown.
 * `--gateway <GATEWAY_ADDRESSES>` — Gateway addresses to connect to (repeatable, overrides config)
 
    Gateways provide network bootstrapping, DHT access, and relay functionality.
-   Must include the peer ID in the multiaddr.
 
    Examples:
-     --gateway /ip4/203.0.113.10/tcp/8080/p2p/12D3KooWAbc...
-     --gateway /dns4/gateway.hypha.example/tcp/443/p2p/12D3KooWAbc...
+     --gateway /ip4/203.0.113.10/tcp/8080
+     --gateway /dns4/gateway.hypha.example/tcp/443
    Required: connect to at least one gateway.
 * `--listen <LISTEN_ADDRESSES>` — Addresses to listen on (repeatable, overrides config)
 
