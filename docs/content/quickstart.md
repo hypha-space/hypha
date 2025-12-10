@@ -23,9 +23,9 @@ Make sure you have the following installed:
 | Requirement | Version | Check Command    | Install Documentation                                                                                              |
 | ----------- | ------- | ---------------- | ------------------------------------------------------------------------------------------------------------------ |
 | uv          | ≥ 0.9.7 | `uv --version`   | [https://docs.astral.sh/uv/getting-started/installation/](https://docs.astral.sh/uv/getting-started/installation/) |
-| git         | any     | `git --version`  | https://git-scm.com/book/en/v2/Getting-Started-Installing-Git                                                      |
-| git-lfs     | any     | `git-lfs --version` | https://git-lfs.github.com/                                                                                       |
-| curl        | any     | `curl --version` | https://curl.se/docs/install.html                                                                                  |
+| git         | any     | `git --version`  | (https://git-scm.com/book/en/v2/Getting-Started-Installing-Git)                                                      |
+| git-lfs     | any     | `git-lfs --version` | (https://git-lfs.github.com/)                                                                                       |
+| curl        | any     | `curl --version` | [curl install](https://curl.se/docs/install.html)                                                                                   |
 
 Also if you want to build from source, you need your rust toolchain.
 
@@ -216,4 +216,4 @@ After successfully running training, the scheduler terminal should display these
 
 **NOTE**: We are aware of the error messages and they are expected (for now). As long as these are the only errors, everything worked as expected.
 
-If you encounter any issue, please have a look at the [Troubleshooting Guide](troubleshooting.md).
+If you encounter any issue, please have a look at the [Troubleshooting Guide](docs/content/troubleshooting.md).
