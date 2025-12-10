@@ -11,6 +11,7 @@ dependencies = [
     "requests>=2.32.3",
     "safetensors>=0.5.3",
     "tqdm>=4.67.1",
+    "torchvision>=0.22.0,<0.24.0",
     "transformers[torch]==4.56.2",
 ]
 

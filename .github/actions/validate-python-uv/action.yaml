@@ -20,15 +20,15 @@ runs:
 
     - name: Check formatting
       shell: bash
-      run: uv run --frozen ruff format --check .
+      run: uv run --frozen --extra cpu ruff format --check .
       working-directory: ${{ inputs.project-path }}
 
     - name: Linting
       shell: bash
-      run: uv run --frozen ruff check .
+      run: uv run --frozen --extra cpu ruff check .
       working-directory: ${{ inputs.project-path }}
 
     - name: Check types
       shell: bash
-      run: uv run --frozen mypy .
+      run: uv run --extra cpu --frozen mypy .
       working-directory: ${{ inputs.project-path }}
