@@ -17,7 +17,7 @@ Hypha provides prebuilt binaries for Linux and macOS, plus a source build path w
 
 ## Installer
 
-The installer sctript supports modern Linux distributions (Debian, Ubuntu, Fedora, Amazon Linux) and macOS 13+ on Apple Silicon. To install the latest version, use curl to download the script and execute it with sh:
+The installer script supports modern Linux distributions (Debian, Ubuntu, Fedora, Amazon Linux) and macOS 13+ on Apple Silicon. To install the latest version, use curl to download the script and execute it with sh:
 
 ```bash
 curl -LsSf https://hypha-space.org/install.sh | sh
@@ -40,7 +40,7 @@ If your system doesn't have curl, you can use wget:
 wget -qO- https://hypha-space.org/install.sh | sh
 ```
 
-For installing a specific version please, visit the [GitHub Releases](https://github.com/hypha-space/hypha/releases) page, select the desired version and follow the respective install instructions.
+To install a specific version, visit the [GitHub Releases](https://github.com/hypha-space/hypha/releases) page, select the desired version, and follow the respective install instructions.
 
 > [!TIP]
 > To inspect the installer script before use, download it using `curl` and inspect it using `less`:

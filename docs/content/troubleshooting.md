@@ -200,10 +200,10 @@ See also: [Installation](@/installation.md) for supported platforms and package 
 #### How to fix it
 
 1. **Allow direct LAN/localhost connectivity.** Update each node's `exclude_cidr` so the relevant private ranges or `127.0.0.1` addresses are advertised, and ensure every peer listens on a unique port. See the [Multiple Nodes on Localhost or Private Network](@/deploy/local_multi_node.md) guide for detailed steps.
-2. **Verify firewall/NAT rules.** Ensure workers, data nodes, and schedulers can reach each other directly or via DCUtR. Relays should only serve for DCUtR and as DHT anchors, not the primary channel for dataset transfers.
+2. **Verify firewall/NAT rules.** Ensure workers, data nodes, and schedulers can reach each other directly or via DCUtR. See [Networking](@/networking.md) for port and address configuration. Relays should only serve for DCUtR and as DHT anchors, not the primary channel for dataset transfers.
 3. **Monitor for residual relays.** With direct routes in place, you should no longer see `Max circuit bytes reached` events. If they persist, double-check that all peers restarted with the new configuration and that no infrastructure component forces traffic back through the gateway.
 
-See also: [Gateway reference](@/gateway.md) for relay settings and [Worker reference](@/worker.md) for `exclude_cidr` options.
+See also: [Networking Guide](@/networking.md) for deep dives on NAT/relays, [Gateway reference](@/gateway.md), and [Worker reference](@/worker.md).
 
 
 ## Worker failed error=GraceExpired

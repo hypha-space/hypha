@@ -114,8 +114,8 @@ pub enum Commands {
         /// Gateways provide network bootstrapping, DHT access, and optional relay.
         ///
         /// Examples:
-        ///   --gateway /ip4/203.0.113.10/tcp/8080/
-        ///   --gateway /dns4/gateway.hypha.example/tcp/443/
+        ///   --gateway /ip4/203.0.113.10/tcp/8080
+        ///   --gateway /dns4/gateway.hypha.example/tcp/443
         #[arg(long("gateway"), verbatim_doc_comment)]
         #[serde(skip_serializing_if = "Option::is_none")]
         gateway_addresses: Option<Vec<Multiaddr>>,
@@ -187,8 +187,8 @@ pub enum Commands {
         /// Gateways provide network bootstrapping, DHT access, and optional relay.
         ///
         /// Examples:
-        ///   --gateway /ip4/203.0.113.10/tcp/8080/
-        ///   --gateway /dns4/gateway.hypha.example/tcp/443/
+        ///   --gateway /ip4/203.0.113.10/tcp/8080
+        ///   --gateway /dns4/gateway.hypha.example/tcp/443
         #[arg(long("gateway"), verbatim_doc_comment)]
         #[serde(skip_serializing_if = "Option::is_none")]
         gateway_addresses: Option<Vec<Multiaddr>>,

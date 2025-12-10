@@ -55,8 +55,8 @@ pub enum Commands {
         /// Gateways provide network bootstrapping, DHT access, and optional relay.
         ///
         /// Examples:
-        ///   --gateway /ip4/203.0.113.10/tcp/8080/
-        ///   --gateway /dns4/gateway.hypha.example/tcp/443/
+        ///   --gateway /ip4/203.0.113.10/tcp/8080
+        ///   --gateway /dns4/gateway.hypha.example/tcp/443
         #[arg(long("gateway"), verbatim_doc_comment)]
         #[serde(skip_serializing_if = "Option::is_none")]
         gateway_addresses: Option<Vec<Multiaddr>>,
@@ -173,8 +173,8 @@ pub enum Commands {
         /// Target peer multiaddr to probe
         ///
         /// Examples:
-        ///   /ip4/192.168.1.100/tcp/8080/
-        ///   /dns4/scheduler.example.com/tcp/443/p2p/12D3KooW...
+        ///   /ip4/192.168.1.100/tcp/8080
+        ///   /dns4/scheduler.example.com/tcp/443
         #[arg(index = 1, verbatim_doc_comment)]
         address: String,
     },
@@ -205,8 +205,8 @@ pub enum Commands {
         /// Gateways provide network bootstrapping, DHT access, and optional relay.
         ///
         /// Examples:
-        ///   --gateway /ip4/203.0.113.10/tcp/8080/
-        ///   --gateway /dns4/gateway.hypha.example/tcp/443/
+        ///   --gateway /ip4/203.0.113.10/tcp/8080
+        ///   --gateway /dns4/gateway.hypha.example/tcp/443
         #[arg(long("gateway"), verbatim_doc_comment)]
         #[serde(skip_serializing_if = "Option::is_none")]
         gateway_addresses: Option<Vec<Multiaddr>>,

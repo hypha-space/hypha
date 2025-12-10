@@ -32,6 +32,17 @@ Install the gateway binary following the [Installation](@/installation.md) guide
 
 Gateway configuration uses TOML format with security and network settings. Generate an example configuration file using the [`hypha-gateway init`](@/reference/hypha-gateway-cli.md#hypha-gateway-init) command. You will need to provide paths to TLS certificates and configure basic network settings (listen addresses, external addresses).
 
+### Network Configuration
+
+Gateways require careful network configuration to ensure they are reachable by other peers.
+
+* **`listen_addresses`**: The local interfaces and ports the gateway binds to (e.g., `/ip4/0.0.0.0/udp/8080/quic-v1`). Binding to `0.0.0.0` allows connections on all interfaces, but does not guarantee external reachability if behind NAT.
+* **`external_addresses`**: The public addresses this gateway advertises to the network. If the gateway is behind NAT, you must explicitly list its external address i.e. public IP and port here so other nodes can dial it.
+* **`gateways`**: A list of *other* bootstrap gateways to connect to. For a standalone root gateway, this can be empty.
+
+> [!TIP]
+> See the [Networking Guide](@/networking.md) for detailed examples of NAT, firewalls, and address configuration.
+
 ### OpenTelemetry
 
 OpenTelemetry enables distributed tracing and metrics collection for debugging and monitoring your gateways in production. Configure telemetry either via the TOML configuration file or using standard `OTEL_*` environment variables.

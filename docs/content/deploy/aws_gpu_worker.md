@@ -136,5 +136,5 @@ export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Basic <API_TOKEN>"
 With everything configured, you can start the worker:
 
 ```bash
-hypha-worker run -c worker.toml
+hypha-worker run -c config.toml
 ```
