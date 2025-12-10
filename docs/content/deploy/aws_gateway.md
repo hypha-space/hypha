@@ -60,7 +60,7 @@ Connect to your instance via SSH. For instructions, see [AWS Guide: Connect to y
 
 ### 3.1 Install Hypha
 
-Install the `hypha-gateway` binary using the official installer (remember to replace `<VERSION>` with the desired version):
+Install the `hypha-gateway` binary using the official installer:
 
 ```bash
 curl -LsSf https://hypha-space.org/install.sh | sh
