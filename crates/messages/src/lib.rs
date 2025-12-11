@@ -29,6 +29,7 @@ pub mod api {
         ParameterPull(parameter_pull::Request),
         ParameterPush(parameter_push::Request),
         Data(data::Request),
+        DataRecord(data_record::Request),
     }
 
     #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -40,6 +41,7 @@ pub mod api {
         ParameterPull(parameter_pull::Response),
         ParameterPush(parameter_push::Response),
         Data(data::Response),
+        DataRecord(data_record::Response),
     }
 }
 
@@ -829,4 +831,22 @@ pub struct DataRecord {
 pub struct DataSlice {
     pub dataset: String,
     pub hash: String,
+}
+
+pub mod data_record {
+    use super::*;
+
+    /// Worker requests data record from data provider
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct Request {
+        pub dataset: String,
+    }
+
+    /// Data provider responds with data record or error
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub enum Response {
+        Success { data_record: DataRecord },
+        NotFound,
+        Error(String),
+    }
 }
