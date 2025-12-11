@@ -14,6 +14,14 @@ use uuid::Uuid;
 
 use crate::{connector::ConnectorError, executor::parameter_server::TensorOpError};
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum Status {
+    Running,
+    Success,
+    Failed(String),
+    Cancelled,
+}
+
 #[derive(Error, Debug)]
 pub enum Error {
     #[error("Bridge error: {0}")]
@@ -36,7 +44,6 @@ pub enum Error {
 }
 
 pub trait JobExecutor {
-    // NOTE: Avoid `async fn` in traits; return a boxed Future instead
     fn execute(
         &self,
         job: hypha_messages::JobSpec,
@@ -47,7 +54,6 @@ pub trait JobExecutor {
 }
 
 pub trait Execution {
-    // NOTE: Make object-safe by returning a boxed future.
-    // This allows storing heterogeneous Execution handles behind trait objects.
-    fn wait<'a>(&'a self) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+    // NOTE: Make object-safe by returning a boxed future. This allows storing heterogeneous Execution handles behind trait objects.
+    fn wait<'a>(&'a self) -> Pin<Box<dyn Future<Output = Result<Status, Error>> + Send + 'a>>;
 }

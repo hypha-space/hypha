@@ -11,15 +11,16 @@ use tokio::{
     fs,
     io::{AsyncBufReadExt, BufReader},
     process::Command,
+    sync::{Mutex, oneshot},
     time::sleep,
 };
-use tokio_util::{sync::CancellationToken, task::TaskTracker};
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::{
     config::{ExecutorConfig, ExecutorRuntime},
     connector::Connector,
-    executor::{Error, Execution, JobExecutor, bridge::Bridge},
+    executor::{Error, Execution, JobExecutor, Status, bridge::Bridge},
     network::Network,
 };
 
@@ -31,13 +32,38 @@ pub struct ProcessExecutor {
 }
 
 pub struct ProcessExecution {
-    task_tracker: TaskTracker,
+    status_rx: Mutex<Option<oneshot::Receiver<Status>>>,
+}
+
+impl ProcessExecution {
+    fn new(status_rx: oneshot::Receiver<Status>) -> Self {
+        Self {
+            status_rx: Mutex::new(Some(status_rx)),
+        }
+    }
 }
 
 impl Execution for ProcessExecution {
-    fn wait<'a>(&'a self) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+    fn wait<'a>(&'a self) -> Pin<Box<dyn Future<Output = Result<Status, Error>> + Send + 'a>> {
         Box::pin(async move {
-            self.task_tracker.wait().await;
+            let rx = {
+                let mut guard = self.status_rx.lock().await;
+                guard.take()
+            }
+            .ok_or_else(|| {
+                Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "Execution status already consumed",
+                ))
+            })?;
+
+            match rx.await {
+                Ok(status) => Ok(status),
+                Err(_) => Err(Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "Execution task ended without status",
+                ))),
+            }
         })
     }
 }
@@ -137,9 +163,10 @@ impl JobExecutor for ProcessExecutor {
             .stdout(Stdio::piped());
         let mut process = process.spawn()?;
 
-        let task_tracker = TaskTracker::new();
+        let (status_tx, status_rx) = oneshot::channel();
         let shutdown = cancel.clone();
-        task_tracker.spawn(async move {
+
+        tokio::spawn(async move {
             let stdout = process.stdout.take().expect("stdout is available");
             let mut lines = BufReader::new(stdout).lines();
 
@@ -174,17 +201,39 @@ impl JobExecutor for ProcessExecutor {
                 }
             }
 
-            tokio::select! {
+            let exec_status = tokio::select! {
                 status = process.wait() => {
                     tracing::trace!(status = ?status, "Executor task exited");
-                }
-                _ = sleep(Duration::from_secs(5)) => {
-                    tracing::trace!("Executor task didn't exit in time, sending SIGKILL");
-                    if let Err(e) = process.kill().await {
-                        tracing::warn!(error = ?e, "Failed to send SIGKILL to executor process");
+
+                    match status {
+                        Ok(s) => {
+                            if shutdown.is_cancelled() {
+                                Status::Cancelled
+                            } else if s.success() {
+                                Status::Success
+                            } else {
+                                Status::Failed(format!("Process exited with status: {}", s))
+                            }
+                        }
+                        Err(e) => Status::Failed(format!("Wait failed: {}", e)),
                     }
                 }
-            }
+
+                _ = sleep(Duration::from_secs(5)) => {
+                    tracing::trace!("Executor didn't exit in time, sending SIGKILL");
+
+                    match process.kill().await {
+                        Ok(_) => Status::Cancelled, // Force killed
+                        Err(e) => {
+                            tracing::warn!(error = ?e, "Failed to send SIGKILL to executor");
+
+                            Status::Failed(format!("Force kill failed: {}", e))
+                        }
+                    }
+                }
+            };
+
+            let _ = status_tx.send(exec_status);
 
             shutdown.cancel();
             let _ = bridge.wait().await;
@@ -192,9 +241,7 @@ impl JobExecutor for ProcessExecutor {
             let _ = fs::remove_dir_all(&work_dir).await;
         });
 
-        task_tracker.close();
-
-        Ok(ProcessExecution { task_tracker })
+        Ok(ProcessExecution::new(status_rx))
     }
 }
 

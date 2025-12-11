@@ -1,17 +1,17 @@
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
-use hypha_messages::{Executor, ExecutorDescriptor, JobSpec, JobStatus};
+use hypha_messages::{Executor, ExecutorDescriptor, JobSpec};
 use hypha_network::request_response::RequestResponseError;
 use libp2p::PeerId;
 use thiserror::Error;
-use tokio::sync::Mutex;
+use tokio::{sync::Mutex, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::{
     config::{ExecutorConfig, ExecutorRuntime},
     connector::Connector,
-    executor::{self, Execution, JobExecutor, ParameterServerExecutor, ProcessExecutor},
+    executor::{self, Execution, JobExecutor, ParameterServerExecutor, ProcessExecutor, Status},
     network::Network,
 };
 
@@ -34,26 +34,52 @@ pub enum JobManagerError {
 }
 
 pub struct Job {
+    id: Uuid,
+    lease: Uuid,
+    scheduler: PeerId,
+    spec: JobSpec,
+    cancel_token: CancellationToken,
+    status: Status,
+    monitor: JoinHandle<()>,
+}
+
+impl Job {
+    fn status(&self) -> Status {
+        self.status.clone()
+    }
+
+    pub async fn cancel(self) -> Result<(), JobManagerError> {
+        tracing::debug!(job_id = %self.id, "Cancelling job");
+        self.cancel_token.cancel();
+        let _ = self.monitor.await;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct JobDescriptor {
     pub id: Uuid,
     pub lease: Uuid,
     pub scheduler: PeerId,
     pub spec: JobSpec,
-    pub cancel_token: CancellationToken,
-    pub execution: Box<dyn Execution + Sync + Send>,
+    pub status: Status,
 }
 
-impl Job {
-    pub async fn cancel(&self) -> Result<(), JobManagerError> {
-        tracing::debug!(job_id = %self.id, "Cancelling job");
-        self.cancel_token.cancel();
-        self.execution.wait().await;
-        Ok(())
+impl From<&Job> for JobDescriptor {
+    fn from(job: &Job) -> Self {
+        JobDescriptor {
+            id: job.id,
+            lease: job.lease,
+            scheduler: job.scheduler,
+            spec: job.spec.clone(),
+            status: job.status(),
+        }
     }
 }
 
 #[derive(Clone)]
 pub struct JobManager {
-    active_jobs: Arc<Mutex<HashMap<Uuid, Job>>>,
+    jobs: Arc<Mutex<HashMap<Uuid, Job>>>,
     connector: Connector<Network>,
     network: Network,
     work_dir_base: PathBuf,
@@ -68,7 +94,7 @@ impl JobManager {
         executor_configs: Vec<ExecutorConfig>,
     ) -> Self {
         Self {
-            active_jobs: Arc::new(Mutex::new(HashMap::new())),
+            jobs: Arc::new(Mutex::new(HashMap::new())),
             connector,
             network,
             work_dir_base,
@@ -113,15 +139,34 @@ impl JobManager {
                 let execution = executor
                     .execute(spec.clone(), cancel_token.clone(), spec.job_id, scheduler)
                     .await?;
+
+                let jobs = self.jobs.clone();
+                let monitor = tokio::spawn(async move {
+                    let status = match execution.wait().await {
+                        Ok(s) => s,
+                        Err(e) => Status::Failed(e.to_string()),
+                    };
+
+                    tracing::info!(job_id=%spec.job_id, status=?status, "Job completed");
+
+                    let mut guard = jobs.lock().await;
+                    if let Some(job) = guard.get_mut(&id) {
+                        job.status = status;
+                    }
+                });
+
                 let job = Job {
                     id,
                     lease,
                     scheduler,
                     spec: spec.clone(),
                     cancel_token: cancel_token.clone(),
-                    execution: Box::new(execution),
+                    status: Status::Running,
+                    monitor,
                 };
-                self.active_jobs.lock().await.insert(id, job);
+
+                self.jobs.lock().await.insert(id, job);
+
                 Ok(())
             }
             Executor::Aggregate(_) => {
@@ -143,15 +188,34 @@ impl JobManager {
                 let execution = executor
                     .execute(spec.clone(), cancel_token.clone(), spec.job_id, scheduler)
                     .await?;
+
+                let jobs = self.jobs.clone();
+                let monitor = tokio::spawn(async move {
+                    let status = match execution.wait().await {
+                        Ok(s) => s,
+                        Err(e) => Status::Failed(e.to_string()),
+                    };
+
+                    tracing::info!(job_id=%spec.job_id, status=?status, "Job completed");
+
+                    let mut guard = jobs.lock().await;
+                    if let Some(job) = guard.get_mut(&id) {
+                        job.status = status;
+                    }
+                });
+
                 let job = Job {
                     id,
                     lease,
                     scheduler,
                     spec: spec.clone(),
                     cancel_token: cancel_token.clone(),
-                    execution: Box::new(execution),
+                    status: Status::Running,
+                    monitor,
                 };
-                self.active_jobs.lock().await.insert(id, job);
+
+                self.jobs.lock().await.insert(id, job);
+
                 Ok(())
             }
         }
@@ -159,7 +223,7 @@ impl JobManager {
 
     pub async fn cancel(&mut self, job_id: &Uuid) -> Result<(), JobManagerError> {
         let job = {
-            let mut guard = self.active_jobs.lock().await;
+            let mut guard = self.jobs.lock().await;
             guard.remove(job_id)
         };
 
@@ -172,39 +236,28 @@ impl JobManager {
         }
     }
 
-    pub async fn find_jobs_by_lease(&self, lease_id: &Uuid) -> Vec<Uuid> {
-        self.active_jobs
+    pub async fn find_jobs_where<F>(&self, mut predicate: F) -> Vec<JobDescriptor>
+    where
+        F: FnMut(&JobDescriptor) -> bool,
+    {
+        self.jobs
             .lock()
             .await
             .values()
-            .filter_map(|job| (job.lease == *lease_id).then_some(job.id))
+            .filter_map(|job| {
+                let descriptor = job.into();
+                predicate(&descriptor).then_some(descriptor)
+            })
             .collect()
-    }
-
-    pub async fn find_jobs_by_scheduler(&self, scheduler: &PeerId) -> Vec<Uuid> {
-        self.active_jobs
-            .lock()
-            .await
-            .values()
-            .filter_map(|job| (job.scheduler == *scheduler).then_some(job.id))
-            .collect()
-    }
-
-    pub async fn get_status(&self, job_id: &Uuid) -> Result<JobStatus, JobManagerError> {
-        Err(JobManagerError::TaskNotFound(*job_id))
-    }
-
-    pub async fn cleanup_finished_jobs(&mut self) -> Vec<Uuid> {
-        Vec::new()
     }
 
     pub async fn shutdown(&mut self) {
         let jobs: Vec<Job> = {
-            let mut guard = self.active_jobs.lock().await;
+            let mut guard = self.jobs.lock().await;
             guard.drain().map(|(_, job)| job).collect()
         };
 
-        for job in jobs.iter() {
+        for job in jobs {
             let _ = job.cancel().await;
         }
     }
