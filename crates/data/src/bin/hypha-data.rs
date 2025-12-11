@@ -247,7 +247,7 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
     .await
     .into_diagnostic()?
     .into_diagnostic()?;
-    let dataset_hashes: HashMap<String, PathBuf> = HashMap::from_iter(dataset_hashes);
+    let dataset_hashes: HashMap<u64, PathBuf> = HashMap::from_iter(dataset_hashes);
 
     // Announce our dataset
     tracing::info!(dataset_name, "Announcing");

@@ -806,7 +806,7 @@ pub mod data {
     pub enum Response {
         Success {
             data_providers: Vec<PeerId>,
-            hash: String,
+            hash: u64,
         },
         NotFound,
         Error(String),
@@ -822,11 +822,11 @@ pub struct ParameterStreamHeader {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DataRecord {
-    pub slice_hashes: Vec<String>,
+    pub slice_hashes: Vec<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DataSlice {
     pub dataset: String,
-    pub hash: String,
+    pub hash: u64,
 }
