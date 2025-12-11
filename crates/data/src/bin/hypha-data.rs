@@ -17,7 +17,7 @@ use figment::{
 use futures_util::{StreamExt, future::join_all};
 use hypha_config::{ConfigWithMetadata, ConfigWithMetadataTLSExt, builder, to_toml};
 use hypha_data::{
-    config::Config, hash::get_file_sha256, network::Network, tensor_data::serialize_file,
+    config::Config, hash::get_file_hash, network::Network, tensor_data::serialize_file,
 };
 use hypha_messages::{DataRecord, health};
 use hypha_network::{
@@ -239,7 +239,7 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
         dataset_files
             .par_iter()
             .map(|file| {
-                let hash = get_file_sha256(file);
+                let hash = get_file_hash(file);
                 hash.map(|h| (h, file.clone()))
             })
             .collect::<Result<Vec<_>, io::Error>>()

@@ -17,7 +17,7 @@ use axum::{
     routing::{get, post},
 };
 use futures_util::{StreamExt, stream};
-use hypha_data::hash::get_file_sha256;
+use hypha_data::hash::get_file_hash;
 use hypha_messages::{
     DataSlice, Fetch, Receive, Reference, Send,
     action::{self, ActionRequest},
@@ -334,7 +334,7 @@ async fn fetch_resource(
                             file.sync_all().await?;
 
                             // Validate file against hash
-                            let calculated_hash = get_file_sha256(&abs)?;
+                            let calculated_hash = get_file_hash(&abs)?;
 
                             if calculated_hash != hash {
                                 // Delete file
