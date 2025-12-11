@@ -804,7 +804,10 @@ pub mod data {
     /// Data server responds with data or error
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub enum Response {
-        Success { data_provider: PeerId, hash: String },
+        Success {
+            data_providers: Vec<PeerId>,
+            hash: String,
+        },
         NotFound,
         Error(String),
     }

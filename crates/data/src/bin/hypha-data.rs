@@ -251,6 +251,14 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
 
     // Announce our dataset
     tracing::info!(dataset_name, "Announcing");
+    let _ = network.provide(dataset_name).await;
+
+    // Only a single record is stored for this key in the DHT.
+    // I.e. if there are multiple data providers with the same dataset,
+    // we might overwrite an existing record.
+    // For now, we assume that a dataset name is always used for the same record.
+    // With that assumption, overwriting existing records is okay.
+    // We might need to change this in the future.
     let _ = network
         .store(kad::Record::new(
             kad::RecordKey::new(&dataset_name),
