@@ -12,6 +12,7 @@ use tokio::{
     fs,
     io::{AsyncBufReadExt, BufReader},
     process::Command,
+    sync::watch,
     time::sleep,
 };
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
@@ -20,7 +21,7 @@ use uuid::Uuid;
 use crate::{
     config::{Config, ExecutorConfig, ExecutorRuntime},
     connector::Connector,
-    executor::{Error, Execution, JobExecutor, bridge::Bridge},
+    executor::{Error, Execution, JobExecutor, Status, bridge::Bridge},
     network::Network,
 };
 
@@ -32,14 +33,27 @@ pub struct ProcessExecutor {
     config: Config,
 }
 
+#[derive(Clone)]
 pub struct ProcessExecution {
-    task_tracker: TaskTracker,
+    _task_tracker: TaskTracker,
+    status_rx: watch::Receiver<Option<Status>>,
 }
 
 impl Execution for ProcessExecution {
-    fn wait<'a>(&'a self) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+    fn wait<'a>(&'a self) -> Pin<Box<dyn Future<Output = Result<Status, Error>> + Send + 'a>> {
         Box::pin(async move {
-            self.task_tracker.wait().await;
+            let mut rx = self.status_rx.clone();
+            loop {
+                if let Some(status) = rx.borrow().clone() {
+                    return Ok(status);
+                }
+                if rx.changed().await.is_err() {
+                    return Err(Error::Io(std::io::Error::new(
+                        std::io::ErrorKind::BrokenPipe,
+                        "Execution task ended without status",
+                    )));
+                }
+            }
         })
     }
 }
@@ -177,7 +191,9 @@ impl JobExecutor for ProcessExecutor {
         let mut process = process.spawn()?;
 
         let task_tracker = TaskTracker::new();
+        let (status_tx, status_rx) = watch::channel(None);
         let shutdown = cancel.clone();
+
         task_tracker.spawn(async move {
             let stdout = process.stdout.take().expect("stdout is available");
             let mut lines = BufReader::new(stdout).lines();
@@ -213,17 +229,39 @@ impl JobExecutor for ProcessExecutor {
                 }
             }
 
-            tokio::select! {
+            let exec_status = tokio::select! {
                 status = process.wait() => {
                     tracing::trace!(status = ?status, "Executor task exited");
+
+                    match status {
+                        Ok(s) => {
+                            if shutdown.is_cancelled() {
+                                Status::Cancelled
+                            } else if s.success() {
+                                Status::Success
+                            } else {
+                                Status::Failed(format!("Process exited with status: {}", s))
+                            }
+                        }
+                        Err(e) => Status::Failed(format!("Wait failed: {}", e)),
+                    }
                 }
+
                 _ = sleep(Duration::from_secs(5)) => {
                     tracing::trace!("Executor task didn't exit in time, sending SIGKILL");
                     if let Err(e) = process.kill().await {
                         tracing::warn!(error = ?e, "Failed to send SIGKILL to executor process");
                     }
+
+                    // Give it one more chance to reap
+                     match process.wait().await {
+                        Ok(_) => Status::Cancelled, // Force killed
+                        Err(e) => Status::Failed(format!("Force kill failed: {}", e)),
+                    }
                 }
-            }
+            };
+
+            let _ = status_tx.send(Some(exec_status));
 
             shutdown.cancel();
             let _ = bridge.wait().await;
@@ -233,7 +271,10 @@ impl JobExecutor for ProcessExecutor {
 
         task_tracker.close();
 
-        Ok(ProcessExecution { task_tracker })
+        Ok(ProcessExecution {
+            _task_tracker: task_tracker,
+            status_rx,
+        })
     }
 }
 

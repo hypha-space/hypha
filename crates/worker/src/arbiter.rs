@@ -14,6 +14,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     config::{OfferConfig, OfferStrategy},
+    executor::Status,
     job_manager::{JobManager, JobManagerError},
     lease_manager::{LeaseError, LeaseManager},
     network::Network,
@@ -100,6 +101,56 @@ where
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 interval.tick().await;
+
+                // NOTE: Cancel leases for finished jobs; assuming exactly one job per lease
+                let finished_jobs = job_manager
+                    .find_jobs_where(|job| {
+                        matches!(
+                            job.status,
+                            Status::Success | Status::Cancelled | Status::Failed(_)
+                        )
+                    })
+                    .await;
+
+                for job in finished_jobs {
+                    match job.status {
+                        Status::Failed(reason) => {
+                            tracing::warn!(
+                                job_id = %job.id,
+                                lease_id = %job.lease,
+                                reason = %reason,
+                                "Job failed, revoking lease"
+                            );
+
+                            if let Err(e) = lease_manager.remove(&job.lease).await {
+                                tracing::error!(
+                                    lease_id = %job.lease,
+                                    error = ?e,
+                                    "Failed to revoke lease for failed job"
+                                );
+                            }
+
+                            if let Err(error) = job_manager.cancel(&job.id).await {
+                                tracing::error!(
+                                    lease_id = %job.lease,
+                                    job_id = %job.id,
+                                    error = ?error,
+                                    "Failed to cancel (remove) finished job"
+                                );
+                            }
+                        }
+                        _ => {
+                            tracing::info!(
+                                job_id = %job.id,
+                                lease_id = %job.lease,
+                                status = ?job.status,
+                                "Job finished successfully"
+                            );
+                        }
+                    }
+                }
+
+                // NOTE: Cleanup expired leases and cancel linked jobs
                 if let Ok(expired) = lease_manager.proceed().await {
                     if expired.is_empty() {
                         continue;
@@ -113,23 +164,25 @@ where
 
                     for lease in expired {
                         let lease_id = lease.id;
-                        let job_ids = job_manager.find_jobs_by_lease(&lease_id).await;
+                        let jobs = job_manager
+                            .find_jobs_where(|job| job.lease == lease_id)
+                            .await;
 
-                        if job_ids.is_empty() {
+                        if jobs.is_empty() {
                             continue;
                         }
 
                         tracing::info!(
                             lease_id = %lease_id,
-                            jobs = ?job_ids,
+                            jobs = ?jobs,
                             "Cancelling jobs linked to expired lease"
                         );
 
-                        for job_id in job_ids {
-                            if let Err(error) = job_manager.cancel(&job_id).await {
+                        for job in jobs {
+                            if let Err(error) = job_manager.cancel(&job.id).await {
                                 tracing::error!(
                                     lease_id = %lease_id,
-                                    job_id = %job_id,
+                                    job_id = %job.id,
                                     error = ?error,
                                     "Failed to cancel job after lease expiry"
                                 );

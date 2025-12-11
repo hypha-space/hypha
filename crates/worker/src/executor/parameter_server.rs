@@ -35,7 +35,7 @@ use uuid::Uuid;
 
 use crate::{
     connector::Connector,
-    executor::{Error, Execution, JobExecutor},
+    executor::{Error, Execution, JobExecutor, Status},
     network::Network,
 };
 
@@ -57,14 +57,16 @@ pub struct ParameterServerExecutor {
     work_dir_base: PathBuf,
 }
 
+#[derive(Clone)]
 pub struct ParameterServerExecution {
     task_tracker: TaskTracker,
 }
 
 impl Execution for ParameterServerExecution {
-    fn wait<'a>(&'a self) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+    fn wait<'a>(&'a self) -> Pin<Box<dyn Future<Output = Result<Status, Error>> + Send + 'a>> {
         Box::pin(async move {
             self.task_tracker.wait().await;
+            Ok(Status::Success)
         })
     }
 }
