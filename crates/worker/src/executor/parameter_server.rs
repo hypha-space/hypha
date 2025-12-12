@@ -192,7 +192,7 @@ impl JobExecutor for ParameterServerExecutor {
                 loop {
                     tracing::debug!(job_id = %job_id, status = ?current_status, "Requesting next aggregate action");
 
-                    let action_response = match Retry::spawn(retry_strategy.clone(), || {
+                    let action_request = Retry::spawn(retry_strategy.clone(), || {
                         let status = current_status.clone();
                         let network = network.clone();
                         async move {
@@ -205,9 +205,17 @@ impl JobExecutor for ParameterServerExecutor {
                             )
                             .await
                         }
-                    })
-                    .await
-                    {
+                    });
+
+                    let action_result = tokio::select! {
+                        _ = cancel.cancelled() => break,
+                        action_result = action_request => {
+                            action_result
+                        }
+
+                    };
+
+                    let action_response = match action_result {
                         Ok(resp) => resp,
                         Err(e) => {
                             tracing::warn!(job_id = %job_id, error = %e, status = ?current_status, "Failed to fetch next aggregate action");
