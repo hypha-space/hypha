@@ -421,10 +421,14 @@ async fn send_resource(
 
             let cancel = state.cancel.clone();
             let file_path = abs.clone();
-            let task_tracker = state.task_tracker.clone();
 
-            // Copy the resource in the background to avoid blocking.
-            task_tracker.spawn(async move {
+            // Don't copy the resource in the background. We need to wait until its done.
+            // If run in the background, the Python code never knows when the send
+            // completed. However, it needs to inform the scheduler that it sent its
+            // gradients, s.t. it can advance the state.
+            // This might lead to timeouts in the Python code however, for the moment
+            // this seems to be the best fix.
+            {
                 loop {
                     let next_item = tokio::select! {
                         _ = cancel.cancelled() => None,
@@ -438,8 +442,7 @@ async fn send_resource(
 
                         // We no longer need the file once it has been sent, so remove it.
                         fs::remove_file(&file_path).await?;
-
-                        break Ok::<(), Error>(());
+                        break;
                     };
                     let item = item_result?;
                     let peer_id = item.meta.name.clone();
@@ -450,7 +453,7 @@ async fn send_resource(
                     writer.shutdown().await?;
                     tracing::info!(size = sent_bytes, file = %file_path.display(), peer_id = %peer_id, "Sent resource");
                 }
-            });
+            }
             Ok::<(), Error>(())
         }
     }).await?;
