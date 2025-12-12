@@ -74,6 +74,7 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR09
                 get_preprocessor(preprocessor_config, local_fetch_path),
             ),
             batch_size=config["batch_size"],
+            pin_memory=True,
         )
 
         # Serialize the model to disk

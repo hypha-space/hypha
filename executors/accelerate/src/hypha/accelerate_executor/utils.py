@@ -36,21 +36,18 @@ def prepare_files(config: dict[str, Any], session: Session) -> None:
 
 def get_preprocessor(preprocessor_config: dict[str, Any], local_fetch_path: str) -> Any:
     if preprocessor_config:
-        filenames = preprocessor_config["artifact"]["filenames"]
-        if filenames:
-            type = preprocessor_config["task"]
-            file_path = f"{local_fetch_path}/{filenames[0]}"
-            if type == "auto":
-                return AutoProcessor.from_pretrained(file_path, trust_remote_code=True)  # type: ignore[no-untyped-call]
-            if type == "feature":
-                return AutoFeatureExtractor.from_pretrained(file_path, trust_remote_code=True)  # type: ignore[no-untyped-call]
-            if type == "image":
-                return AutoImageProcessor.from_pretrained(file_path, trust_remote_code=True)  # type: ignore[no-untyped-call]
-            if type == "tokenizer":
-                return AutoTokenizer.from_pretrained(file_path, trust_remote_code=True)  # type: ignore[no-untyped-call]
-            if type == "video":
-                return AutoVideoProcessor.from_pretrained(file_path, trust_remote_code=True)  # type: ignore[no-untyped-call]
-            raise RuntimeError(f"Pre-Processor of type {type} not found")
+        type = preprocessor_config["task"]
+        if type == "auto":
+            return AutoProcessor.from_pretrained(local_fetch_path, trust_remote_code=True)  # type: ignore[no-untyped-call]
+        if type == "feature":
+            return AutoFeatureExtractor.from_pretrained(local_fetch_path, trust_remote_code=True)  # type: ignore[no-untyped-call]
+        if type == "image":
+            return AutoImageProcessor.from_pretrained(local_fetch_path, trust_remote_code=True)  # type: ignore[no-untyped-call]
+        if type == "tokenizer":
+            return AutoTokenizer.from_pretrained(local_fetch_path, trust_remote_code=True)  # type: ignore[no-untyped-call]
+        if type == "video":
+            return AutoVideoProcessor.from_pretrained(local_fetch_path, trust_remote_code=True)  # type: ignore[no-untyped-call]
+        raise RuntimeError(f"Pre-Processor of type {type} not found")
 
 
 def get_adam(optimizer: dict[str, Any], parameters: Iterable[torch.Tensor]) -> Optimizer:

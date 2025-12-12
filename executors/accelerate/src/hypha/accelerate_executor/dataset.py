@@ -31,9 +31,13 @@ class IterableStreamDataSet(IterableDataset):  # type: ignore[type-arg]
                 if self.processor
                 else data
             )
+            keys = list(processed.keys())
 
-            for values in zip(*(processed[k] for k in self.model_inputs)):
-                yield ({k: v for k, v in zip(self.model_inputs, values)})
+            columns = [
+                processed[k][0].unbind(0) if isinstance(processed[k], list) else processed[k].unbind(0) for k in keys
+            ]
+            for items in zip(*columns):
+                yield {k: v for k, v in zip(keys, items)}
 
 
 def dataset_wrapper(dataset: DataLoader) -> Iterator[dict[str, torch.Tensor]]:  # type: ignore[type-arg]
