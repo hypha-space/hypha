@@ -480,30 +480,6 @@ where
                             .map(|t| t.elapsed() >= state.grace)
                             .unwrap_or(false);
                         let ready = all_sent || (quorum_met && timebox_elapsed);
-                        let reason = if all_sent {
-                            "all_sent"
-                        } else if quorum_met && timebox_elapsed {
-                            "quorum_and_grace"
-                        } else if quorum_met {
-                            "quorum_met_waiting_grace"
-                        } else {
-                            "waiting_quorum"
-                        };
-                        tracing::info!(
-                            round = state.round,
-                            workers = workers.len(),
-                            sent = state.sent_updates.len(),
-                            min_quorum = state.min_quorum,
-                            effective_quorum,
-                            grace_ms = state.grace.as_millis() as u64,
-                            since_first_ms = state
-                                .first_update_at
-                                .map(|t| t.elapsed().as_millis() as u64)
-                                .unwrap_or(0),
-                            ready,
-                            reason,
-                            "Aggregation readiness evaluation"
-                        );
 
                         if ready {
                             tracing::info!(round = state.round, "Trigger AggregateUpdates");
