@@ -16,13 +16,13 @@ pub enum SliceError {
 
 #[derive(Debug, Clone)]
 pub struct Slice {
-    hash: String,
+    hash: u64,
     peer: Option<PeerId>,
     processed: bool,
 }
 
 impl Slice {
-    pub fn new(hash: String) -> Self {
+    pub fn new(hash: u64) -> Self {
         Slice {
             hash,
             peer: None,
@@ -34,12 +34,12 @@ impl Slice {
 /// This tracks the data slices provided by a data node.
 pub struct SliceTracker {
     slices: Vec<Slice>,
-    processing: HashMap<PeerId, String>,
+    processing: HashMap<PeerId, u64>,
     rounds: u32,
 }
 
 impl SliceTracker {
-    pub fn new(slice_hashes: Vec<String>) -> Self {
+    pub fn new(slice_hashes: Vec<u64>) -> Self {
         Self {
             slices: slice_hashes.into_iter().map(Slice::new).collect(),
             processing: HashMap::new(),
@@ -47,7 +47,7 @@ impl SliceTracker {
         }
     }
 
-    pub fn next(&mut self, peer: &PeerId) -> String {
+    pub fn next(&mut self, peer: &PeerId) -> u64 {
         let open_slice = self
             .slices
             .iter_mut()
@@ -58,8 +58,8 @@ impl SliceTracker {
             Some(slice) => {
                 slice.processed = true;
                 slice.peer = Some(*peer);
-                self.processing.insert(*peer, slice.hash.clone());
-                slice.hash.clone()
+                self.processing.insert(*peer, slice.hash);
+                slice.hash
             }
             None => {
                 // We use a cache stealing strategy. If a worker is slower, other workers can steal their cached data.
@@ -85,8 +85,8 @@ impl SliceTracker {
                             .expect("Slice");
                         slice.processed = true;
                         slice.peer = Some(*peer);
-                        self.processing.insert(*peer, slice.hash.clone());
-                        slice.hash.clone()
+                        self.processing.insert(*peer, slice.hash);
+                        slice.hash
                     }
                     None => {
                         tracing::info!("All slices have been processed. Start new round");
@@ -124,67 +124,51 @@ mod batch_scheduler_tests {
     async fn simple_scheduling() {
         let peer_1 = PeerId::random();
         let peer_2 = PeerId::random();
-        let slice_hashes = vec![
-            "0".to_string(),
-            "1".to_string(),
-            "2".to_string(),
-            "3".to_string(),
-            "4".to_string(),
-            "5".to_string(),
-            "6".to_string(),
-        ];
+        let slice_hashes = vec![0, 1, 2, 3, 4, 5, 6];
 
         let mut tracker = SliceTracker::new(slice_hashes);
 
-        assert_eq!(tracker.next(&peer_1), "0".to_string());
-        assert_eq!(tracker.next(&peer_2), "1".to_string());
-        assert_eq!(tracker.next(&peer_1), "2".to_string());
-        assert_eq!(tracker.next(&peer_2), "3".to_string());
-        assert_eq!(tracker.next(&peer_1), "4".to_string());
-        assert_eq!(tracker.next(&peer_2), "5".to_string());
-        assert_eq!(tracker.next(&peer_1), "6".to_string());
-        assert_eq!(tracker.next(&peer_2), "1".to_string());
-        assert_eq!(tracker.next(&peer_1), "0".to_string());
+        assert_eq!(tracker.next(&peer_1), 0);
+        assert_eq!(tracker.next(&peer_2), 1);
+        assert_eq!(tracker.next(&peer_1), 2);
+        assert_eq!(tracker.next(&peer_2), 3);
+        assert_eq!(tracker.next(&peer_1), 4);
+        assert_eq!(tracker.next(&peer_2), 5);
+        assert_eq!(tracker.next(&peer_1), 6);
+        assert_eq!(tracker.next(&peer_2), 1);
+        assert_eq!(tracker.next(&peer_1), 0);
     }
 
     #[tokio::test]
     async fn fast_slow_scheduling() {
         let peer_1 = PeerId::random();
         let peer_2 = PeerId::random();
-        let slice_hashes = vec![
-            "0".to_string(),
-            "1".to_string(),
-            "2".to_string(),
-            "3".to_string(),
-            "4".to_string(),
-            "5".to_string(),
-            "6".to_string(),
-        ];
+        let slice_hashes = vec![0, 1, 2, 3, 4, 5, 6];
 
         let mut tracker = SliceTracker::new(slice_hashes);
 
         // Round 0
-        assert_eq!(tracker.next(&peer_1), "0".to_string());
-        assert_eq!(tracker.next(&peer_1), "1".to_string());
-        assert_eq!(tracker.next(&peer_1), "2".to_string());
-        assert_eq!(tracker.next(&peer_2), "3".to_string());
-        assert_eq!(tracker.next(&peer_1), "4".to_string());
-        assert_eq!(tracker.next(&peer_1), "5".to_string());
-        assert_eq!(tracker.next(&peer_1), "6".to_string());
+        assert_eq!(tracker.next(&peer_1), 0);
+        assert_eq!(tracker.next(&peer_1), 1);
+        assert_eq!(tracker.next(&peer_1), 2);
+        assert_eq!(tracker.next(&peer_2), 3);
+        assert_eq!(tracker.next(&peer_1), 4);
+        assert_eq!(tracker.next(&peer_1), 5);
+        assert_eq!(tracker.next(&peer_1), 6);
         // Round 1
-        assert_eq!(tracker.next(&peer_2), "3".to_string());
-        assert_eq!(tracker.next(&peer_1), "0".to_string());
-        assert_eq!(tracker.next(&peer_1), "1".to_string());
-        assert_eq!(tracker.next(&peer_1), "2".to_string());
+        assert_eq!(tracker.next(&peer_2), 3);
+        assert_eq!(tracker.next(&peer_1), 0);
+        assert_eq!(tracker.next(&peer_1), 1);
+        assert_eq!(tracker.next(&peer_1), 2);
         let slice = tracker.next(&peer_2);
-        let mut left_slices = vec!["4".to_string(), "5".to_string(), "6".to_string()];
+        let mut left_slices = vec![4, 5, 6];
         assert!(left_slices.contains(&slice));
         left_slices.retain(|f| f != &slice);
         assert!(left_slices.contains(&tracker.next(&peer_1)));
         assert!(left_slices.contains(&tracker.next(&peer_1)));
         // Round 2
-        assert_eq!(tracker.next(&peer_1), "0".to_string());
-        assert_eq!(tracker.next(&peer_2), "3".to_string());
+        assert_eq!(tracker.next(&peer_1), 0);
+        assert_eq!(tracker.next(&peer_2), 3);
         assert_eq!(tracker.rounds, 2);
     }
 
@@ -193,35 +177,27 @@ mod batch_scheduler_tests {
         let peer_1 = PeerId::random();
         let peer_2 = PeerId::random();
         let peer_3 = PeerId::random();
-        let slice_hashes = vec![
-            "0".to_string(),
-            "1".to_string(),
-            "2".to_string(),
-            "3".to_string(),
-            "4".to_string(),
-            "5".to_string(),
-            "6".to_string(),
-        ];
+        let slice_hashes = vec![0, 1, 2, 3, 4, 5, 6];
 
         let mut tracker = SliceTracker::new(slice_hashes);
 
         // Round 0
-        assert_eq!(tracker.next(&peer_1), "0".to_string());
-        assert_eq!(tracker.next(&peer_2), "1".to_string());
-        assert_eq!(tracker.next(&peer_1), "2".to_string());
-        assert_eq!(tracker.next(&peer_2), "3".to_string());
-        assert_eq!(tracker.next(&peer_1), "4".to_string());
-        assert_eq!(tracker.next(&peer_2), "5".to_string());
-        assert_eq!(tracker.next(&peer_1), "6".to_string());
+        assert_eq!(tracker.next(&peer_1), 0);
+        assert_eq!(tracker.next(&peer_2), 1);
+        assert_eq!(tracker.next(&peer_1), 2);
+        assert_eq!(tracker.next(&peer_2), 3);
+        assert_eq!(tracker.next(&peer_1), 4);
+        assert_eq!(tracker.next(&peer_2), 5);
+        assert_eq!(tracker.next(&peer_1), 6);
         tracker.remove_worker(&peer_1);
-        assert_eq!(tracker.next(&peer_3), "6".to_string());
+        assert_eq!(tracker.next(&peer_3), 6);
         // Round 1
-        assert_eq!(tracker.next(&peer_2), "0".to_string());
-        assert_eq!(tracker.next(&peer_3), "2".to_string());
-        assert_eq!(tracker.next(&peer_2), "1".to_string());
-        assert_eq!(tracker.next(&peer_3), "4".to_string());
-        assert_eq!(tracker.next(&peer_2), "3".to_string());
-        assert_eq!(tracker.next(&peer_3), "6".to_string());
-        assert_eq!(tracker.next(&peer_2), "5".to_string());
+        assert_eq!(tracker.next(&peer_2), 0);
+        assert_eq!(tracker.next(&peer_3), 2);
+        assert_eq!(tracker.next(&peer_2), 1);
+        assert_eq!(tracker.next(&peer_3), 4);
+        assert_eq!(tracker.next(&peer_2), 3);
+        assert_eq!(tracker.next(&peer_3), 6);
+        assert_eq!(tracker.next(&peer_2), 5);
     }
 }

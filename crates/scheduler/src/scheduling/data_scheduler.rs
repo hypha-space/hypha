@@ -43,7 +43,7 @@ where
         network: TBehaviour,
         data_providers: HashSet<PeerId>,
         dataset: String,
-        slice_hashes: Vec<String>,
+        slice_hashes: Vec<u64>,
     ) -> Self {
         Self {
             network,

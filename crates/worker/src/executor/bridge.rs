@@ -17,7 +17,7 @@ use axum::{
     routing::{get, post},
 };
 use futures_util::{StreamExt, stream};
-use hypha_data::hash::get_file_sha256;
+use hypha_data::hash::get_file_hash;
 use hypha_messages::{
     DataSlice, Fetch, Receive, Reference, Send,
     action::{self, ActionRequest},
@@ -58,7 +58,7 @@ pub enum Error {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
     #[error("Hash mismatch: expected {expected}, got {found}")]
-    HashMismatch { expected: String, found: String },
+    HashMismatch { expected: u64, found: u64 },
     #[error("Invalid job status: {0}")]
     InvalidStatus(String),
 }
@@ -278,7 +278,6 @@ async fn fetch_resource(
             tracing::debug!(peer_id = %peer, data_peer_ids = ?data_providers, dataset, hash, "Received slice index and data provider");
 
             let out = Retry::spawn(retry_strategy, || {
-                let hash = hash.clone();
                 let data_providers = data_providers.clone();
                 let state = state.clone();
                 let dir_rel = "artifacts".to_string();
@@ -287,7 +286,7 @@ async fn fetch_resource(
                     let dir_abs = safe_join(&state.work_dir, &dir_rel)?;
                     fs::create_dir_all(&dir_abs).await?;
 
-                    let file_name = hash.clone();
+                    let file_name = hash;
                     let rel = format!("{}/{}", dir_rel, file_name);
                     let abs = safe_join(&state.work_dir, &rel)?;
 
@@ -320,7 +319,7 @@ async fn fetch_resource(
                                     data_provider,
                                     &DataSlice {
                                         dataset: dataset.clone(),
-                                        hash: hash.clone(),
+                                        hash,
                                     },
                                 )
                                 .await.map_err(|e| Error::Connector(ConnectorError::OpenStream(e)))?;
@@ -334,14 +333,14 @@ async fn fetch_resource(
                             file.sync_all().await?;
 
                             // Validate file against hash
-                            let calculated_hash = get_file_sha256(&abs)?;
+                            let calculated_hash = get_file_hash(&abs)?;
 
                             if calculated_hash != hash {
                                 // Delete file
                                 fs::remove_file(&abs).await?;
 
                                 return Err(Error::HashMismatch {
-                                    expected: hash.clone(),
+                                    expected: hash,
                                     found: calculated_hash,
                                 });
                             }
