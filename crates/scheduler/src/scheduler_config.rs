@@ -69,7 +69,10 @@ impl Default for DiLoCo {
             preprocessor: Some(PreprocessorSource {
                 repository: "hypha-space/lenet".to_string(),
                 revision: None,
-                filenames: vec!["preprocessor_config.json".to_string()],
+                filenames: vec![
+                    "preprocessor_config.json".to_string(),
+                    "preprocessor_lenet.py".to_string(),
+                ],
                 token: None,
                 preprocessor_type: PreprocessorType::Image,
                 input_names: vec!["images".into()],

@@ -12,6 +12,7 @@ dependencies = [
     "safetensors>=0.5.3",
     "tqdm>=4.67.1",
     "transformers[torch]==4.56.2",
+    "torchvision>=0.22.0"
 ]
 
 [project.optional-dependencies]
