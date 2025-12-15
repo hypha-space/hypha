@@ -6,7 +6,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use futures_util::stream::StreamExt;
-use hypha_messages::{action, api, health};
+use hypha_messages::{action, api, data_record, health};
 use hypha_network::{
     CertificateDer, CertificateRevocationListDer, IpNet, PrivateKeyDer,
     dial::{DialAction, DialDriver, DialInterface, PendingDials},
@@ -60,6 +60,7 @@ pub struct Behaviour {
     request_response: request_response::Behaviour<api::Codec>,
     health_request_response: request_response::Behaviour<health::Codec>,
     action_request_response: request_response::Behaviour<action::Codec>,
+    data_record_request_response: request_response::Behaviour<data_record::Codec>,
 }
 
 pub struct NetworkDriver {
@@ -79,6 +80,9 @@ pub struct NetworkDriver {
     action_outbound_requests_map: OutboundRequests<action::Codec>,
     action_outbound_responses_map: OutboundResponses,
     action_request_handlers: ActionRequestHandlers,
+    data_record_outbound_requests_map: OutboundRequests<data_record::Codec>,
+    data_record_outbound_responses_map: OutboundResponses,
+    data_record_request_handlers: Vec<RequestHandler<data_record::Codec>>,
     exclude_cidrs: Vec<IpNet>,
 }
 
@@ -91,6 +95,7 @@ enum Action {
     RequestResponse(RequestResponseAction<api::Codec>),
     HealthRequestResponse(RequestResponseAction<health::Codec>),
     ActionRequestResponse(RequestResponseAction<action::Codec>),
+    DataRecordRequestResponse(RequestResponseAction<data_record::Codec>),
     ExternalAddress(ExternalAddressAction),
 }
 
@@ -172,6 +177,14 @@ impl Network {
                         )],
                         request_response::Config::default(),
                     ),
+                    data_record_request_response:
+                        request_response::Behaviour::<data_record::Codec>::new(
+                            [(
+                                StreamProtocol::new(data_record::IDENTIFIER),
+                                request_response::ProtocolSupport::Outbound,
+                            )],
+                            request_response::Config::default(),
+                        ),
                 }
             })
             .map_err(|_| {
@@ -200,6 +213,9 @@ impl Network {
                 action_outbound_requests_map: HashMap::default(),
                 action_outbound_responses_map: HashMap::default(),
                 action_request_handlers: Vec::new(),
+                data_record_outbound_requests_map: HashMap::default(),
+                data_record_outbound_responses_map: HashMap::default(),
+                data_record_request_handlers: Vec::new(),
                 action_receiver,
                 exclude_cidrs,
             },
@@ -244,10 +260,12 @@ impl SwarmDriver<Behaviour> for NetworkDriver {
                         SwarmEvent::Behaviour(BehaviourEvent::ActionRequestResponse(event)) => {
                             <NetworkDriver as RequestResponseDriver<Behaviour, action::Codec>>::process_request_response_event(&mut self, event).await;
                         }
+                        SwarmEvent::Behaviour(BehaviourEvent::DataRecordRequestResponse(event)) => {
+                            <NetworkDriver as RequestResponseDriver<Behaviour, data_record::Codec>>::process_request_response_event(&mut self, event).await;
+                        }
                         SwarmEvent::Behaviour(BehaviourEvent::Dcutr(event)) => {
                             tracing::debug!("dcutr event: {:?}", event);
                         }
-
                         _ => {
                             tracing::debug!("Unhandled event: {:?}", event);
                         }
@@ -273,6 +291,8 @@ impl SwarmDriver<Behaviour> for NetworkDriver {
                             <NetworkDriver as RequestResponseDriver<Behaviour, health::Codec>>::process_request_response_action(&mut self, action).await,
                         Action::ActionRequestResponse(action) =>
                             <NetworkDriver as RequestResponseDriver<Behaviour, action::Codec>>::process_request_response_action(&mut self, action).await,
+                        Action::DataRecordRequestResponse(action) =>
+                            <NetworkDriver as RequestResponseDriver<Behaviour, data_record::Codec>>::process_request_response_action(&mut self, action).await,
                         Action::ExternalAddress(action) =>
                             self.process_external_address_action(action).await,
                     }
@@ -492,6 +512,44 @@ impl RequestResponseInterface<action::Codec> for Network {
     ) -> Result<(), RequestResponseError> {
         self.action_sender
             .try_send(Action::ActionRequestResponse(action))
+            .map_err(|_| RequestResponseError::Other("Failed to send action".to_string()))
+    }
+}
+
+impl RequestResponseBehaviour<data_record::Codec> for Behaviour {
+    fn request_response(&mut self) -> &mut libp2p::request_response::Behaviour<data_record::Codec> {
+        &mut self.data_record_request_response
+    }
+}
+
+impl RequestResponseDriver<Behaviour, data_record::Codec> for NetworkDriver {
+    fn outbound_requests(&mut self) -> &mut OutboundRequests<data_record::Codec> {
+        &mut self.data_record_outbound_requests_map
+    }
+
+    fn outbound_responses(&mut self) -> &mut OutboundResponses {
+        &mut self.data_record_outbound_responses_map
+    }
+
+    fn request_handlers(&mut self) -> &mut Vec<RequestHandler<data_record::Codec>> {
+        &mut self.data_record_request_handlers
+    }
+}
+
+impl RequestResponseInterface<data_record::Codec> for Network {
+    async fn send(&self, action: RequestResponseAction<data_record::Codec>) {
+        self.action_sender
+            .send(Action::DataRecordRequestResponse(action))
+            .await
+            .expect("network driver is running");
+    }
+
+    fn try_send(
+        &self,
+        action: RequestResponseAction<data_record::Codec>,
+    ) -> Result<(), RequestResponseError> {
+        self.action_sender
+            .try_send(Action::DataRecordRequestResponse(action))
             .map_err(|_| RequestResponseError::Other("Failed to send action".to_string()))
     }
 }

@@ -29,7 +29,6 @@ pub mod api {
         ParameterPull(parameter_pull::Request),
         ParameterPush(parameter_push::Request),
         Data(data::Request),
-        DataRecord(data_record::Request),
     }
 
     #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -41,7 +40,6 @@ pub mod api {
         ParameterPull(parameter_pull::Response),
         ParameterPush(parameter_push::Response),
         Data(data::Response),
-        DataRecord(data_record::Response),
     }
 }
 
@@ -835,6 +833,10 @@ pub struct DataSlice {
 
 pub mod data_record {
     use super::*;
+
+    pub type Codec = CborCodec<Request, Response>;
+
+    pub const IDENTIFIER: &str = "/hypha-data-record/0.0.1";
 
     /// Worker requests data record from data provider
     #[derive(Debug, Clone, Serialize, Deserialize)]

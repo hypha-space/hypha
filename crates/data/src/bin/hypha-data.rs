@@ -19,7 +19,7 @@ use hypha_config::{ConfigWithMetadata, ConfigWithMetadataTLSExt, builder, to_tom
 use hypha_data::{
     config::Config, hash::get_file_sha256, network::Network, tensor_data::serialize_file,
 };
-use hypha_messages::{DataRecord, api, data_record, health};
+use hypha_messages::{DataRecord, data_record, health};
 use hypha_network::{
     dial::DialInterface, external_address::ExternalAddressInterface, kad::KademliaInterface,
     listen::ListenInterface, request_response::RequestResponseInterfaceExt,
@@ -254,7 +254,7 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
 
     let d = dataset_name.clone();
     let record_handle = network
-        .on::<api::Codec, _>(move |req: &api::Request| matches!(req, api::Request::DataRecord(_)))
+        .on::<data_record::Codec, _>(move |_: &data_record::Request| true)
         .into_stream()
         .await
         .into_diagnostic()?
@@ -264,19 +264,13 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
                 let d = d.clone();
                 let slice_hashes = dataset_hashes.keys().cloned().collect();
                 async move {
-                    if let api::Request::DataRecord(data_record::Request { dataset }) = request {
-                        if dataset == d {
-                            return api::Response::DataRecord(data_record::Response::Success {
-                                data_record: DataRecord { slice_hashes },
-                            });
-                        } else {
-                            return api::Response::DataRecord(data_record::Response::NotFound);
+                    if request.dataset == d {
+                        data_record::Response::Success {
+                            data_record: DataRecord { slice_hashes },
                         }
+                    } else {
+                        data_record::Response::NotFound
                     }
-
-                    api::Response::DataRecord(data_record::Response::Error(
-                        "Unexpected request".to_string(),
-                    ))
                 }
             }
         });
