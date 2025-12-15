@@ -19,14 +19,14 @@ use hypha_config::{ConfigWithMetadata, ConfigWithMetadataTLSExt, builder, to_tom
 use hypha_data::{
     config::Config, hash::get_file_hash, network::Network, tensor_data::serialize_file,
 };
-use hypha_messages::{DataRecord, health};
+use hypha_messages::{DataRecord, data_record, health};
 use hypha_network::{
     dial::DialInterface, external_address::ExternalAddressInterface, kad::KademliaInterface,
     listen::ListenInterface, request_response::RequestResponseInterfaceExt,
     stream_pull::StreamPullReceiverInterface, swarm::SwarmDriver,
 };
 use hypha_telemetry as telemetry;
-use libp2p::{Multiaddr, kad, multiaddr::Protocol};
+use libp2p::{Multiaddr, multiaddr::Protocol};
 use miette::{IntoDiagnostic, Result};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use tokio::{
@@ -220,7 +220,7 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
     }
 
     let dataset_name = match dataset_path.file_name().and_then(|name| name.to_str()) {
-        Some(name) => Ok(name),
+        Some(name) => Ok(name.to_string()),
         None => Err(miette::miette!("Dataset path is not a directory")),
     }?;
     let dataset_files = match dataset_path.read_dir() {
@@ -251,31 +251,43 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
 
     // Announce our dataset
     tracing::info!(dataset_name, "Announcing");
-    let _ = network.provide(dataset_name).await;
 
-    // Only a single record is stored for this key in the DHT.
-    // I.e. if there are multiple data providers with the same dataset,
-    // we might overwrite an existing record.
-    // For now, we assume that a dataset name is always used for the same record.
-    // With that assumption, overwriting existing records is okay.
-    // We might need to change this in the future.
-    let _ = network
-        .store(kad::Record::new(
-            kad::RecordKey::new(&dataset_name),
-            serde_json::to_vec(&DataRecord {
-                slice_hashes: dataset_hashes.keys().cloned().collect(),
-            })
-            .map_err(|err| miette::miette!("Failed to serialize dataset record: {}", err))?,
-        ))
-        .await;
+    let d = dataset_name.clone();
+    let record_handle = network
+        .on::<data_record::Codec, _>(move |_: &data_record::Request| true)
+        .into_stream()
+        .await
+        .into_diagnostic()?
+        .respond_with_concurrent(None, {
+            let dataset_hashes = dataset_hashes.clone();
+            move |(_, request)| {
+                let d = d.clone();
+                let slice_hashes = dataset_hashes.keys().cloned().collect();
+                async move {
+                    if request.dataset == d {
+                        data_record::Response::Success {
+                            data_record: DataRecord { slice_hashes },
+                        }
+                    } else {
+                        data_record::Response::NotFound
+                    }
+                }
+            }
+        });
+
+    network
+        .provide(dataset_name.as_str())
+        .await
+        .into_diagnostic()?;
 
     let stream_pulls = network.streams_pull().expect("an unregistered pull stream").for_each_concurrent(None, {
         |(peer_id, resource, mut stream)| {
             let dataset_hashes = dataset_hashes.clone();
+            let dataset_name = dataset_name.clone();
             async move {
                 tracing::info!(peer_id = %peer_id, dataset = resource.dataset, slice = resource.hash, "Sending tensor to peer");
 
-                if dataset_name == resource.dataset.as_str() {
+                if dataset_name.as_str() == resource.dataset.as_str() {
                     // Use the provided hash to select a subset of the available dataset files.
                     match dataset_hashes.get(&resource.hash) {
                         None => {
@@ -315,6 +327,9 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
         }
         _ = health_handle => {
             tracing::info!("Health handler terminated, shutting down");
+        }
+        _ = record_handle => {
+            tracing::info!("Data record handler terminated, shutting down");
         }
     }
 

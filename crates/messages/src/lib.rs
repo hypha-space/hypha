@@ -830,3 +830,25 @@ pub struct DataSlice {
     pub dataset: String,
     pub hash: u64,
 }
+
+pub mod data_record {
+    use super::*;
+
+    pub type Codec = CborCodec<Request, Response>;
+
+    pub const IDENTIFIER: &str = "/hypha-data-record/0.0.1";
+
+    /// Worker requests data record from data provider
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct Request {
+        pub dataset: String,
+    }
+
+    /// Data provider responds with data record or error
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub enum Response {
+        Success { data_record: DataRecord },
+        NotFound,
+        Error(String),
+    }
+}

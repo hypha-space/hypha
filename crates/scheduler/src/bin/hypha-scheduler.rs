@@ -11,7 +11,7 @@ use futures_util::{StreamExt, future::join_all};
 use hypha_config::{ConfigWithMetadata, ConfigWithMetadataTLSExt, builder, to_toml};
 use hypha_messages::{
     AggregateExecutorConfig, AggregateExecutorDescriptor, DataRecord, Fetch, JobSpec,
-    TrainExecutorConfig, TrainExecutorDescriptor, WorkerSpec, health,
+    TrainExecutorConfig, TrainExecutorDescriptor, WorkerSpec, data_record, health,
 };
 use hypha_network::{
     cert::identity_from_private_key, dial::DialInterface,
@@ -495,17 +495,31 @@ async fn get_data_providers(
         ));
     }
 
-    let record = network
-        .get(dataset)
+    // If there are multiple data providers for the same dataset, request
+    // its data record from the first one.
+    match network
+        .request::<data_record::Codec>(
+            *providers.iter().next().expect("a data provider"),
+            data_record::Request {
+                dataset: dataset.to_string(),
+            },
+        )
         .await
-        .map_err(|e| miette::miette!("No record found for dataset \"{}\": {}", dataset, e))?;
-
-    match serde_json::from_slice(&record.value) {
-        Ok(dataset_record) => Ok((providers, dataset_record)),
+    {
+        Ok(data_record::Response::Success { data_record }) => Ok((providers, data_record)),
+        Ok(data_record::Response::NotFound) => Err(miette::miette!(
+            "No data record found for dataset \"{}\"",
+            dataset
+        )),
         Err(e) => Err(miette::miette!(
-            "Failed to parse dataset record for dataset \"{}\": {}",
+            "Failed to request data record for dataset \"{}\": {}",
             dataset,
             e
+        )),
+        Ok(response) => Err(miette::miette!(
+            "Unexpected response to data record request for dataset \"{}\": {:?}",
+            dataset,
+            response
         )),
     }
 }
