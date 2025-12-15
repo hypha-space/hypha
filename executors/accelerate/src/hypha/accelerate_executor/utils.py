@@ -119,6 +119,8 @@ def extract_gradients(
         for name in p.keys():  # noqa: SIM118
             # This results in \theta_{t} - \theta_{t-1} = -\nabla
             state_dict[name] -= p.get_tensor(name).to(state_dict[name].dtype)
-            if weight != 1 and "norm" not in name:
+            # We need to filter out the `num_batches_tracked` from BatchNormalization.
+            # Weighting will fail here and its ok to just sum them up.
+            if weight != 1 and "num_batches_tracked" not in name:
                 state_dict[name] *= weight
     return state_dict
