@@ -24,6 +24,7 @@ use tokio::{
     fs,
     io::{self, AsyncWriteExt},
     sync::{Mutex, Notify},
+    task::JoinSet,
 };
 use tokio_retry::{
     Retry,
@@ -530,21 +531,47 @@ async fn broadcast_update(
 ) -> Result<(), Error> {
     let mut writers = connector.send(send).await?;
 
-    loop {
-        let next_item = tokio::select! {
-            _ = cancel.cancelled() => None,
-            item = writers.next() => item,
-        };
+    let mut set = JoinSet::new();
+    let file_path = gradient_file.to_path_buf();
 
-        let Some(item_result) = next_item else {
-            break;
-        };
-        let item = item_result?;
-        tracing::info!(peer_id = item.meta.name, "Sending parameter server update");
-        let mut reader = fs::File::open(gradient_file).await?;
-        let mut writer = item.writer;
-        io::copy(&mut reader, &mut writer).await?;
-        writer.shutdown().await?;
+    while let Some(writer_result) = writers.next().await {
+        let path = file_path.clone();
+        set.spawn(async move {
+            let item = writer_result.map_err(|e| {
+                tracing::error!("Failed to obtain writer: {}", e);
+            })?;
+            tracing::info!(peer_id = item.meta.name, "Sending parameter server update");
+            let mut reader = fs::File::open(path).await.map_err(|e| {
+                tracing::error!("Failed to openfile {}", e);
+            })?;
+            let mut writer = item.writer;
+            io::copy(&mut reader, &mut writer).await.map_err(|e| {
+                tracing::error!("Failed to stream data to {}: {}", item.meta.name, e);
+            })?;
+            writer.shutdown().await.map_err(|e| {
+                tracing::error!("Failed to shutdown writer for {}: {}", item.meta.name, e);
+            })?;
+            Ok::<(), ()>(())
+        });
+    }
+
+    loop {
+        tokio::select! {
+            _ = cancel.cancelled() => {
+                set.shutdown().await;
+                break;
+            }
+            res = set.join_next() => {
+                match res {
+                    Some(task_result) => {
+                        if let Err(e) = task_result {
+                            tracing::warn!("Task join error: {}", e);
+                        }
+                    },
+                    None => break, // All tasks finished
+                }
+            }
+        }
     }
 
     let _ = fs::remove_file(gradient_file).await;
