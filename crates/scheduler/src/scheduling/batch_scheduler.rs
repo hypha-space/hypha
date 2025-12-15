@@ -541,8 +541,49 @@ where
                         })
                     } else {
                         // Log that we are moving to broadcast for this round.
-                        let state = round_state.lock().await;
-                        tracing::info!(round = state.round, "Trigger BroadcastUpdate");
+                        let round = {
+                            let state = round_state.lock().await;
+                            state.round
+                        };
+                        tracing::info!(round = %round, "Trigger BroadcastUpdate");
+
+                        // Reset round state befor completing a broadcast on the primary PS.
+                        // Because workers will directly continue training after receiving
+                        // updates and speed varies. The PS returns after ALL workers
+                        // received their updates.
+                        if Some(peer_id) == primary_ps {
+                            let next_round = {
+                                let mut state = round_state.lock().await;
+
+                                tracing::info!(
+                                    round = state.round,
+                                    "Broadcast completed; advancing round"
+                                );
+
+                                state.sent_updates.clear();
+                                state.first_update_at = None;
+                                state.round = state.round.saturating_add(1);
+
+                                if state.round >= state.update_rounds {
+                                    state.training_complete = true;
+                                    tracing::info!(
+                                        round = state.round,
+                                        target = state.update_rounds,
+                                        "Target update rounds reached; entering completion phase"
+                                    );
+                                }
+
+                                state.round
+                            };
+
+                            let mut training = training_state.lock().await;
+                            training.reset_round();
+                            tracing::info!(
+                                round = next_round,
+                                "Next round started; training state reset"
+                            );
+                        }
+
                         ExecutorAction::Aggregate(AggregateAction::BroadcastUpdate {
                             target: Reference::Peers {
                                 peers: workers,
@@ -558,36 +599,6 @@ where
                     tx.send((peer_id, Metrics { round: 0, metrics }))
                         .await
                         .map_err(BatchSchedulerError::from)?;
-                }
-                // Reset round state after completing a broadcast on the primary PS.
-                if Some(peer_id) == primary_ps {
-                    let next_round = {
-                        let mut state = round_state.lock().await;
-
-                        tracing::info!(round = state.round, "Broadcast completed; advancing round");
-
-                        state.sent_updates.clear();
-                        state.first_update_at = None;
-                        state.round = state.round.saturating_add(1);
-
-                        if state.round >= state.update_rounds {
-                            state.training_complete = true;
-                            tracing::info!(
-                                round = state.round,
-                                target = state.update_rounds,
-                                "Target update rounds reached; entering completion phase"
-                            );
-                        }
-
-                        state.round
-                    };
-
-                    let mut training = training_state.lock().await;
-                    training.reset_round();
-                    tracing::info!(
-                        round = next_round,
-                        "Next round started; training state reset"
-                    );
                 }
 
                 let training_complete = { round_state.lock().await.training_complete };
