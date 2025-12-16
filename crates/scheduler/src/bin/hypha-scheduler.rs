@@ -22,10 +22,10 @@ use hypha_resources::{Resources, WeightedResourceEvaluator};
 use hypha_scheduler::{
     allocator::GreedyWorkerAllocator,
     config::Config,
-    metrics_bridge::{AimConnector, MetricsBridge, NoOpConnector},
+    metrics_bridge::{AimConnector, MetricsBridge, NoOpConnector, OtelConnector},
     network::Network,
     pool::{Pool, PoolConfig, PoolWithStatistics},
-    scheduler_config::Job as SchedulerJob,
+    scheduler_config::{Job as SchedulerJob, MetricsConfig},
     scheduling::{batch_scheduler::BatchScheduler, data_scheduler::DataScheduler},
     simulation::BasicSimulation,
     statistics::RunningMean,
@@ -260,6 +260,7 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
     );
 
     let job_id = Uuid::new_v4();
+    let metrics_job_id = job_id.to_string();
 
     // Control the max allowed batch size.
     let max_batch_size = match diloco_config.rounds.max_batch_size {
@@ -280,8 +281,16 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
         }
     });
 
-    let mut metrics_bridge = match config.status_bridge() {
-        Some(value) => MetricsBridge::new(Box::new(AimConnector::new(value))),
+    let metrics_bridge_cfg = diloco_config.metrics.clone();
+
+    let mut metrics_bridge = match metrics_bridge_cfg {
+        Some(MetricsConfig::Aim { endpoint }) => {
+            MetricsBridge::new(Box::new(AimConnector::new(endpoint)))
+        }
+        Some(MetricsConfig::Otel) => {
+            let meter = telemetry::metrics::global::meter();
+            MetricsBridge::new(Box::new(OtelConnector::new(meter, metrics_job_id.clone())))
+        }
         None => MetricsBridge::new(Box::new(NoOpConnector::new())),
     };
 

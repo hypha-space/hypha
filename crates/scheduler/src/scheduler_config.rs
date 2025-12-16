@@ -1,6 +1,21 @@
+use documented::{Documented, DocumentedFieldsOpt};
 use hypha_messages::{Adam, Fetch, Model, ModelType, Nesterov, Preprocessor, PreprocessorType};
 use hypha_resources::Resources;
 use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Debug, Deserialize, Serialize, Documented, DocumentedFieldsOpt)]
+#[serde(tag = "type", rename_all = "lowercase")]
+/// Metrics configuration for forwarding training metrics.
+///
+/// Selects where training metrics are forwarded:
+/// * `aim` - Send metrics to an AIM relay endpoint (e.g., "0.0.0.0:61000")
+/// * `otel` - Record metrics via the configured OTEL exporter using gauges.
+pub enum MetricsConfig {
+    /// Send metrics to an AIM relay endpoint.
+    Aim { endpoint: String },
+    /// Record metrics via the configured OTEL exporter using gauges.
+    Otel,
+}
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct SchedulerConfig {
@@ -27,6 +42,8 @@ pub struct DiLoCo {
     pub preprocessor: Option<PreprocessorSource>,
     pub dataset: DataNodeSource,
     pub rounds: DiLoCoRounds,
+    #[serde(default)]
+    pub metrics: Option<MetricsConfig>,
     #[serde(rename = "inner_optimizer")]
     pub inner_optimizer: Adam,
     #[serde(rename = "outer_optimizer")]
@@ -85,6 +102,7 @@ impl Default for DiLoCo {
                 avg_samples_between_updates: 1200,
                 max_batch_size: Some(600),
             },
+            metrics: Some(MetricsConfig::Otel),
             inner_optimizer: Adam {
                 learning_rate: 1e-3,
                 betas: None,
