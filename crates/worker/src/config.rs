@@ -13,7 +13,7 @@ use hypha_telemetry::{
 use libp2p::Multiaddr;
 use serde::{Deserialize, Serialize};
 
-#[derive(Deserialize, Serialize, Documented, DocumentedFieldsOpt)]
+#[derive(Clone, Deserialize, Serialize, Documented, DocumentedFieldsOpt)]
 /// Available compute resources advertised to schedulers for job allocation.
 ///
 /// Resources are reserved during job allocation. Configure conservatively to avoid
@@ -192,7 +192,7 @@ impl ExecutorConfig {
     }
 }
 
-#[derive(Deserialize, Serialize, Documented, DocumentedFieldsOpt)]
+#[derive(Clone, Deserialize, Serialize, Documented, DocumentedFieldsOpt)]
 /// Worker configuration for ML job execution and resource management.
 ///
 /// The worker executes ML training and inference jobs assigned by schedulers. It should be

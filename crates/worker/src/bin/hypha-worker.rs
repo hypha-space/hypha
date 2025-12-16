@@ -237,7 +237,7 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
             Connector::new(network.clone()),
             network.clone(),
             work_dir_base,
-            executor_configs,
+            config.config.clone(),
         ),
         worker_resources,
         *config.offer(),

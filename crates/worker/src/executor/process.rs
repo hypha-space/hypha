@@ -1,6 +1,7 @@
 use std::{future::Future, path::PathBuf, pin::Pin, process::Stdio, time::Duration};
 
 use hypha_messages::Executor;
+use hypha_telemetry::otel::KeyValue;
 use libp2p::PeerId;
 use nix::{
     libc::pid_t,
@@ -17,7 +18,7 @@ use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use uuid::Uuid;
 
 use crate::{
-    config::{ExecutorConfig, ExecutorRuntime},
+    config::{Config, ExecutorConfig, ExecutorRuntime},
     connector::Connector,
     executor::{Error, Execution, JobExecutor, bridge::Bridge},
     network::Network,
@@ -28,6 +29,7 @@ pub struct ProcessExecutor {
     network: Network,
     work_dir_base: PathBuf,
     executor_config: ExecutorConfig,
+    config: Config,
 }
 
 pub struct ProcessExecution {
@@ -64,12 +66,14 @@ impl ProcessExecutor {
         network: Network,
         work_dir_base: PathBuf,
         executor_config: ExecutorConfig,
+        config: Config,
     ) -> Self {
         ProcessExecutor {
             connector,
             network,
             work_dir_base,
             executor_config,
+            config,
         }
     }
 }
@@ -135,6 +139,41 @@ impl JobExecutor for ProcessExecutor {
             .env("WORK_DIR", &runtime.work_dir)
             .env("JOB_JSON", &runtime.job_json)
             .stdout(Stdio::piped());
+
+        if let Some(endpoint) = self.config.telemetry_endpoint() {
+            process.env("OTEL_EXPORTER_OTLP_ENDPOINT", endpoint.to_string());
+        }
+
+        if let Some(headers) = self.config.telemetry_headers() {
+            process.env("OTEL_EXPORTER_OTLP_HEADERS", headers.to_string());
+        }
+
+        if let Some(attributes) = self.config.telemetry_attributes() {
+            process.env("OTEL_RESOURCE_ATTRIBUTES", attributes.to_string());
+            // NOTE: Export `service.name` attribute as `OTEL_SERVICE_NAME` env
+            //  for processes not yet supporting OTEL attributes.
+            let kvs: Vec<KeyValue> = attributes.into();
+            if let Some(kv) = kvs.iter().find(|kv| kv.key.as_str() == "service.name") {
+                process.env("OTEL_SERVICE_NAME", kv.value.to_string());
+            }
+        }
+
+        if let Some(protocol) = self.config.telemetry_protocol()
+            && let Ok(s) = serde_json::to_string(&protocol)
+        {
+            process.env("OTEL_EXPORTER_OTLP_PROTOCOL", s.trim_matches('"'));
+        }
+
+        if let Some(sampler) = self.config.telemetry_sampler()
+            && let Ok(s) = serde_json::to_string(&sampler)
+        {
+            process.env("OTEL_TRACES_SAMPLER", s.trim_matches('"'));
+        }
+
+        if let Some(ratio) = self.config.telemetry_sample_ratio() {
+            process.env("OTEL_TRACES_SAMPLER_ARG", ratio.to_string());
+        }
+
         let mut process = process.spawn()?;
 
         let task_tracker = TaskTracker::new();
