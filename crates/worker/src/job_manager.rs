@@ -120,7 +120,7 @@ impl JobManager {
         tracing::info!(job_id = %id, "Job dispatched for execution");
 
         match &spec.executor {
-            Executor::Train(_) => {
+            Executor::Train(_) | Executor::Gymnasium(_) | Executor::RlTrainer(_) => {
                 let descriptor = ExecutorDescriptor::from(&spec.executor);
                 let config = self
                     .find_executor_config(&descriptor)

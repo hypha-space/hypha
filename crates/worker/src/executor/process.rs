@@ -113,7 +113,10 @@ impl JobExecutor for ProcessExecutor {
         _job_id: Uuid,
         scheduler: PeerId,
     ) -> Result<ProcessExecution, Error> {
-        if !matches!(&job.executor, Executor::Train(_)) {
+        if !matches!(
+            &job.executor,
+            Executor::Train(_) | Executor::Gymnasium(_) | Executor::RlTrainer(_)
+        ) {
             return Err(Error::UnsupportedJobSpec());
         }
 

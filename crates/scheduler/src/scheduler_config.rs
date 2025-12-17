@@ -39,6 +39,7 @@ impl Default for SchedulerConfig {
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum Job {
     Diloco(DiLoCo),
+    ReinforcementLearning(ReinforcementLearning),
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
@@ -53,7 +54,7 @@ pub struct DiLoCo {
     #[serde(rename = "outer_optimizer")]
     pub outer_optimizer: Nesterov,
     pub resources: DiLoCoResources,
-    pub model_destination: Option<ModelDestiantion>,
+    pub model_destination: Option<ModelDestination>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, Copy)]
@@ -176,7 +177,7 @@ impl From<ModelSource> for Model {
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
-pub struct ModelDestiantion {
+pub struct ModelDestination {
     pub repository: String,
     pub token: String,
 }
@@ -246,5 +247,35 @@ pub struct DiLoCoResources {
     #[serde(default)]
     pub parameter_server_price: PriceRange,
     pub worker_pool: PoolSettings,
+    pub parameter_server_pool: PoolSettings,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct ReinforcementLearning {
+    pub model: ModelSource,
+    pub preprocessor: Option<PreprocessorSource>,
+    pub environment: String,
+    pub rounds: DiLoCoRounds,
+    #[serde(default)]
+    pub metrics: Option<MetricsConfig>,
+    #[serde(rename = "inner_optimizer")]
+    pub inner_optimizer: Adam,
+    #[serde(rename = "outer_optimizer")]
+    pub outer_optimizer: Nesterov,
+    pub resources: ReinforcementLearningResources,
+    pub model_destination: Option<ModelDestination>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct ReinforcementLearningResources {
+    pub gymnasium_worker: Resources,
+    pub trainer_worker: Resources,
+    pub parameter_server: Resources,
+    #[serde(default)]
+    pub worker_price: PriceRange,
+    #[serde(default)]
+    pub parameter_server_price: PriceRange,
+    pub gymnasium_worker_pool: PoolSettings,
+    pub trainer_worker_pool: PoolSettings,
     pub parameter_server_pool: PoolSettings,
 }

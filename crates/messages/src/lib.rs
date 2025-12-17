@@ -146,6 +146,7 @@ pub mod action {
     pub enum ExecutorAction {
         Train(TrainAction),
         Aggregate(AggregateAction),
+        Gymnasium(GymnasiumAction),
     }
 
     /// Actions targeted at training workers.
@@ -192,6 +193,17 @@ pub mod action {
         Idle { timeout: SystemTime },
         AggregateUpdates { source: Reference },
         BroadcastUpdate { target: Reference },
+        Terminate,
+    }
+
+    /// Actions targeted at RL data generation executors.
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    #[serde(tag = "kind", rename_all = "kebab-case")]
+    pub enum GymnasiumAction {
+        Idle { timeout: SystemTime },
+        Generate { source: Reference },
+        Send { target: Reference },
+        Update {},
         Terminate,
     }
 }
@@ -385,10 +397,18 @@ impl Fetch {
         })
     }
 
-    pub fn scheduler(peer_id: PeerId, daset: String) -> Self {
+    pub fn data_peers(peer_ids: Vec<PeerId>, resource: DataSlice) -> Self {
+        Self(Reference::Peers {
+            peers: peer_ids,
+            strategy: SelectionStrategy::One,
+            resource: Some(resource),
+        })
+    }
+
+    pub fn scheduler(peer_id: PeerId, dataset: String) -> Self {
         Self(Reference::Scheduler {
             peer: peer_id,
-            dataset: daset,
+            dataset,
         })
     }
 }
@@ -586,6 +606,21 @@ pub struct AggregateExecutorConfig {
     pub optimizer: Nesterov,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GymnasiumExecutorConfig {
+    // TODO: Add support for additional optimizeres when needed.
+    pub model: Model,
+    pub environment: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RlTrainerExecutorConfig {
+    // TODO: Add support for additional optimizeres when needed.
+    pub model: Model,
+    pub data: Fetch,
+    pub batch_size: u32,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct TrainExecutorDescriptor {
     name: String,
@@ -643,10 +678,68 @@ impl From<AggregateExecutorDescriptor> for ExecutorDescriptor {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct GymnasiumExecutorDescriptor {
+    name: String,
+}
+
+impl GymnasiumExecutorDescriptor {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self { name: name.into() }
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn into_executor(self, config: GymnasiumExecutorConfig) -> GymnasiumExecutor {
+        GymnasiumExecutor {
+            descriptor: self,
+            config,
+        }
+    }
+}
+
+impl From<GymnasiumExecutorDescriptor> for ExecutorDescriptor {
+    fn from(descriptor: GymnasiumExecutorDescriptor) -> Self {
+        Self::Gymnasium(descriptor.clone())
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct RlTrainerExecutorDescriptor {
+    name: String,
+}
+
+impl RlTrainerExecutorDescriptor {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self { name: name.into() }
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn into_executor(self, config: RlTrainerExecutorConfig) -> RlTrainerExecutor {
+        RlTrainerExecutor {
+            descriptor: self,
+            config,
+        }
+    }
+}
+
+impl From<RlTrainerExecutorDescriptor> for ExecutorDescriptor {
+    fn from(descriptor: RlTrainerExecutorDescriptor) -> Self {
+        Self::RlTrainer(descriptor.clone())
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(tag = "class", rename_all = "kebab-case")]
 pub enum ExecutorDescriptor {
     Train(TrainExecutorDescriptor),
     Aggregate(AggregateExecutorDescriptor),
+    Gymnasium(GymnasiumExecutorDescriptor),
+    RlTrainer(RlTrainerExecutorDescriptor),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -693,12 +786,58 @@ impl From<AggregateExecutor> for Executor {
     }
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GymnasiumExecutor {
+    descriptor: GymnasiumExecutorDescriptor,
+    config: GymnasiumExecutorConfig,
+}
+
+impl GymnasiumExecutor {
+    pub fn descriptor(&self) -> &GymnasiumExecutorDescriptor {
+        &self.descriptor
+    }
+
+    pub fn config(&self) -> &GymnasiumExecutorConfig {
+        &self.config
+    }
+}
+
+impl From<GymnasiumExecutor> for Executor {
+    fn from(executor: GymnasiumExecutor) -> Self {
+        Self::Gymnasium(executor)
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RlTrainerExecutor {
+    descriptor: RlTrainerExecutorDescriptor,
+    config: RlTrainerExecutorConfig,
+}
+
+impl RlTrainerExecutor {
+    pub fn descriptor(&self) -> &RlTrainerExecutorDescriptor {
+        &self.descriptor
+    }
+
+    pub fn config(&self) -> &RlTrainerExecutorConfig {
+        &self.config
+    }
+}
+
+impl From<RlTrainerExecutor> for Executor {
+    fn from(executor: RlTrainerExecutor) -> Self {
+        Self::RlTrainer(executor)
+    }
+}
+
 #[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "class", rename_all = "kebab-case")]
 pub enum Executor {
     Train(TrainExecutor),
     Aggregate(AggregateExecutor),
+    Gymnasium(GymnasiumExecutor),
+    RlTrainer(RlTrainerExecutor),
 }
 
 // NOTE: This is not only to convert an `Executor` into an `ExecutorDescriptor` enum but also
@@ -709,6 +848,12 @@ impl From<&Executor> for ExecutorDescriptor {
             Executor::Train(TrainExecutor { descriptor, .. }) => Self::Train(descriptor.clone()),
             Executor::Aggregate(AggregateExecutor { descriptor, .. }) => {
                 Self::Aggregate(descriptor.clone())
+            }
+            Executor::Gymnasium(GymnasiumExecutor { descriptor, .. }) => {
+                Self::Gymnasium(descriptor.clone())
+            }
+            Executor::RlTrainer(RlTrainerExecutor { descriptor, .. }) => {
+                Self::RlTrainer(descriptor.clone())
             }
         }
     }

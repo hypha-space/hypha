@@ -28,7 +28,7 @@ use crate::{
     metrics_bridge::Metrics,
     network::Network,
     pool::{PoolWithAggregateInfoHandle, PoolWithTrainInfoHandle},
-    scheduler_config::ModelDestiantion,
+    scheduler_config::ModelDestination,
     simulation::Simulation,
     statistics::RuntimeStatistic,
 };
@@ -122,7 +122,7 @@ async fn schedule<T, S>(
     training_state: Arc<Mutex<TrainingState>>,
     batch_sizer: BatchSizer,
     multi_batch_size: u32,
-    push_destination: Arc<Option<ModelDestiantion>>,
+    push_destination: Arc<Option<ModelDestination>>,
     start: std::time::Instant,
     request: (PeerId, action::ActionRequest),
     cancel: CancellationToken,
@@ -877,7 +877,7 @@ impl BatchScheduler {
         grace: Duration,
         samples_between_updates: u32,
         update_rounds: u32,
-        push_destination: Option<ModelDestiantion>,
+        push_destination: Option<ModelDestination>,
         batch_sizer: BatchSizer,
         multi_batch_size: u32,
         cancel: CancellationToken,
@@ -1000,7 +1000,7 @@ mod batch_scheduler_tests {
             Pool, PoolConfig, PoolWithAggregateInfo, PoolWithAggregateInfoHandle,
             PoolWithTrainInfo, PoolWithTrainInfoHandle,
         },
-        scheduler_config::{ModelDestiantion, PriceRange},
+        scheduler_config::{ModelDestination, PriceRange},
         simulation::BasicSimulation,
         statistics::{RunningMean, RuntimeStatistic},
         worker::{TestWorkerBuilder, Worker, WorkerError},
@@ -1432,7 +1432,7 @@ mod batch_scheduler_tests {
         }));
         let training_state = Arc::new(tokio::sync::Mutex::new(TrainingState::new(1)));
         let batch_sizer = Arc::new(|_: &Resources| 1u32);
-        let push_destination = Arc::new(Some(ModelDestiantion {
+        let push_destination = Arc::new(Some(ModelDestination {
             repository: "hf/repo".to_string(),
             token: "token".to_string(),
         }));
@@ -1453,7 +1453,7 @@ mod batch_scheduler_tests {
             round_state: Arc<tokio::sync::Mutex<RoundState>>,
             training_state: Arc<tokio::sync::Mutex<TrainingState>>,
             batch_sizer: Arc<dyn Fn(&Resources) -> u32 + Send + Sync>,
-            push_destination: Arc<Option<ModelDestiantion>>,
+            push_destination: Arc<Option<ModelDestination>>,
             start: Instant,
             tx: Sender<(PeerId, Metrics)>,
             token: CancellationToken,
@@ -1890,7 +1890,7 @@ mod batch_scheduler_tests {
             round_state: Arc<tokio::sync::Mutex<RoundState>>,
             training_state: Arc<tokio::sync::Mutex<TrainingState>>,
             batch_sizer: Arc<dyn Fn(&Resources) -> u32 + Send + Sync>,
-            push_destination: Arc<Option<ModelDestiantion>>,
+            push_destination: Arc<Option<ModelDestination>>,
             start: Instant,
             tx: Sender<(PeerId, Metrics)>,
             token: CancellationToken,
@@ -2263,7 +2263,7 @@ mod batch_scheduler_tests {
             round_state: Arc<tokio::sync::Mutex<RoundState>>,
             training_state: Arc<tokio::sync::Mutex<TrainingState>>,
             batch_sizer: Arc<dyn Fn(&Resources) -> u32 + Send + Sync>,
-            push_destination: Arc<Option<ModelDestiantion>>,
+            push_destination: Arc<Option<ModelDestination>>,
             start: Instant,
             tx: Sender<(PeerId, Metrics)>,
             token: CancellationToken,

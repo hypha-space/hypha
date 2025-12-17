@@ -1,6 +1,6 @@
 //! Scheduler binary.
 
-use std::{collections::HashSet, fs, path::PathBuf, sync::Arc, time::Duration};
+use std::{collections::HashSet, fs, path::PathBuf, pin::Pin, sync::Arc, time::Duration};
 
 use clap::Parser;
 use figment::{
@@ -10,8 +10,10 @@ use figment::{
 use futures_util::{StreamExt, future::join_all};
 use hypha_config::{ConfigWithMetadata, ConfigWithMetadataTLSExt, builder, to_toml};
 use hypha_messages::{
-    AggregateExecutorConfig, AggregateExecutorDescriptor, DataRecord, Fetch, JobSpec,
-    TrainExecutorConfig, TrainExecutorDescriptor, WorkerSpec, data_record, health,
+    AggregateExecutorConfig, AggregateExecutorDescriptor, DataRecord, DataSlice, Fetch,
+    GymnasiumExecutorConfig, GymnasiumExecutorDescriptor, JobSpec, RlTrainerExecutorConfig,
+    RlTrainerExecutorDescriptor, TrainExecutorConfig, TrainExecutorDescriptor, WorkerSpec,
+    data_record, health,
 };
 use hypha_network::{
     cert::identity_from_private_key, dial::DialInterface,
@@ -49,6 +51,8 @@ use uuid::Uuid;
 
 const TRAIN_EXECUTOR_NAME: &str = "diloco-transformer";
 const PARAMETER_SERVER_EXECUTOR_NAME: &str = "parameter-server";
+const GYMNASIUM_EXECUTOR_NAME: &str = "gymnasium";
+const RL_TRAINER_EXECUTOR_NAME: &str = "rl-trainer";
 
 #[path = "../cli.rs"]
 mod cli;
@@ -210,242 +214,601 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
 
     let token = CancellationToken::new();
 
-    let SchedulerJob::Diloco(diloco_config) = &config.scheduler_config().job;
+    let abort_future: Pin<Box<dyn Future<Output = ()>>> = match &config.scheduler_config().job {
+        SchedulerJob::Diloco(diloco_config) => {
+            let worker_spec = WorkerSpec {
+                resources: diloco_config.resources.worker,
+                executor: vec![TrainExecutorDescriptor::new(TRAIN_EXECUTOR_NAME).into()],
+            };
 
-    let worker_spec = WorkerSpec {
-        resources: diloco_config.resources.worker,
-        executor: vec![TrainExecutorDescriptor::new(TRAIN_EXECUTOR_NAME).into()],
-    };
+            let parameter_server_spec = WorkerSpec {
+                resources: diloco_config.resources.parameter_server,
+                executor: vec![
+                    AggregateExecutorDescriptor::new(PARAMETER_SERVER_EXECUTOR_NAME).into(),
+                ],
+            };
 
-    let parameter_server_spec = WorkerSpec {
-        resources: diloco_config.resources.parameter_server,
-        executor: vec![AggregateExecutorDescriptor::new(PARAMETER_SERVER_EXECUTOR_NAME).into()],
-    };
+            let worker_price = diloco_config.resources.worker_price;
+            let parameter_server_price = diloco_config.resources.parameter_server_price;
 
-    let worker_price = diloco_config.resources.worker_price;
-    let parameter_server_price = diloco_config.resources.parameter_server_price;
+            let worker_pool = PoolWithTrainInfo::<RunningMean>::new(Pool::new(
+                GreedyWorkerAllocator::new(network.clone(), WeightedResourceEvaluator::default()),
+                PoolConfig {
+                    name: "workers".into(),
+                    spec: worker_spec.clone(),
+                    price: worker_price,
+                    min: diloco_config.resources.worker_pool.min as usize,
+                    target: diloco_config.resources.worker_pool.target as usize,
+                    grace: Duration::from_millis(diloco_config.resources.worker_pool.grace_ms),
+                },
+            ));
+            let worker_handle = worker_pool.handle();
 
-    let worker_pool = PoolWithTrainInfo::<RunningMean>::new(Pool::new(
-        GreedyWorkerAllocator::new(network.clone(), WeightedResourceEvaluator::default()),
-        PoolConfig {
-            name: "workers".into(),
-            spec: worker_spec.clone(),
-            price: worker_price,
-            min: diloco_config.resources.worker_pool.min as usize,
-            target: diloco_config.resources.worker_pool.target as usize,
-            grace: Duration::from_millis(diloco_config.resources.worker_pool.grace_ms),
-        },
-    ));
-    let worker_handle = worker_pool.handle();
+            let parameter_pool = PoolWithAggregateInfo::new(Pool::new(
+                GreedyWorkerAllocator::new(network.clone(), WeightedResourceEvaluator::default()),
+                PoolConfig {
+                    name: "parameter-servers".into(),
+                    spec: parameter_server_spec.clone(),
+                    price: parameter_server_price,
+                    min: diloco_config.resources.parameter_server_pool.min as usize,
+                    target: diloco_config.resources.parameter_server_pool.target as usize,
+                    grace: Duration::from_millis(
+                        diloco_config.resources.parameter_server_pool.grace_ms,
+                    ),
+                },
+            ));
+            let parameter_handle = parameter_pool.handle();
 
-    let parameter_pool = PoolWithAggregateInfo::new(Pool::new(
-        GreedyWorkerAllocator::new(network.clone(), WeightedResourceEvaluator::default()),
-        PoolConfig {
-            name: "parameter-servers".into(),
-            spec: parameter_server_spec.clone(),
-            price: parameter_server_price,
-            min: diloco_config.resources.parameter_server_pool.min as usize,
-            target: diloco_config.resources.parameter_server_pool.target as usize,
-            grace: Duration::from_millis(diloco_config.resources.parameter_server_pool.grace_ms),
-        },
-    ));
-    let parameter_handle = parameter_pool.handle();
+            let dataset = diloco_config.dataset.dataset.clone();
+            let (data_providers, dataset_record) =
+                get_data_providers(&network, dataset.as_str()).await?;
 
-    let dataset = diloco_config.dataset.dataset.clone();
-    let (data_providers, dataset_record) = get_data_providers(&network, dataset.as_str()).await?;
+            let data_scheduler = DataScheduler::new(
+                network.clone(),
+                data_providers,
+                dataset.clone(),
+                dataset_record.slice_hashes,
+            );
 
-    let data_scheduler = DataScheduler::new(
-        network.clone(),
-        data_providers,
-        dataset.clone(),
-        dataset_record.slice_hashes,
-    );
+            let tracker_task = tokio::spawn(
+                data_scheduler
+                    .run(token.clone())
+                    .await
+                    .expect("network ready"),
+            );
 
-    let tracker_task = tokio::spawn(
-        data_scheduler
-            .run(token.clone())
-            .await
-            .expect("network ready"),
-    );
+            let job_id = Uuid::new_v4();
+            let metrics_job_id = job_id.to_string();
 
-    let job_id = Uuid::new_v4();
-    let metrics_job_id = job_id.to_string();
-
-    // Control the max allowed batch size.
-    let max_batch_size = match diloco_config.rounds.max_batch_size {
-        Some(bs) => bs as f64,
-        _ => f64::MAX,
-    };
-    let base_gpu = worker_spec.resources.gpu();
-    let max_batch_size_cfg = diloco_config.rounds.max_batch_size;
-    let batch_sizer = Arc::new(move |resources: &Resources| {
-        let raw = if base_gpu > 0.0 {
-            (resources.gpu() / base_gpu).floor() as u32
-        } else {
-            0
-        };
-        match max_batch_size_cfg {
-            Some(max) => raw.min(max),
-            None => raw,
-        }
-    });
-
-    let metrics_bridge_cfg = diloco_config.metrics.clone();
-
-    let connectors: Vec<_> = metrics_bridge_cfg
-        .into_iter()
-        .map(
-            |cfg: MetricsConfig| -> Box<dyn hypha_scheduler::metrics_bridge::Connector> {
-                match cfg {
-                    MetricsConfig::Otel => {
-                        let meter = telemetry::metrics::global::meter();
-                        Box::new(OtelConnector::new(meter, metrics_job_id.clone()))
-                    }
-                    MetricsConfig::Csv { path } => Box::new(CsvConnector::new(PathBuf::from(path))),
-                    MetricsConfig::Jsonl { path } => {
-                        Box::new(JsonlConnector::new(PathBuf::from(path)))
-                    }
+            // Control the max allowed batch size.
+            let max_batch_size = match diloco_config.rounds.max_batch_size {
+                Some(bs) => bs as f64,
+                _ => f64::MAX,
+            };
+            let base_gpu = worker_spec.resources.gpu();
+            let max_batch_size_cfg = diloco_config.rounds.max_batch_size;
+            let batch_sizer = Arc::new(move |resources: &Resources| {
+                let raw = if base_gpu > 0.0 {
+                    (resources.gpu() / base_gpu).floor() as u32
+                } else {
+                    0
+                };
+                match max_batch_size_cfg {
+                    Some(max) => raw.min(max),
+                    None => raw,
                 }
-            },
-        )
-        .collect();
+            });
 
-    let mut metrics_bridge = MetricsBridge::new(connectors);
+            let metrics_bridge_cfg = diloco_config.metrics.clone();
 
-    // Spawn dispatcher for parameter servers.
-    let parameter_dispatcher = {
-        let network = network.clone();
-        let diloco_config = diloco_config.clone();
-
-        tokio::spawn(parameter_pool.for_each_concurrent(None, move |parameter_server| {
-            let network = network.clone();
-            let diloco_config = diloco_config.clone();
-
-            async move {
-                match parameter_server {
-                    Ok(parameter_server) => {
-                        tracing::debug!(%job_id, peer_id = %parameter_server.peer_id, "Parameter server started");
-
-                        let job_spec = JobSpec {
-                            job_id,
-                            executor: AggregateExecutorDescriptor::new(
-                                PARAMETER_SERVER_EXECUTOR_NAME,
-                            )
-                            .into_executor(AggregateExecutorConfig {
-                                optimizer: diloco_config.outer_optimizer.clone(),
-                            })
-                            .into(),
-                        };
-
-                        match Task::try_new(network, job_spec, &[parameter_server.peer_id]).await {
-                            Ok(task) => {
-                                tracing::debug!(%job_id, peer_id = %parameter_server.peer_id,
-                                    "Dispatched parameter server job");
-                                tokio::spawn(task.for_each(|_| async {}));
+            let connectors: Vec<_> = metrics_bridge_cfg
+                .into_iter()
+                .map(
+                    |cfg| -> Box<dyn hypha_scheduler::metrics_bridge::Connector> {
+                        match cfg {
+                            MetricsConfig::Otel => {
+                                let meter = telemetry::metrics::global::meter();
+                                Box::new(OtelConnector::new(meter, metrics_job_id.clone()))
                             }
-                            Err(e) => {
-                                tracing::warn!(
-                                    error = %e,
-                                    %job_id,
-                                    peer_id = %parameter_server.peer_id,
-                                    "Failed to dispatch parameter server job"
-                                );
+                            MetricsConfig::Csv { path } => {
+                                Box::new(CsvConnector::new(PathBuf::from(path)))
+                            }
+                            MetricsConfig::Jsonl { path } => {
+                                Box::new(JsonlConnector::new(PathBuf::from(path)))
                             }
                         }
-                    }
-                    Err(e) => tracing::error!(error=?e, "Worker failed"),
-                }
-            }
-        }))
-    };
+                    },
+                )
+                .collect();
 
-    // Spawn dispatcher for workers.
-    let worker_dispatcher = {
-        let network = network.clone();
-        let diloco_config = diloco_config.clone();
-        let worker_spec = worker_spec.clone();
-        let dataset = dataset.clone();
+            let mut metrics_bridge = MetricsBridge::new(connectors);
 
-        tokio::spawn(worker_pool.for_each_concurrent(None, move |worker| {
-            let network = network.clone();
-            let diloco_config = diloco_config.clone();
-            let worker_spec = worker_spec.clone();
-            let dataset = dataset.clone();
+            // Spawn dispatcher for parameter servers.
+            let parameter_dispatcher = {
+                let network = network.clone();
+                let diloco_config = diloco_config.clone();
 
-            async move {
-                match worker {
-                    Ok(worker) => {
-                        tracing::debug!(%job_id, peer_id = %worker.peer_id, "Worker started");
+                tokio::spawn(parameter_pool.for_each_concurrent(None, move |parameter_server| {
+                    let network = network.clone();
+                    let diloco_config = diloco_config.clone();
 
-                        let batch_size = (worker.resources.gpu() / worker_spec.resources.gpu())
-                            .floor()
-                            .min(max_batch_size) as u32;
+                    async move {
+                        match parameter_server {
+                            Ok(parameter_server) => {
+                                tracing::debug!(%job_id, peer_id = %parameter_server.peer_id, "Parameter server started");
 
-                        let job_spec = JobSpec {
-                            job_id,
-                            executor: TrainExecutorDescriptor::new(TRAIN_EXECUTOR_NAME)
-                                .into_executor(TrainExecutorConfig {
-                                    model: diloco_config.model.clone().into(),
-                                    data: Fetch::scheduler(peer_id, dataset.clone()),
-                                    optimizer: diloco_config.inner_optimizer.clone(),
-                                    batch_size,
-                                    preprocessor: diloco_config
-                                        .preprocessor
-                                        .clone()
-                                        .map(|p| p.into()),
-                                    scheduler: None,
-                                })
-                                .into(),
-                        };
+                                let job_spec = JobSpec {
+                                    job_id,
+                                    executor: AggregateExecutorDescriptor::new(
+                                        PARAMETER_SERVER_EXECUTOR_NAME,
+                                    )
+                                    .into_executor(AggregateExecutorConfig {
+                                        optimizer: diloco_config.outer_optimizer.clone(),
+                                    })
+                                    .into(),
+                                };
 
-                        match Task::try_new(network, job_spec, &[worker.peer_id]).await {
-                            Ok(task) => {
-                                tracing::debug!(%job_id, peer_id = %worker.peer_id,
-                                    "Dispatched worker job");
-                                tokio::spawn(task.for_each(|_| async {}));
+                                match Task::try_new(network, job_spec, &[parameter_server.peer_id]).await {
+                                    Ok(task) => {
+                                        tracing::debug!(%job_id, peer_id = %parameter_server.peer_id,
+                                            "Dispatched parameter server job");
+                                        tokio::spawn(task.for_each(|_| async {}));
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            error = %e,
+                                            %job_id,
+                                            peer_id = %parameter_server.peer_id,
+                                            "Failed to dispatch parameter server job"
+                                        );
+                                    }
+                                }
                             }
-                            Err(e) => {
-                                tracing::warn!(
-                                    error = %e,
-                                    %job_id,
-                                    peer_id = %worker.peer_id,
-                                    "Failed to dispatch worker job"
-                                );
-                            }
+                            Err(e) => tracing::error!(error=?e, "Worker failed"),
                         }
                     }
-                    Err(e) => tracing::error!(error=?e, "💥 Worker failed"),
+                }))
+            };
+
+            // Spawn dispatcher for workers.
+            let worker_dispatcher = {
+                let network = network.clone();
+                let diloco_config = diloco_config.clone();
+                let worker_spec = worker_spec.clone();
+                let dataset = dataset.clone();
+
+                tokio::spawn(worker_pool.for_each_concurrent(None, move |worker| {
+                    let network = network.clone();
+                    let diloco_config = diloco_config.clone();
+                    let worker_spec = worker_spec.clone();
+                    let dataset = dataset.clone();
+
+                    async move {
+                        match worker {
+                            Ok(worker) => {
+                                tracing::debug!(%job_id, peer_id = %worker.peer_id, "Worker started");
+
+                                let batch_size = (worker.resources.gpu() / worker_spec.resources.gpu())
+                                    .floor()
+                                    .min(max_batch_size) as u32;
+
+                                let job_spec = JobSpec {
+                                    job_id,
+                                    executor: TrainExecutorDescriptor::new(TRAIN_EXECUTOR_NAME)
+                                        .into_executor(TrainExecutorConfig {
+                                            model: diloco_config.model.clone().into(),
+                                            data: Fetch::scheduler(peer_id, dataset.clone()),
+                                            optimizer: diloco_config.inner_optimizer.clone(),
+                                            batch_size,
+                                            preprocessor: diloco_config
+                                                .preprocessor
+                                                .clone()
+                                                .map(|p| p.into()),
+                                            scheduler: None,
+                                        })
+                                        .into(),
+                                };
+
+                                match Task::try_new(network, job_spec, &[worker.peer_id]).await {
+                                    Ok(task) => {
+                                        tracing::debug!(%job_id, peer_id = %worker.peer_id,
+                                            "Dispatched worker job");
+                                        tokio::spawn(task.for_each(|_| async {}));
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            error = %e,
+                                            %job_id,
+                                            peer_id = %worker.peer_id,
+                                            "Failed to dispatch worker job"
+                                        );
+                                    }
+                                }
+                            }
+                            Err(e) => tracing::error!(error=?e, "💥 Worker failed"),
+                        }
+                    }
+                }))
+            };
+
+            let (metrics_rx, batch_scheduler_handle) =
+                BatchScheduler::run::<RunningMean, BasicSimulation>(
+                    network.clone(),
+                    worker_handle.clone(),
+                    parameter_handle.clone(),
+                    job_id,
+                    diloco_config.resources.worker_pool.min as usize,
+                    Duration::from_millis(diloco_config.resources.worker_pool.grace_ms),
+                    diloco_config.rounds.avg_samples_between_updates,
+                    diloco_config.rounds.update_rounds,
+                    diloco_config.model_destination.clone(),
+                    batch_sizer.clone(),
+                    diloco_config.rounds.multi_batch_size,
+                    token.clone(),
+                )
+                .await
+                .into_diagnostic()?;
+
+            metrics_bridge.register_stream(ReceiverStream::new(metrics_rx));
+
+            let cancel_token = token.clone();
+            let status_handle = tokio::spawn(async move {
+                if let Err(e) = metrics_bridge.run(cancel_token).await {
+                    tracing::error!(error = %e, "Status bridge failed");
                 }
-            }
-        }))
-    };
+            });
 
-    let (metrics_rx, mut batch_scheduler_handle) =
-        BatchScheduler::run::<RunningMean, BasicSimulation>(
-            network.clone(),
-            worker_handle.clone(),
-            parameter_handle.clone(),
-            job_id,
-            diloco_config.resources.worker_pool.min as usize,
-            Duration::from_millis(diloco_config.resources.worker_pool.grace_ms),
-            diloco_config.rounds.avg_samples_between_updates,
-            diloco_config.rounds.update_rounds,
-            diloco_config.model_destination.clone(),
-            batch_sizer.clone(),
-            diloco_config.rounds.multi_batch_size,
-            token.clone(),
-        )
-        .await
-        .into_diagnostic()?;
+            let abort_future = Box::pin(async move {
+                if !batch_scheduler_handle.is_finished() {
+                    batch_scheduler_handle.abort();
+                }
+                let _ = batch_scheduler_handle.await;
 
-    metrics_bridge.register_stream(ReceiverStream::new(metrics_rx));
+                if !parameter_dispatcher.is_finished() {
+                    parameter_dispatcher.abort();
+                }
+                let _ = parameter_dispatcher.await;
 
-    let cancel_token = token.clone();
-    let mut status_handle = tokio::spawn(async move {
-        if let Err(e) = metrics_bridge.run(cancel_token).await {
-            tracing::error!(error = %e, "Status bridge failed");
+                if !worker_dispatcher.is_finished() {
+                    worker_dispatcher.abort();
+                }
+                let _ = worker_dispatcher.await;
+
+                if !status_handle.is_finished() {
+                    status_handle.abort();
+                }
+                let _ = status_handle.await;
+
+                if !tracker_task.is_finished() {
+                    tracker_task.abort();
+                }
+                let _ = tracker_task.await;
+            });
+
+            abort_future
         }
-    });
+        SchedulerJob::ReinforcementLearning(rl_config) => {
+            let gymnasium_worker_spec = WorkerSpec {
+                resources: rl_config.resources.gymnasium_worker,
+                executor: vec![GymnasiumExecutorDescriptor::new(GYMNASIUM_EXECUTOR_NAME).into()],
+            };
+
+            let trainer_worker_spec = WorkerSpec {
+                resources: rl_config.resources.trainer_worker,
+                executor: vec![RlTrainerExecutorDescriptor::new(RL_TRAINER_EXECUTOR_NAME).into()],
+            };
+
+            let parameter_server_spec = WorkerSpec {
+                resources: rl_config.resources.parameter_server,
+                executor: vec![
+                    AggregateExecutorDescriptor::new(PARAMETER_SERVER_EXECUTOR_NAME).into(),
+                ],
+            };
+
+            let worker_price = rl_config.resources.worker_price;
+            let parameter_server_price = rl_config.resources.parameter_server_price;
+
+            let gymnasium_worker_pool = PoolWithTrainInfo::<RunningMean>::new(Pool::new(
+                GreedyWorkerAllocator::new(network.clone(), WeightedResourceEvaluator::default()),
+                PoolConfig {
+                    name: "gymnasium-workers".into(),
+                    spec: gymnasium_worker_spec.clone(),
+                    price: worker_price,
+                    min: rl_config.resources.gymnasium_worker_pool.min as usize,
+                    target: rl_config.resources.gymnasium_worker_pool.target as usize,
+                    grace: Duration::from_millis(
+                        rl_config.resources.gymnasium_worker_pool.grace_ms,
+                    ),
+                },
+            ));
+            let gymnasium_worker_handle = gymnasium_worker_pool.handle();
+
+            let trainer_worker_pool = PoolWithTrainInfo::<RunningMean>::new(Pool::new(
+                GreedyWorkerAllocator::new(network.clone(), WeightedResourceEvaluator::default()),
+                PoolConfig {
+                    name: "trainer-workers".into(),
+                    spec: trainer_worker_spec.clone(),
+                    price: worker_price,
+                    min: rl_config.resources.trainer_worker_pool.min as usize,
+                    target: rl_config.resources.trainer_worker_pool.target as usize,
+                    grace: Duration::from_millis(rl_config.resources.trainer_worker_pool.grace_ms),
+                },
+            ));
+            let trainer_worker_handle = trainer_worker_pool.handle();
+
+            let parameter_pool = PoolWithAggregateInfo::new(Pool::new(
+                GreedyWorkerAllocator::new(network.clone(), WeightedResourceEvaluator::default()),
+                PoolConfig {
+                    name: "parameter-servers".into(),
+                    spec: parameter_server_spec.clone(),
+                    price: parameter_server_price,
+                    min: rl_config.resources.parameter_server_pool.min as usize,
+                    target: rl_config.resources.parameter_server_pool.target as usize,
+                    grace: Duration::from_millis(
+                        rl_config.resources.parameter_server_pool.grace_ms,
+                    ),
+                },
+            ));
+            let parameter_handle = parameter_pool.handle();
+
+            let job_id = Uuid::new_v4();
+            let metrics_job_id = job_id.to_string();
+
+            // Control the max allowed batch size.
+            let max_batch_size = match rl_config.rounds.max_batch_size {
+                Some(bs) => bs as f64,
+                _ => f64::MAX,
+            };
+            let base_gpu = trainer_worker_spec.resources.gpu();
+            let max_batch_size_cfg = rl_config.rounds.max_batch_size;
+            let batch_sizer = Arc::new(move |resources: &Resources| {
+                let raw = if base_gpu > 0.0 {
+                    (resources.gpu() / base_gpu).floor() as u32
+                } else {
+                    0
+                };
+                match max_batch_size_cfg {
+                    Some(max) => raw.min(max),
+                    None => raw,
+                }
+            });
+
+            let metrics_bridge_cfg = rl_config.metrics.clone();
+
+            let connectors: Vec<_> = metrics_bridge_cfg
+                .into_iter()
+                .map(
+                    |cfg| -> Box<dyn hypha_scheduler::metrics_bridge::Connector> {
+                        match cfg {
+                            MetricsConfig::Otel => {
+                                let meter = telemetry::metrics::global::meter();
+                                Box::new(OtelConnector::new(meter, metrics_job_id.clone()))
+                            }
+                            MetricsConfig::Csv { path } => {
+                                Box::new(CsvConnector::new(PathBuf::from(path)))
+                            }
+                            MetricsConfig::Jsonl { path } => {
+                                Box::new(JsonlConnector::new(PathBuf::from(path)))
+                            }
+                        }
+                    },
+                )
+                .collect();
+
+            let mut metrics_bridge = MetricsBridge::new(connectors);
+
+            // Spawn dispatcher for parameter servers.
+            let parameter_dispatcher = {
+                let network = network.clone();
+                let rl_config = rl_config.clone();
+
+                tokio::spawn(parameter_pool.for_each_concurrent(None, move |parameter_server| {
+                    let network = network.clone();
+                    let rl_config = rl_config.clone();
+
+                    async move {
+                        match parameter_server {
+                            Ok(parameter_server) => {
+                                tracing::debug!(%job_id, peer_id = %parameter_server.peer_id, "Parameter server started");
+
+                                let job_spec = JobSpec {
+                                    job_id,
+                                    executor: AggregateExecutorDescriptor::new(
+                                        PARAMETER_SERVER_EXECUTOR_NAME,
+                                    )
+                                    .into_executor(AggregateExecutorConfig {
+                                        optimizer: rl_config.outer_optimizer.clone(),
+                                    })
+                                    .into(),
+                                };
+
+                                match Task::try_new(network, job_spec, &[parameter_server.peer_id]).await {
+                                    Ok(task) => {
+                                        tracing::debug!(%job_id, peer_id = %parameter_server.peer_id,
+                                            "Dispatched parameter server job");
+                                        tokio::spawn(task.for_each(|_| async {}));
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            error = %e,
+                                            %job_id,
+                                            peer_id = %parameter_server.peer_id,
+                                            "Failed to dispatch parameter server job"
+                                        );
+                                    }
+                                }
+                            }
+                            Err(e) => tracing::error!(error=?e, "Worker failed"),
+                        }
+                    }
+                }))
+            };
+
+            // Spawn dispatcher for workers.
+            let gymnasium_worker_dispatcher = {
+                let network = network.clone();
+                let rl_config = rl_config.clone();
+                let worker_spec = gymnasium_worker_spec.clone();
+
+                tokio::spawn(gymnasium_worker_pool.for_each_concurrent(None, move |worker| {
+                    let network = network.clone();
+                    let rl_config = rl_config.clone();
+                    let worker_spec = worker_spec.clone();
+
+                    async move {
+                        match worker {
+                            Ok(worker) => {
+                                tracing::debug!(%job_id, peer_id = %worker.peer_id, "Worker started");
+
+                                let _batch_size = (worker.resources.gpu() / worker_spec.resources.gpu())
+                                    .floor()
+                                    .min(max_batch_size) as u32;
+
+                                let job_spec = JobSpec {
+                                    job_id,
+                                    executor: GymnasiumExecutorDescriptor::new(GYMNASIUM_EXECUTOR_NAME)
+                                        .into_executor(GymnasiumExecutorConfig {
+                                            model: rl_config.model.clone().into(),
+                                            environment: rl_config.environment.clone(),
+                                        })
+                                        .into(),
+                                };
+
+                                match Task::try_new(network, job_spec, &[worker.peer_id]).await {
+                                    Ok(task) => {
+                                        tracing::debug!(%job_id, peer_id = %worker.peer_id,
+                                            "Dispatched worker job");
+                                        tokio::spawn(task.for_each(|_| async {}));
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            error = %e,
+                                            %job_id,
+                                            peer_id = %worker.peer_id,
+                                            "Failed to dispatch worker job"
+                                        );
+                                    }
+                                }
+                            }
+                            Err(e) => tracing::error!(error=?e, "💥 Worker failed"),
+                        }
+                    }
+                }))
+            };
+
+            let trainer_worker_dispatcher = {
+                let network = network.clone();
+                let rl_config = rl_config.clone();
+                let worker_spec = trainer_worker_spec.clone();
+
+                tokio::spawn(trainer_worker_pool.for_each_concurrent(None, move |worker| {
+                    let network = network.clone();
+                    let rl_config = rl_config.clone();
+                    let worker_spec = worker_spec.clone();
+                    let gymnasium_worker_pool = gymnasium_worker_handle.clone();
+
+                    async move {
+                        match worker {
+                            Ok(worker) => {
+                                tracing::debug!(%job_id, peer_id = %worker.peer_id, "Worker started");
+
+                                let batch_size = (worker.resources.gpu() / worker_spec.resources.gpu())
+                                    .floor()
+                                    .min(max_batch_size) as u32;
+
+                                let job_spec = JobSpec {
+                                    job_id,
+                                    executor: RlTrainerExecutorDescriptor::new(RL_TRAINER_EXECUTOR_NAME)
+                                        .into_executor(RlTrainerExecutorConfig {
+                                            model: rl_config.model.clone().into(),
+                                            data: Fetch::data_peers(
+                                                gymnasium_worker_pool.members().iter().map(|worker| worker.peer_id).collect(),
+                                                DataSlice {dataset: "foo".to_string(), hash: 0},
+                                            ),
+                                            batch_size,
+                                        })
+                                        .into(),
+                                };
+
+                                match Task::try_new(network, job_spec, &[worker.peer_id]).await {
+                                    Ok(task) => {
+                                        tracing::debug!(%job_id, peer_id = %worker.peer_id,
+                                            "Dispatched worker job");
+                                        tokio::spawn(task.for_each(|_| async {}));
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            error = %e,
+                                            %job_id,
+                                            peer_id = %worker.peer_id,
+                                            "Failed to dispatch worker job"
+                                        );
+                                    }
+                                }
+                            }
+                            Err(e) => tracing::error!(error=?e, "💥 Worker failed"),
+                        }
+                    }
+                }))
+            };
+
+            let (metrics_rx, batch_scheduler_handle) =
+                BatchScheduler::run::<RunningMean, BasicSimulation>(
+                    network.clone(),
+                    trainer_worker_handle.clone(),
+                    parameter_handle.clone(),
+                    job_id,
+                    rl_config.resources.trainer_worker_pool.min as usize,
+                    Duration::from_millis(rl_config.resources.trainer_worker_pool.grace_ms),
+                    rl_config.rounds.avg_samples_between_updates,
+                    rl_config.rounds.update_rounds,
+                    rl_config.model_destination.clone(),
+                    batch_sizer.clone(),
+                    rl_config.rounds.multi_batch_size,
+                    token.clone(),
+                )
+                .await
+                .into_diagnostic()?;
+
+            metrics_bridge.register_stream(ReceiverStream::new(metrics_rx));
+
+            let cancel_token = token.clone();
+            let status_handle = tokio::spawn(async move {
+                if let Err(e) = metrics_bridge.run(cancel_token).await {
+                    tracing::error!(error = %e, "Status bridge failed");
+                }
+            });
+
+            let abort_future = Box::pin(async move {
+                if !batch_scheduler_handle.is_finished() {
+                    batch_scheduler_handle.abort();
+                }
+                let _ = batch_scheduler_handle.await;
+
+                if !parameter_dispatcher.is_finished() {
+                    parameter_dispatcher.abort();
+                }
+                let _ = parameter_dispatcher.await;
+
+                if !gymnasium_worker_dispatcher.is_finished() {
+                    gymnasium_worker_dispatcher.abort();
+                }
+                let _ = gymnasium_worker_dispatcher.await;
+
+                if !trainer_worker_dispatcher.is_finished() {
+                    trainer_worker_dispatcher.abort();
+                }
+                let _ = trainer_worker_dispatcher.await;
+
+                if !status_handle.is_finished() {
+                    status_handle.abort();
+                }
+                let _ = status_handle.await;
+            });
+
+            abort_future
+        }
+    };
 
     // Wait for Ctrl-C or driver termination.
     tokio::select! {
@@ -455,12 +818,12 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
         _ = &mut driver_task => {
             tracing::warn!("Network driver terminated, shutting down");
         }
-        _ = &mut status_handle => {
-            tracing::error!("Status bridge terminated, shutting down");
-        }
-        _ = &mut batch_scheduler_handle => {
-            tracing::info!("Batch scheduler finished, shutting down");
-        }
+        // _ = &mut status_handle => {
+        //     tracing::error!("Status bridge terminated, shutting down");
+        // }
+        // _ = &mut batch_scheduler_handle => {
+        //     tracing::info!("Batch scheduler finished, shutting down");
+        // }
     }
 
     // NOTE: Graceful shutdown sequence:
@@ -471,30 +834,7 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
     //
     // IMPORTANT: Do not log anything after shutting down the telemetry providers
 
-    if !batch_scheduler_handle.is_finished() {
-        batch_scheduler_handle.abort();
-    }
-    let _ = batch_scheduler_handle.await;
-
-    if !parameter_dispatcher.is_finished() {
-        parameter_dispatcher.abort();
-    }
-    let _ = parameter_dispatcher.await;
-
-    if !worker_dispatcher.is_finished() {
-        worker_dispatcher.abort();
-    }
-    let _ = worker_dispatcher.await;
-
-    if !status_handle.is_finished() {
-        status_handle.abort();
-    }
-    let _ = status_handle.await;
-
-    if !tracker_task.is_finished() {
-        tracker_task.abort();
-    }
-    let _ = tracker_task.await;
+    abort_future.await;
     drop(network);
     if !driver_task.is_finished() {
         driver_task.abort();
