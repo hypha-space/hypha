@@ -9,7 +9,7 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::{
-    config::{ExecutorConfig, ExecutorRuntime},
+    config::{Config, ExecutorConfig, ExecutorRuntime},
     connector::Connector,
     executor::{self, Execution, JobExecutor, ParameterServerExecutor, ProcessExecutor},
     network::Network,
@@ -57,7 +57,7 @@ pub struct JobManager {
     connector: Connector<Network>,
     network: Network,
     work_dir_base: PathBuf,
-    executor_configs: Vec<ExecutorConfig>,
+    config: Config,
 }
 
 impl JobManager {
@@ -65,19 +65,20 @@ impl JobManager {
         connector: Connector<Network>,
         network: Network,
         work_dir_base: PathBuf,
-        executor_configs: Vec<ExecutorConfig>,
+        config: Config,
     ) -> Self {
         Self {
             active_jobs: Arc::new(Mutex::new(HashMap::new())),
             connector,
             network,
             work_dir_base,
-            executor_configs,
+            config,
         }
     }
 
     fn find_executor_config(&self, descriptor: &ExecutorDescriptor) -> Option<&ExecutorConfig> {
-        self.executor_configs
+        self.config
+            .executors()
             .iter()
             .find(|cfg| cfg.descriptor() == *descriptor)
     }
@@ -109,6 +110,7 @@ impl JobManager {
                     self.network.clone(),
                     self.work_dir_base.clone(),
                     config,
+                    self.config.clone(),
                 );
                 let execution = executor
                     .execute(spec.clone(), cancel_token.clone(), spec.job_id, scheduler)

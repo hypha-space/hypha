@@ -5,6 +5,7 @@ import time
 import uuid
 
 import numpy as np
+import openlit  # type: ignore[import-untyped]
 import torch
 import torch.utils.data
 from accelerate import Accelerator
@@ -25,6 +26,9 @@ from .utils import (
 
 FETCH_PATH = "artifacts"
 MIN_LOOP_TIME_MS = 100
+
+# NOTE: Enable system and GPU metrics collection on supported platforms.
+openlit.init(collect_system_metrics=True, collect_gpu_stats=True)
 
 
 def system_time_to_epoch_ms(timeout: object) -> int | None:

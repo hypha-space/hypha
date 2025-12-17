@@ -1,6 +1,10 @@
-use std::{collections::HashMap, pin::Pin};
+use std::{collections::HashMap, future::Future, pin::Pin};
 
 use futures_util::{Stream, StreamExt, stream::SelectAll};
+use hypha_telemetry::otel::{
+    KeyValue,
+    metrics::{Gauge, Meter},
+};
 use libp2p::PeerId;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -151,6 +155,65 @@ impl Connector for AimConnector {
                 };
                 let _ = self.client.post(&url).json(&aim_status).send().await?;
             }
+            Ok(())
+        })
+    }
+}
+
+#[derive(Clone)]
+pub struct OtelConnector {
+    gauge: Gauge<f64>,
+    job_id: String,
+}
+
+impl OtelConnector {
+    pub fn new(meter: Meter, job_id: String) -> Self {
+        let gauge = meter
+            .f64_gauge("hypha.scheduler.metric")
+            .with_description("Training metrics reported by workers")
+            .build();
+
+        OtelConnector { gauge, job_id }
+    }
+}
+
+impl Connector for OtelConnector {
+    fn forward_metrics<'a>(
+        &'a self,
+        peer_id: PeerId,
+        metrics: Metrics,
+    ) -> Pin<Box<dyn Future<Output = Result<(), MetricsError>> + Send + 'a>> {
+        Box::pin(async move {
+            for (metric_name, value) in metrics.metrics {
+                let value = f64::from(value);
+                if !value.is_finite() {
+                    tracing::debug!(
+                        %peer_id,
+                        round = metrics.round,
+                        metric_name,
+                        value,
+                        "Skipped non-finite training metric"
+                    );
+                    continue;
+                }
+
+                let attrs = [
+                    KeyValue::new("job_id", self.job_id.clone()),
+                    KeyValue::new("peer_id", peer_id.to_string()),
+                    KeyValue::new("round", metrics.round.to_string()),
+                    KeyValue::new("metric_name", metric_name.clone()),
+                ];
+
+                self.gauge.record(value, &attrs);
+                tracing::trace!(
+                    %peer_id,
+                    round = metrics.round,
+                    metric_name,
+                    value,
+                    "Recorded training metric"
+                );
+            }
+
             Ok(())
         })
     }

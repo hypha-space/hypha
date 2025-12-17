@@ -47,10 +47,12 @@ impl<T> Transport<T> {
         let inbound_counter = meter
             .u64_counter("hypha.bandwidth.inbound.bytes")
             .with_description("Inbound bandwidth usage by transport protocols")
+            .with_unit("By")
             .build();
         let outbound_counter = meter
             .u64_counter("hypha.bandwidth.outbound.bytes")
             .with_description("Outbound bandwidth usage by transport protocols")
+            .with_unit("By")
             .build();
 
         Self {

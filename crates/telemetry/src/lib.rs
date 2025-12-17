@@ -7,6 +7,17 @@ pub mod metrics;
 pub mod otlp;
 pub mod tracing;
 
+// NOTE: Re-export a minimal opentelemetry surface so downstream crates do not
+// need to depend on opentelemetry directly.
+pub mod otel {
+    pub mod metrics {
+        // TODO: Expand to include additional metrics types when needed.
+        pub use opentelemetry::metrics::{Counter, Gauge, Meter};
+    }
+
+    pub use opentelemetry::KeyValue;
+}
+
 #[cfg(test)]
 pub mod testing;
 

@@ -177,14 +177,6 @@ pub struct Config {
     #[serde(alias = "traces_sampler_arg")]
     telemetry_sample_ratio: Option<f64>,
 
-    /// AIM relay server address for real-time training metrics (optional).
-    ///
-    /// Connects to an AIM server to stream training metrics in real-time. Useful for
-    /// monitoring job progress and visualizing training curves.
-    ///
-    /// Example: "0.0.0.0:61000"
-    status_bridge: Option<String>,
-
     /// Scheduler-specific configuration for job orchestration.
     ///
     /// Contains settings for resource allocation, job scheduling policies, and worker
@@ -227,7 +219,6 @@ impl Default for Config {
             telemetry_protocol: None,
             telemetry_sampler: None,
             telemetry_sample_ratio: None,
-            status_bridge: None,
             scheduler: SchedulerConfig::default(),
         }
     }
@@ -278,10 +269,6 @@ impl Config {
     /// Optional traces sampler name.
     pub fn telemetry_sampler(&self) -> Option<SamplerKind> {
         self.telemetry_sampler.clone()
-    }
-
-    pub fn status_bridge(&self) -> Option<String> {
-        self.status_bridge.clone()
     }
 
     pub fn scheduler_config(&self) -> &SchedulerConfig {
