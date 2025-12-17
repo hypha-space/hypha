@@ -77,12 +77,14 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR09
             pin_memory=True,
         )
 
-        # Serialize the model to disk
-        previous_model_path = os.path.join(work_dir, "0_global_weights.pt")
-        save_model(model, previous_model_path)
-
         model, optimizer, training_dataloader, scheduler = accelerator.prepare(model, optimizer, data_loader, scheduler)
         training_data_iter = dataset_wrapper(training_dataloader)
+
+        # Serialize the model to disk
+        previous_model_path = os.path.join(work_dir, "global_weights.pt")
+        model = accelerator.unwrap_model(model)
+        save_model(model, previous_model_path)
+        model = accelerator.prepare(model)
 
         epoch_counter = 1
         job_id = job_spec["job_id"]
