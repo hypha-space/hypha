@@ -1,4 +1,5 @@
 #![deny(missing_docs)]
+#![allow(unused)]
 // NOTE: `Diagnostic` uses `Option::unwrap` which we've dissallowed in favor,
 // of more granular error handling. Using it here through the `Diagnostic` trait is fine though.
 #![allow(clippy::disallowed_methods)]
