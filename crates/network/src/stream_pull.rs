@@ -139,8 +139,21 @@ pub trait StreamPullSenderInterface<T: Serialize + Send + Sync>:
             // Assuming that we only pull a single stream from a peer at a time,
             // we can simply send the resource name here.
             let resource_bytes = serde_json::to_vec(resource).expect("a serializable resource");
-            let _ = stream.write(&resource_bytes.len().to_le_bytes()).await?;
-            let _ = stream.write(&resource_bytes).await?;
+            let resource_header = resource_bytes.len().to_le_bytes();
+            let bytes_written = stream.write(&resource_header).await?;
+            if bytes_written != resource_header.len() {
+                return Err(OpenStreamError::Io(std::io::Error::from(
+                    std::io::ErrorKind::UnexpectedEof,
+                )));
+            }
+
+            let bytes_written = stream.write(&resource_bytes).await?;
+            if bytes_written != resource_bytes.len() {
+                return Err(OpenStreamError::Io(std::io::Error::from(
+                    std::io::ErrorKind::UnexpectedEof,
+                )));
+            }
+
             Ok(stream.compat())
         }
     }
