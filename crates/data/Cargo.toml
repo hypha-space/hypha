@@ -21,7 +21,6 @@ libp2p-stream.workspace = true
 miette.workspace = true
 rayon.workspace = true
 serde.workspace = true
-serde_json.workspace = true
 tokio.workspace = true
 tokio-retry.workspace = true
 tracing.workspace = true
