@@ -108,9 +108,15 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
 
     let exclude_cidrs = config.exclude_cidr().clone();
 
-    let (network, network_driver) =
-        Network::create(cert_chain, private_key, ca_certs, crls, exclude_cidrs)
-            .into_diagnostic()?;
+    let (network, network_driver) = Network::create(
+        cert_chain,
+        private_key,
+        ca_certs,
+        crls,
+        exclude_cidrs,
+        config.network(),
+    )
+    .into_diagnostic()?;
     let mut driver_task = tokio::spawn(network_driver.run());
 
     join_all(
@@ -588,6 +594,7 @@ async fn main() -> Result<()> {
                 config.load_trust_chain()?,
                 config.load_crls()?,
                 exclude_cidrs,
+                config.network(),
             )
             .into_diagnostic()?;
             tokio::spawn(driver.run());

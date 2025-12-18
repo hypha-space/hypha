@@ -272,7 +272,7 @@
 //! [`miette`]: https://docs.rs/miette
 //! [`documented`]: https://docs.rs/documented
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use documented::{Documented, DocumentedFieldsOpt};
 use figment::{Figment, Provider, Source};
@@ -566,6 +566,69 @@ where
     }
     header.push('\n');
     Ok(header + &body)
+}
+
+/// QUIC/network tuning parameters shared across Hypha components.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Documented, DocumentedFieldsOpt)]
+pub struct NetworkConfig {
+    /// Estimated link bandwidth in megabits per second.
+    ///
+    /// Used to size QUIC flow-control windows (bandwidth-delay product).
+    /// Defaults to 1 Gbps to cover common DC and cloud links.
+    #[serde(default = "default_bandwidth_mbps")]
+    bandwidth_mbps: u64,
+
+    /// Expected round-trip time in milliseconds.
+    ///
+    /// Used with bandwidth to compute the bandwidth-delay product for flow control.
+    /// Defaults to 100 ms to cover cross-region deployments.
+    #[serde(default = "default_rtt_ms")]
+    rtt_ms: u64,
+
+    /// QUIC handshake timeout in seconds.
+    ///
+    /// Connections failing to complete the handshake within this deadline are aborted.
+    #[serde(default = "default_handshake_timeout")]
+    handshake_timeout: u64,
+}
+
+impl Default for NetworkConfig {
+    fn default() -> Self {
+        Self {
+            bandwidth_mbps: default_bandwidth_mbps(),
+            rtt_ms: default_rtt_ms(),
+            handshake_timeout: default_handshake_timeout(),
+        }
+    }
+}
+
+impl NetworkConfig {
+    /// Estimated link bandwidth in megabits per second.
+    pub fn bandwidth_mbps(&self) -> u64 {
+        self.bandwidth_mbps
+    }
+
+    /// Estimated round-trip time in milliseconds.
+    pub fn rtt_ms(&self) -> u64 {
+        self.rtt_ms
+    }
+
+    /// QUIC handshake timeout as a Duration.
+    pub fn handshake_timeout(&self) -> Duration {
+        Duration::from_secs(self.handshake_timeout)
+    }
+}
+
+const fn default_bandwidth_mbps() -> u64 {
+    1_000
+}
+
+const fn default_rtt_ms() -> u64 {
+    100
+}
+
+const fn default_handshake_timeout() -> u64 {
+    30
 }
 
 /// Builder for creating layered configurations from multiple sources.

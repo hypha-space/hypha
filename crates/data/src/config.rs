@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use documented::{Documented, DocumentedFieldsOpt};
-use hypha_config::{ConfigError, ConfigWithMetadata, TLSConfig, ValidatableConfig};
+use hypha_config::{ConfigError, ConfigWithMetadata, NetworkConfig, TLSConfig, ValidatableConfig};
 use hypha_network::{IpNet, find_containing_cidr, reserved_cidrs};
 use hypha_telemetry::{
     attributes::Attributes,
@@ -199,6 +199,14 @@ pub struct Config {
     /// significance. For high-throughput data nodes, 0.01-0.1 is probably sufficient.
     #[serde(alias = "traces_sampler_arg")]
     telemetry_sample_ratio: Option<f64>,
+
+    /// Network tuning for QUIC transport (bandwidth, RTT, handshake timeout).
+    ///
+    /// These values size QUIC flow-control windows using the bandwidth-delay product
+    /// and set the handshake timeout. Defaults target a 1 Gbps link with 100 ms RTT
+    /// and a 30s handshake deadline.
+    #[serde(default)]
+    network: NetworkConfig,
 }
 
 impl Default for Config {
@@ -234,6 +242,7 @@ impl Default for Config {
             telemetry_protocol: None,
             telemetry_sampler: None,
             telemetry_sample_ratio: None,
+            network: NetworkConfig::default(),
         }
     }
 }
@@ -289,6 +298,10 @@ impl Config {
     /// Optional traces sampler name.
     pub fn telemetry_sampler(&self) -> Option<SamplerKind> {
         self.telemetry_sampler.clone()
+    }
+
+    pub fn network(&self) -> &NetworkConfig {
+        &self.network
     }
 }
 
