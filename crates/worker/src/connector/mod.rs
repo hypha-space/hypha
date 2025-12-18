@@ -17,7 +17,11 @@ use libp2p_stream::{AlreadyRegistered, OpenStreamError};
 use reqwest;
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio_util::{compat::FuturesAsyncReadCompatExt, io::StreamReader};
+use tokio_retry::{
+    Retry,
+    strategy::{ExponentialBackoff, jitter},
+};
+use tokio_util::io::StreamReader;
 
 pub type BoxAsyncRead = Pin<Box<dyn AsyncRead + Send>>;
 pub type BoxAsyncWrite = Pin<Box<dyn AsyncWrite + Send + Unpin>>;
@@ -75,6 +79,7 @@ pub trait SendConnector: Send + Sync {
     fn send<'a>(
         &'a self,
         send: &'a SendRef,
+        payload_len: u64,
     ) -> Pin<Box<dyn Future<Output = Result<WriteItemStream, ConnectorError>> + Send + 'a>>;
 }
 
@@ -168,11 +173,15 @@ where
         Err(ConnectorError::UnsupportedFetch(r))
     }
 
-    pub async fn send(&self, send: SendRef) -> Result<WriteItemStream, ConnectorError> {
+    pub async fn send(
+        &self,
+        send: SendRef,
+        payload_len: u64,
+    ) -> Result<WriteItemStream, ConnectorError> {
         let r = send.as_ref().clone();
         for s in &self.senders {
             if s.supports(&r) {
-                return s.send(&send).await;
+                return s.send(&send, payload_len).await;
             }
         }
         Err(ConnectorError::UnsupportedSend(r))
@@ -329,6 +338,7 @@ where
     fn send<'a>(
         &'a self,
         send: &'a SendRef,
+        payload_len: u64,
     ) -> Pin<Box<dyn Future<Output = Result<WriteItemStream, ConnectorError>> + Send + 'a>> {
         Box::pin(async move {
             match send.as_ref() {
@@ -340,15 +350,38 @@ where
                         let it = futures_util::stream::iter(peers.clone()).then(move |peer| {
                             let network = network.clone();
                             async move {
-                                match network.stream_push(peer).await {
-                                    Ok(stream) => Ok(WriteItem {
+                                let retry_strategy =
+                                    ExponentialBackoff::from_millis(100).map(jitter).take(3);
+
+                                async fn attempt_push<T>(
+                                    network: T,
+                                    peer: PeerId,
+                                    payload_len: u64,
+                                ) -> Result<BoxAsyncWrite, ConnectorError>
+                                where
+                                    T: StreamPushSenderInterface,
+                                {
+                                    let writer = network
+                                        .open_push_stream(peer, payload_len)
+                                        .await
+                                        .map_err(ConnectorError::OpenStream)?;
+                                    Ok(Box::pin(writer))
+                                }
+
+                                let result = Retry::spawn(retry_strategy, move || {
+                                    attempt_push(network.clone(), peer, payload_len)
+                                })
+                                .await;
+
+                                match result {
+                                    Ok(writer) => Ok(WriteItem {
                                         meta: ItemMeta {
                                             kind: "peer",
                                             name: peer.to_string(),
                                         },
-                                        writer: Box::pin(stream.compat()),
+                                        writer,
                                     }),
-                                    Err(e) => Err(ConnectorError::OpenStream(e)),
+                                    Err(e) => Err(e),
                                 }
                             }
                         });
@@ -359,13 +392,13 @@ where
                             .first()
                             .copied()
                             .ok_or_else(|| io::Error::other("no peers provided"))?;
-                        let stream = self.network.stream_push(peer).await?;
+                        let writer = self.network.open_push_stream(peer, payload_len).await?;
                         let item = WriteItem {
                             meta: ItemMeta {
                                 kind: "peer",
                                 name: peer.to_string(),
                             },
-                            writer: Box::pin(stream.compat()),
+                            writer: Box::pin(writer),
                         };
                         let s = futures_util::stream::once(async move { Ok(item) });
                         Ok(Box::pin(s) as WriteItemStream)
@@ -404,7 +437,7 @@ where
                 } => {
                     let allow: Vec<PeerId> = peers.clone();
                     let incoming = self.network.streams_push()?;
-                    let stream = incoming.filter_map(move |(peer, s)| {
+                    let stream = incoming.filter_map(move |(peer, reader)| {
                         let allowed = allow.clone();
                         async move {
                             if allowed.is_empty() || allowed.iter().any(|p| p == &peer) {
@@ -413,7 +446,7 @@ where
                                         kind: "peer",
                                         name: peer.to_string(),
                                     },
-                                    reader: Box::pin(s.compat()),
+                                    reader: Box::pin(reader),
                                 };
                                 Some(Ok(item))
                             } else {

@@ -6,13 +6,16 @@
 
 // TODO: Decide whether to model this as an abstract stream interface with the protocol identifier as an argument or
 
-use futures_util::{AsyncReadExt, AsyncWriteExt, Stream};
+use std::io;
+
+use futures_util::{Stream, StreamExt};
 use libp2p::{PeerId, StreamProtocol};
 use libp2p_stream::{AlreadyRegistered, Control, OpenStreamError};
 use serde::{Serialize, de::DeserializeOwned};
-use tokio::io::{AsyncRead, AsyncWrite};
-use tokio_stream::StreamExt;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio_util::compat::FuturesAsyncReadCompatExt;
+
+use crate::utils::{FixedAsyncRead, FixedAsyncWrite};
 
 /// The protocol identifier for Hypha's tensor streaming protocol.
 ///
@@ -20,12 +23,52 @@ use tokio_util::compat::FuturesAsyncReadCompatExt;
 /// between peers. It follows the libp2p convention of using a path-like identifier.
 const TENSOR_STREAM_PROTOCOL: StreamProtocol = StreamProtocol::new("/hypha-tensor-stream/pull");
 
-/// The maximum size of the resource header in bytes.
+/// The maximum size of the request header in bytes.
 ///
-/// This constant defines the maximum size of the resource header that can be
+/// This constant defines the maximum size of the request header that can be
 /// deserialized from the stream. It is used to prevent excessive memory usage
 /// and potential denial-of-service attacks.
-const MAX_RESOURCE_HEADER_SIZE: u64 = 1024 * 1024;
+const MAX_REQUEST_HEADER_SIZE: u64 = 1024 * 1024;
+
+/// The fixed header length used for announcing payload size.
+const PAYLOAD_LENGTH_HEADER_SIZE: usize = size_of::<u64>();
+
+/// Pending pull stream that still needs a declared payload length.
+pub struct IncomingPullStream<T, W> {
+    peer_id: PeerId,
+    request: T,
+    stream: W,
+}
+
+impl<T, W> IncomingPullStream<T, W> {
+    /// Returns the peer that initiated the pull.
+    pub fn peer_id(&self) -> PeerId {
+        self.peer_id
+    }
+
+    /// Returns the requested resource.
+    pub fn request(&self) -> &T {
+        &self.request
+    }
+}
+
+impl<T, W: AsyncWrite + Unpin> IncomingPullStream<T, W> {
+    /// Writes the payload length header and returns a length-checked writer.
+    pub async fn create_response(
+        self,
+        payload_len: u64,
+    ) -> io::Result<(PeerId, T, FixedAsyncWrite<W>)> {
+        let mut stream = self.stream;
+        stream.write_all(&payload_len.to_le_bytes()).await?;
+        stream.flush().await?;
+
+        Ok((
+            self.peer_id,
+            self.request,
+            FixedAsyncWrite::new(stream, payload_len),
+        ))
+    }
+}
 
 /// Base trait for accessing libp2p stream control functionality.
 /// Meant for pull data from a peer.
@@ -56,7 +99,7 @@ pub trait StreamPullReceiverInterface<T: DeserializeOwned>: StreamPullInterface 
     ///
     /// # Returns
     ///
-    /// * `Ok(IncomingStreams)` - A stream of incoming connections
+    /// * `Ok(Stream)` - A stream of incoming connections
     /// * `Err(AlreadyRegistered)` - The protocol was already registered
     ///
     /// # Errors
@@ -65,39 +108,46 @@ pub trait StreamPullReceiverInterface<T: DeserializeOwned>: StreamPullInterface 
     /// registered with the stream control.
     fn streams_pull(
         &self,
-    ) -> Result<impl Stream<Item = (PeerId, T, impl AsyncWrite)>, AlreadyRegistered> {
+    ) -> Result<
+        impl Stream<Item = IncomingPullStream<T, impl AsyncWrite + Unpin>> + Send,
+        AlreadyRegistered,
+    > {
         let incoming_streams = self
             .stream_control()
             .accept_with_limit(TENSOR_STREAM_PROTOCOL, Some(8))?
-            .then(|(peer_id, mut stream)| async move {
+            .filter_map(|(peer_id, stream)| async move {
+                let mut stream = stream.compat();
                 let mut resource_len = [0u8; 8];
                 if let Err(e) = stream.read_exact(&mut resource_len).await {
                     tracing::warn!("Failed to read resource header length: {}", e);
                     return None;
                 };
-                let resource_len = u64::from_le_bytes(resource_len);
+                let request_len = u64::from_le_bytes(resource_len);
 
-                if resource_len >= MAX_RESOURCE_HEADER_SIZE {
+                if request_len >= MAX_REQUEST_HEADER_SIZE {
                     tracing::warn!("Resource header length exceeds maximum");
                     return None;
                 }
 
-                let mut resource_bytes = vec![0; resource_len as usize];
+                let mut request_bytes = vec![0; request_len as usize];
 
-                if let Err(e) = stream.read_exact(&mut resource_bytes).await {
+                if let Err(e) = stream.read_exact(&mut request_bytes).await {
                     tracing::warn!("Failed to read resource header: {}", e);
                     return None;
                 };
 
-                match serde_json::from_slice(&resource_bytes) {
-                    Ok(resource) => Some((peer_id, resource, stream.compat())),
-                    Err(e) => {
+                serde_json::from_slice(&request_bytes)
+                    .map(|resource| IncomingPullStream {
+                        peer_id,
+                        request: resource,
+                        stream,
+                    })
+                    .map_err(|e| {
                         tracing::warn!("Failed to deserialize resource header: {}", e);
-                        None
-                    }
-                }
-            })
-            .map_while(|e| e);
+                        e
+                    })
+                    .ok()
+            });
 
         Ok(incoming_streams)
     }
@@ -123,38 +173,47 @@ pub trait StreamPullSenderInterface<T: Serialize + Send + Sync>:
     ///
     /// # Returns
     ///
-    /// * `Ok(Stream)` - A successfully opened stream to the peer
+    /// * `Ok(AsyncRead)` - A successfully opened reader from the peer
     /// * `Err(OpenStreamError)` - An error occurred during stream establishment
-    fn stream_pull(
+    fn open_pull_stream(
         &self,
         peer_id: PeerId,
-        resource: &T,
-    ) -> impl Future<Output = Result<impl AsyncRead + Send + 'static, OpenStreamError>> + Send {
+        request: &T,
+    ) -> impl Future<
+        Output = Result<FixedAsyncRead<impl AsyncRead + Send + Unpin + 'static>, OpenStreamError>,
+    > + Send {
         async move {
-            let mut stream = self
+            let stream = self
                 .stream_control()
                 .open_stream(peer_id, TENSOR_STREAM_PROTOCOL)
                 .await?;
+            let mut stream = stream.compat();
 
             // Assuming that we only pull a single stream from a peer at a time,
             // we can simply send the resource name here.
-            let resource_bytes = serde_json::to_vec(resource).expect("a serializable resource");
-            let resource_header = resource_bytes.len().to_le_bytes();
-            let bytes_written = stream.write(&resource_header).await?;
-            if bytes_written != resource_header.len() {
-                return Err(OpenStreamError::Io(std::io::Error::from(
-                    std::io::ErrorKind::UnexpectedEof,
-                )));
-            }
+            let request_bytes = serde_json::to_vec(request).expect("a serializable resource");
+            let request_header = request_bytes.len().to_le_bytes();
+            stream
+                .write_all(&request_header)
+                .await
+                .map_err(OpenStreamError::Io)?;
 
-            let bytes_written = stream.write(&resource_bytes).await?;
-            if bytes_written != resource_bytes.len() {
-                return Err(OpenStreamError::Io(std::io::Error::from(
-                    std::io::ErrorKind::UnexpectedEof,
-                )));
-            }
+            stream
+                .write_all(&request_bytes)
+                .await
+                .map_err(OpenStreamError::Io)?;
 
-            Ok(stream.compat())
+            stream.flush().await.map_err(OpenStreamError::Io)?;
+
+            let mut header = [0u8; PAYLOAD_LENGTH_HEADER_SIZE];
+            stream
+                .read_exact(&mut header)
+                .await
+                .map_err(OpenStreamError::Io)?;
+
+            let payload_len = u64::from_le_bytes(header);
+
+            Ok(FixedAsyncRead::new(stream, payload_len))
         }
     }
 }

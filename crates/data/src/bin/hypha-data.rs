@@ -31,6 +31,7 @@ use miette::{IntoDiagnostic, Result};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use tokio::{
     fs,
+    io::AsyncWriteExt,
     signal::unix::{SignalKind, signal},
 };
 use tokio_retry::{
@@ -286,31 +287,48 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
         .await
         .into_diagnostic()?;
 
-    let stream_pulls = network.streams_pull().expect("an unregistered pull stream").for_each_concurrent(None, {
-        |(peer_id, resource, mut stream)| {
-            let dataset_hashes = dataset_hashes.clone();
-            let dataset_name = dataset_name.clone();
-            async move {
-                tracing::info!(peer_id = %peer_id, dataset = resource.dataset, slice = resource.hash, "Sending tensor to peer");
+    let stream_pulls = network
+        .streams_pull()
+        .expect("an unregistered pull stream")
+        .for_each_concurrent(None, {
+            move |request| {
+                let dataset_hashes = dataset_hashes.clone();
+                let dataset_name = dataset_name.clone();
+                async move {
+                    let peer_id = request.peer_id();
+                    let resource = request.request().clone();
+                    tracing::info!(peer_id = %peer_id, dataset = resource.dataset, slice = resource.hash, "Sending tensor to peer");
 
-                if dataset_name.as_str() == resource.dataset.as_str() {
-                    // Use the provided hash to select a subset of the available dataset files.
-                    match dataset_hashes.get(&resource.hash) {
-                        None => {
-                            tracing::warn!(peer_id = %peer_id, dataset = resource.dataset, "Invalid hash for dataset");
-                        }
-                        Some(dataset_slice) => {
-                            if let Err(e) = serialize_file(dataset_slice, &mut stream).await {
-                                tracing::warn!(peer_id = %peer_id, dataset = resource.dataset, "Failed to serialize dataset: {}", e);
-                            }
-                        },
+                    if dataset_name.as_str() != resource.dataset.as_str() {
+                        tracing::warn!(peer_id = %peer_id, dataset = resource.dataset, "No dataset found with that name");
+                        return;
                     }
-                } else {
-                    tracing::warn!(peer_id = %peer_id, dataset = resource.dataset, "No dataset found with that name");
+
+                    let Some(dataset_slice) = dataset_hashes.get(&resource.hash) else {
+                        tracing::warn!(peer_id = %peer_id, dataset = resource.dataset, "Invalid hash for dataset");
+                        return;
+                    };
+
+                    let Ok(payload_len) = fs::metadata(dataset_slice).await.map(|m| m.len()) else {
+                        tracing::warn!(peer_id = %peer_id, dataset = resource.dataset, "Failed to stat dataset slice");
+                        return;
+                    };
+
+                    let Ok((_, _, mut stream)) = request.create_response(payload_len).await else {
+                        tracing::warn!(peer_id = %peer_id, dataset = resource.dataset, "Failed to announce payload length");
+                        return;
+                    };
+
+                    if let Err(e) = serialize_file(dataset_slice, &mut stream).await {
+                        tracing::warn!(peer_id = %peer_id, dataset = resource.dataset, "Failed to serialize dataset: {}", e);
+                    }
+
+                    if let Err(e) = stream.shutdown().await {
+                        tracing::warn!(peer_id = %peer_id, dataset = resource.dataset, "Failed to finalize stream: {}", e);
+                    }
                 }
             }
-        }
-    });
+        });
 
     let mut sigterm = signal(SignalKind::terminate()).into_diagnostic()?;
 

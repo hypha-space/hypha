@@ -1,6 +1,7 @@
 //! Utility functions.
 
 use std::{
+    io,
     net::SocketAddr,
     pin::Pin,
     task::{Context, Poll},
@@ -10,7 +11,10 @@ use std::{
 use futures_util::stream::Stream;
 use libp2p::multiaddr::{Error, Multiaddr, Protocol};
 use pin_project::pin_project;
-use tokio::time::{self, Sleep};
+use tokio::{
+    io::{AsyncRead, AsyncWrite, ReadBuf},
+    time::{self, Sleep},
+};
 
 use crate::IpNet;
 
@@ -137,6 +141,154 @@ impl<S: Stream> Stream for Batched<S> {
                 }
             }
         }
+    }
+}
+
+/// Async reader that enforces an exact byte count.
+///
+/// Returns `UnexpectedEof` if the underlying stream ends before the declared length.
+#[pin_project]
+pub struct FixedAsyncRead<R> {
+    #[pin]
+    inner: R,
+    remaining: u64,
+}
+
+impl<R> FixedAsyncRead<R> {
+    /// Creates a new reader that enforces `expected_len` bytes.
+    pub fn new(inner: R, expected_len: u64) -> Self {
+        Self {
+            inner,
+            remaining: expected_len,
+        }
+    }
+
+    /// Returns the number of bytes left to read.
+    pub fn remaining(&self) -> u64 {
+        self.remaining
+    }
+
+    /// Returns the wrapped reader.
+    pub fn into_inner(self) -> R {
+        self.inner
+    }
+}
+
+impl<R: AsyncRead> AsyncRead for FixedAsyncRead<R> {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let mut this = self.project();
+
+        if *this.remaining == 0 {
+            return Poll::Ready(Ok(()));
+        }
+
+        let available = (*this.remaining).min(buf.remaining() as u64) as usize;
+        let mut limited = buf.take(available);
+
+        match this.inner.as_mut().poll_read(cx, &mut limited) {
+            Poll::Ready(Ok(())) => {
+                let read = limited.filled().len();
+                if read == 0 {
+                    return Poll::Ready(Err(io::Error::from(io::ErrorKind::UnexpectedEof)));
+                }
+
+                if read as u64 > *this.remaining {
+                    return Poll::Ready(Err(io::Error::from(io::ErrorKind::InvalidData)));
+                }
+
+                *this.remaining -= read as u64;
+                buf.advance(read);
+                Poll::Ready(Ok(()))
+            }
+            other => other,
+        }
+    }
+}
+
+/// Async writer that enforces an exact byte count.
+///
+/// Returns an error if more than the declared length is written, or if shutdown
+/// is attempted before the declared length is reached.
+#[pin_project]
+pub struct FixedAsyncWrite<W> {
+    #[pin]
+    inner: W,
+    remaining: u64,
+}
+
+impl<W> FixedAsyncWrite<W> {
+    /// Creates a new writer that enforces `expected_len` bytes.
+    pub fn new(inner: W, expected_len: u64) -> Self {
+        Self {
+            inner,
+            remaining: expected_len,
+        }
+    }
+
+    /// Returns the number of bytes left to write.
+    pub fn remaining(&self) -> u64 {
+        self.remaining
+    }
+
+    /// Returns the wrapped writer.
+    pub fn into_inner(self) -> W {
+        self.inner
+    }
+}
+
+impl<W: AsyncWrite> AsyncWrite for FixedAsyncWrite<W> {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        let mut this = self.project();
+
+        if buf.is_empty() {
+            return Poll::Ready(Ok(0));
+        }
+
+        if buf.len() as u64 > *this.remaining {
+            return Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "write exceeds declared length",
+            )));
+        }
+
+        match this.inner.as_mut().poll_write(cx, buf) {
+            Poll::Ready(Ok(written)) => {
+                if written == 0 {
+                    return Poll::Ready(Ok(0));
+                }
+
+                if written as u64 > *this.remaining {
+                    return Poll::Ready(Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "write exceeds declared length",
+                    )));
+                }
+
+                *this.remaining -= written as u64;
+                Poll::Ready(Ok(written))
+            }
+            other => other,
+        }
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        self.project().inner.poll_flush(cx)
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        let this = self.project();
+        if *this.remaining > 0 {
+            return Poll::Ready(Err(io::Error::from(io::ErrorKind::UnexpectedEof)));
+        }
+        this.inner.poll_shutdown(cx)
     }
 }
 
