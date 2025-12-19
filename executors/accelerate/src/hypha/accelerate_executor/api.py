@@ -7,6 +7,16 @@ from typing import Any, override
 import httpx
 
 
+def fetch(socket_path: str, resource: Any) -> Any:
+    transport = httpx.HTTPTransport(uds=socket_path)
+    resp = (
+        httpx.Client(transport=transport)
+        .post("http://hypha/resources/fetch", json=resource, timeout=None)
+        .raise_for_status()
+    )
+    return resp.json()
+
+
 class Session(AbstractContextManager["Session", None]):
     def __init__(self, socket_path: str) -> None:
         transport = httpx.HTTPTransport(uds=socket_path)

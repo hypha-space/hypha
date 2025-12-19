@@ -72,7 +72,7 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR09
         preprocessor_config = config.get("preprocessor")
         data_loader = torch.utils.data.DataLoader(
             IterableStreamDataSet(
-                fetch_data(session, config["data"], work_dir),
+                fetch_data(socket_path, config["data"], work_dir),
                 config["batch_size"],
                 config["model"]["input-names"],
                 preprocessor_config["input-names"] if preprocessor_config else [],
