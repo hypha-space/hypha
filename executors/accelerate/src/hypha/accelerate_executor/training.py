@@ -87,9 +87,9 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR09
 
         # Serialize the model to disk
         previous_model_path = os.path.join(work_dir, "global_weights.pt")
-        model = accelerator.unwrap_model(model)
+        # model = accelerator.unwrap_model(model)
         save_model(model, previous_model_path)
-        model = accelerator.prepare(model)
+        # model = accelerator.prepare(model)
 
         epoch_counter = 1
         job_id = job_spec["job_id"]
@@ -157,8 +157,8 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR09
                 file_name = f"{epoch_counter}_local_gradients.pt"
                 result_path = os.path.join(work_dir, file_name)
                 # Copy weights to CPU without moving the live model off-device.
-                model_state = accelerator.unwrap_model(model).state_dict()
-                state_cpu = {k: v.detach().cpu() for k, v in model_state.items()}
+                # model_state = accelerator.unwrap_model(model).state_dict()
+                state_cpu = {k: v.detach().cpu() for k, v in model.state_dict().items()}
                 save_file(extract_gradients(state_cpu, previous_model_path, weight), result_path)
                 last_gradient = file_name
 
