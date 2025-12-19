@@ -4,7 +4,7 @@ from typing import Any
 import torch
 from safetensors.torch import load
 from snappy import uncompress
-from torch.utils.data import DataLoader, IterableDataset
+from torch.utils.data import IterableDataset
 
 
 class IterableStreamDataSet(IterableDataset):  # type: ignore[type-arg]
@@ -61,11 +61,3 @@ class IterableStreamDataSet(IterableDataset):  # type: ignore[type-arg]
 
         # Drop the very last partial batch of the epoch to avoid recompilation
         pass
-
-
-def dataset_wrapper(dataset: DataLoader) -> Iterator[dict[str, torch.Tensor]]:  # type: ignore[type-arg]
-    def wrap() -> Iterator[dict[str, torch.Tensor]]:
-        while True:
-            yield from dataset
-
-    return iter(wrap())
