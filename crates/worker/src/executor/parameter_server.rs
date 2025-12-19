@@ -30,7 +30,7 @@ use tokio_retry::{
     Retry,
     strategy::{ExponentialBackoff, jitter},
 };
-use tokio_util::{sync::CancellationToken, task::TaskTracker};
+use tokio_util::{future::FutureExt, sync::CancellationToken, task::TaskTracker};
 use uuid::Uuid;
 
 use crate::{
@@ -122,9 +122,9 @@ impl JobExecutor for ParameterServerExecutor {
         {
             let connector = self.connector.clone();
             let updates_store = updates_store.clone();
-            let updates_notify = updates_notify.clone();
             let incoming_dir = incoming_dir.clone();
             let cancel = cancel.clone();
+            let updates_notify = updates_notify.clone();
             task_tracker.spawn(async move {
                 let receive_any = Receive::peers(Vec::new());
                 let mut incoming = match connector.receive(receive_any).await {
@@ -148,38 +148,42 @@ impl JobExecutor for ParameterServerExecutor {
                             break;
                         }
                     };
-                    let peer = item.meta.name.clone();
-                    let peer_dir = incoming_dir.join(&peer);
-                    if let Err(e) = fs::create_dir_all(&peer_dir).await {
-                        tracing::error!(error = %e, dir = %peer_dir.display(), "Failed to create peer staging dir");
-                        continue;
-                    }
-                    let file_path = peer_dir.join(format!("{}.pt", Uuid::new_v4()));
-                    let mut reader = item.reader;
-                    match fs::File::create(&file_path).await {
-                        Ok(mut f) => {
-                            match io::copy(&mut reader, &mut f).await {
-                                Ok(n) => {
-                                    let _ = f.sync_all().await;
-                                    let _ = fs::set_permissions(&file_path, Permissions::from_mode(0o600)).await;
-                                    tracing::debug!(peer_id = %peer, size = n, file = %file_path.display(), "Received update");                                }
-                                Err(err) => {
-                                    tracing::error!(error = %err, file = %file_path.display(), "Failed to write received update");
+                    let incoming_dir = incoming_dir.clone();
+                    let updates_store = updates_store.clone();
+                    let updates_notify = updates_notify.clone();
+                    tokio::spawn(async move {
+                        let peer = item.meta.name.clone();
+                        let peer_dir = incoming_dir.join(&peer);
+                        if let Err(e) = fs::create_dir_all(&peer_dir).await {
+                            tracing::error!(error = %e, dir = %peer_dir.display(), "Failed to create peer staging dir");
+                        }
+                        let file_path = peer_dir.join(format!("{}.pt", Uuid::new_v4()));
+                        let mut reader = item.reader;
+                        match fs::File::create(&file_path).await {
+                            Ok(mut f) => {
+                                match io::copy(&mut reader, &mut f).await {
+                                    Ok(n) => {
+                                        let _ = f.sync_all().await;
+                                        let _ = fs::set_permissions(&file_path, Permissions::from_mode(0o600)).await;
+                                        tracing::debug!(peer_id = %peer, size = n, file = %file_path.display(), "Received update");                                }
+                                    Err(err) => {
+                                        tracing::error!(error = %err, file = %file_path.display(), "Failed to write received update");
+                                    }
                                 }
                             }
+                            Err(err) => {
+                                tracing::error!(error = %err, file = %file_path.display(), "Failed to create staging file");
+                            }
                         }
-                        Err(err) => {
-                            tracing::error!(error = %err, file = %file_path.display(), "Failed to create staging file");
-                        }
-                    }
 
-                    {
-                        let mut store = updates_store.lock().await;
-                        let pid = peer.parse().unwrap_or_else(|_| PeerId::random());
-                        let entry = store.entry(pid).or_default();
-                        entry.push(file_path.clone());
-                    }
-                    updates_notify.notify_one();
+                        {
+                            let mut store = updates_store.lock().await;
+                            let pid = peer.parse().unwrap_or_else(|_| PeerId::random());
+                            let entry = store.entry(pid).or_default();
+                            entry.push(file_path.clone());
+                        }
+                        updates_notify.notify_one();
+                    }.with_cancellation_token_owned(cancel.clone()));
                 }
             });
         }
