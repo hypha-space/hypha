@@ -113,10 +113,12 @@ impl Network {
                         ((3_u64 * bdp_bytes).next_power_of_two()).min(u32::MAX as u64) as u32;
                     let max_connection_data =
                         ((4_u64 * bdp_bytes).next_power_of_two()).min(u32::MAX as u64) as u32;
+                    let max_connection_send_data =
+                        ((2_u64 * bdp_bytes).next_power_of_two()).min(u32::MAX as u64) as u32;
 
                     c.max_stream_data = max_stream_data;
                     c.max_connection_data = max_connection_data;
-                    c.max_connection_send_data = Some(max_connection_data);
+                    c.max_connection_send_data = Some(max_connection_send_data);
                     c.handshake_timeout = network_config.handshake_timeout();
                     c
                 })
