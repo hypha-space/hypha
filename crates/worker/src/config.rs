@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use documented::{Documented, DocumentedFieldsOpt};
-use hypha_config::{ConfigError, ConfigWithMetadata, TLSConfig, ValidatableConfig};
+use hypha_config::{ConfigError, ConfigWithMetadata, NetworkConfig, TLSConfig, ValidatableConfig};
 use hypha_messages::ExecutorDescriptor;
 use hypha_network::{IpNet, find_containing_cidr, reserved_cidrs};
 use hypha_resources::Resources;
@@ -287,6 +287,14 @@ pub struct Config {
     /// addresses configured for direct connectivity.
     relay_circuit: bool,
 
+    /// Network tuning for QUIC transport (bandwidth, RTT, handshake timeout).
+    ///
+    /// These values size QUIC flow-control windows using the bandwidth-delay product
+    /// and set the handshake timeout. Defaults target a 1 Gbps link with 100 ms RTT
+    /// and a 30s handshake deadline.
+    #[serde(default)]
+    network: NetworkConfig,
+
     /// Base directory for per-job working directories.
     ///
     /// Each job gets a unique subdirectory named hypha-{job_uuid} containing downloaded
@@ -421,6 +429,7 @@ impl Default for Config {
             // NOTE: Enabled by default to support inbound connectivity via relays
             // when behind NAT or firewall.
             relay_circuit: true,
+            network: NetworkConfig::default(),
             // NOTE: Default work directory base. Jobs create subdirs `hypha-{uuid}` under this path.
             work_dir: PathBuf::from("/tmp"),
             resources: ResourceConfig::default(),
@@ -507,6 +516,10 @@ impl Config {
     /// Whether to listen via a relay P2pCircuit through the gateway.
     pub fn relay_circuit(&self) -> bool {
         self.relay_circuit
+    }
+
+    pub fn network(&self) -> &NetworkConfig {
+        &self.network
     }
 
     pub fn resources(&self) -> Resources {

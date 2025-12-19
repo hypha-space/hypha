@@ -74,9 +74,15 @@ async fn main() -> Result<()> {
 
             let exclude_cidrs = hypha_network::reserved_cidrs();
 
-            let (network, network_driver) =
-                Network::create(cert_chain, private_key, ca_certs, crls, exclude_cidrs)
-                    .into_diagnostic()?;
+            let (network, network_driver) = Network::create(
+                cert_chain,
+                private_key,
+                ca_certs,
+                crls,
+                exclude_cidrs,
+                config.network(),
+            )
+            .into_diagnostic()?;
 
             let network_driver_task = tokio::spawn(network_driver.run());
 
@@ -156,9 +162,15 @@ async fn main() -> Result<()> {
 
             let exclude_cidrs = hypha_network::reserved_cidrs();
 
-            let (network, network_driver) =
-                Network::create(cert_chain, private_key, ca_certs, crls, exclude_cidrs)
-                    .into_diagnostic()?;
+            let (network, network_driver) = Network::create(
+                cert_chain,
+                private_key,
+                ca_certs,
+                crls,
+                exclude_cidrs,
+                config.network(),
+            )
+            .into_diagnostic()?;
 
             let network_driver_task = tokio::spawn(network_driver.run());
 

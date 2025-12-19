@@ -6,6 +6,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use futures_util::stream::StreamExt;
+use hypha_config::NetworkConfig;
 use hypha_network::{
     CertificateDer, CertificateRevocationListDer, IpNet, PrivateKeyDer,
     dial::{DialAction, DialDriver, DialInterface, PendingDials},
@@ -86,6 +87,7 @@ impl Network {
         ca_certs: Vec<CertificateDer<'static>>,
         crls: Vec<CertificateRevocationListDer<'static>>,
         exclude_cidrs: Vec<IpNet>,
+        network_config: &NetworkConfig,
     ) -> Result<(Self, NetworkDriver), SwarmError> {
         let (action_sender, action_receiver) = mpsc::channel(5);
         let meter = metrics::global::meter();
@@ -101,7 +103,23 @@ impl Network {
                 .map_err(|_| {
                     SwarmError::TransportConfig("Failed to create TCP transport.".to_string())
                 })?
-                .with_quic()
+                .with_quic_config(|mut c| {
+                    // NOTE: Flow-control windows are sized from the configured bandwidth-delay product.
+                    let bdp_bytes: u64 = (network_config.bandwidth_mbps() * 1_000_000 / 8)
+                        * network_config.rtt_ms()
+                        / 1000;
+
+                    let max_stream_data =
+                        ((3_u64 * bdp_bytes).next_power_of_two()).min(u32::MAX as u64) as u32;
+                    let max_connection_data =
+                        ((4_u64 * bdp_bytes).next_power_of_two()).min(u32::MAX as u64) as u32;
+
+                    c.max_stream_data = max_stream_data;
+                    c.max_connection_data = max_connection_data;
+                    c.max_connection_send_data = Some(max_connection_data);
+                    c.handshake_timeout = network_config.handshake_timeout();
+                    c
+                })
                 .with_dns()
                 .map_err(|_| SwarmError::TransportConfig("Failed to setup DNS".to_string()))?
                 .map_transport(|t| {

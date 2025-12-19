@@ -2486,7 +2486,7 @@ checksum = "f9fbbcab51052fe104eb5e5d351cf728d30a5be1fe14d9be8a3b097481fb97de"
 [[package]]
 name = "libp2p"
 version = "0.56.0"
-source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls4#57747ea02e1486fd775a55d92e53b8f07cf398eb"
+source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls5#89c70a6d3d3672e7310ea2cd37a3e15bdb567f42"
 dependencies = [
  "bytes",
  "either",
@@ -2523,7 +2523,7 @@ dependencies = [
 [[package]]
 name = "libp2p-allow-block-list"
 version = "0.6.0"
-source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls4#57747ea02e1486fd775a55d92e53b8f07cf398eb"
+source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls5#89c70a6d3d3672e7310ea2cd37a3e15bdb567f42"
 dependencies = [
  "libp2p-core",
  "libp2p-identity",
@@ -2533,7 +2533,7 @@ dependencies = [
 [[package]]
 name = "libp2p-connection-limits"
 version = "0.6.0"
-source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls4#57747ea02e1486fd775a55d92e53b8f07cf398eb"
+source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls5#89c70a6d3d3672e7310ea2cd37a3e15bdb567f42"
 dependencies = [
  "libp2p-core",
  "libp2p-identity",
@@ -2543,7 +2543,7 @@ dependencies = [
 [[package]]
 name = "libp2p-core"
 version = "0.43.1"
-source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls4#57747ea02e1486fd775a55d92e53b8f07cf398eb"
+source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls5#89c70a6d3d3672e7310ea2cd37a3e15bdb567f42"
 dependencies = [
  "either",
  "fnv",
@@ -2567,7 +2567,7 @@ dependencies = [
 [[package]]
 name = "libp2p-dcutr"
 version = "0.14.0"
-source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls4#57747ea02e1486fd775a55d92e53b8f07cf398eb"
+source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls5#89c70a6d3d3672e7310ea2cd37a3e15bdb567f42"
 dependencies = [
  "asynchronous-codec",
  "either",
@@ -2588,7 +2588,7 @@ dependencies = [
 [[package]]
 name = "libp2p-dns"
 version = "0.44.0"
-source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls4#57747ea02e1486fd775a55d92e53b8f07cf398eb"
+source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls5#89c70a6d3d3672e7310ea2cd37a3e15bdb567f42"
 dependencies = [
  "async-trait",
  "futures",
@@ -2603,7 +2603,7 @@ dependencies = [
 [[package]]
 name = "libp2p-gossipsub"
 version = "0.49.0"
-source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls4#57747ea02e1486fd775a55d92e53b8f07cf398eb"
+source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls5#89c70a6d3d3672e7310ea2cd37a3e15bdb567f42"
 dependencies = [
  "async-channel",
  "asynchronous-codec",
@@ -2633,7 +2633,7 @@ dependencies = [
 [[package]]
 name = "libp2p-identify"
 version = "0.47.0"
-source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls4#57747ea02e1486fd775a55d92e53b8f07cf398eb"
+source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls5#89c70a6d3d3672e7310ea2cd37a3e15bdb567f42"
 dependencies = [
  "asynchronous-codec",
  "either",
@@ -2672,7 +2672,7 @@ dependencies = [
 [[package]]
 name = "libp2p-kad"
 version = "0.48.0"
-source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls4#57747ea02e1486fd775a55d92e53b8f07cf398eb"
+source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls5#89c70a6d3d3672e7310ea2cd37a3e15bdb567f42"
 dependencies = [
  "asynchronous-codec",
  "bytes",
@@ -2699,7 +2699,7 @@ dependencies = [
 [[package]]
 name = "libp2p-mdns"
 version = "0.48.0"
-source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls4#57747ea02e1486fd775a55d92e53b8f07cf398eb"
+source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls5#89c70a6d3d3672e7310ea2cd37a3e15bdb567f42"
 dependencies = [
  "futures",
  "hickory-proto",
@@ -2717,7 +2717,7 @@ dependencies = [
 [[package]]
 name = "libp2p-metrics"
 version = "0.17.0"
-source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls4#57747ea02e1486fd775a55d92e53b8f07cf398eb"
+source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls5#89c70a6d3d3672e7310ea2cd37a3e15bdb567f42"
 dependencies = [
  "futures",
  "libp2p-core",
@@ -2737,7 +2737,7 @@ dependencies = [
 [[package]]
 name = "libp2p-ping"
 version = "0.47.0"
-source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls4#57747ea02e1486fd775a55d92e53b8f07cf398eb"
+source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls5#89c70a6d3d3672e7310ea2cd37a3e15bdb567f42"
 dependencies = [
  "futures",
  "futures-timer",
@@ -2752,7 +2752,7 @@ dependencies = [
 [[package]]
 name = "libp2p-plaintext"
 version = "0.43.0"
-source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls4#57747ea02e1486fd775a55d92e53b8f07cf398eb"
+source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls5#89c70a6d3d3672e7310ea2cd37a3e15bdb567f42"
 dependencies = [
  "asynchronous-codec",
  "bytes",
@@ -2767,7 +2767,7 @@ dependencies = [
 [[package]]
 name = "libp2p-quic"
 version = "0.13.0"
-source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls4#57747ea02e1486fd775a55d92e53b8f07cf398eb"
+source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls5#89c70a6d3d3672e7310ea2cd37a3e15bdb567f42"
 dependencies = [
  "ed25519-dalek",
  "futures",
@@ -2790,7 +2790,7 @@ dependencies = [
 [[package]]
 name = "libp2p-relay"
 version = "0.21.0"
-source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls4#57747ea02e1486fd775a55d92e53b8f07cf398eb"
+source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls5#89c70a6d3d3672e7310ea2cd37a3e15bdb567f42"
 dependencies = [
  "asynchronous-codec",
  "bytes",
@@ -2813,7 +2813,7 @@ dependencies = [
 [[package]]
 name = "libp2p-request-response"
 version = "0.29.0"
-source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls4#57747ea02e1486fd775a55d92e53b8f07cf398eb"
+source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls5#89c70a6d3d3672e7310ea2cd37a3e15bdb567f42"
 dependencies = [
  "async-trait",
  "cbor4ii",
@@ -2831,7 +2831,7 @@ dependencies = [
 [[package]]
 name = "libp2p-stream"
 version = "0.4.0-alpha"
-source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls4#57747ea02e1486fd775a55d92e53b8f07cf398eb"
+source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls5#89c70a6d3d3672e7310ea2cd37a3e15bdb567f42"
 dependencies = [
  "futures",
  "libp2p-core",
@@ -2844,7 +2844,7 @@ dependencies = [
 [[package]]
 name = "libp2p-swarm"
 version = "0.47.0"
-source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls4#57747ea02e1486fd775a55d92e53b8f07cf398eb"
+source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls5#89c70a6d3d3672e7310ea2cd37a3e15bdb567f42"
 dependencies = [
  "either",
  "fnv",
@@ -2865,7 +2865,7 @@ dependencies = [
 [[package]]
 name = "libp2p-swarm-derive"
 version = "0.35.1"
-source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls4#57747ea02e1486fd775a55d92e53b8f07cf398eb"
+source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls5#89c70a6d3d3672e7310ea2cd37a3e15bdb567f42"
 dependencies = [
  "heck",
  "quote",
@@ -2875,7 +2875,7 @@ dependencies = [
 [[package]]
 name = "libp2p-swarm-test"
 version = "0.6.0"
-source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls4#57747ea02e1486fd775a55d92e53b8f07cf398eb"
+source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls5#89c70a6d3d3672e7310ea2cd37a3e15bdb567f42"
 dependencies = [
  "async-trait",
  "futures",
@@ -2892,7 +2892,7 @@ dependencies = [
 [[package]]
 name = "libp2p-tcp"
 version = "0.44.0"
-source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls4#57747ea02e1486fd775a55d92e53b8f07cf398eb"
+source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls5#89c70a6d3d3672e7310ea2cd37a3e15bdb567f42"
 dependencies = [
  "futures",
  "futures-timer",
@@ -2907,7 +2907,7 @@ dependencies = [
 [[package]]
 name = "libp2p-tls"
 version = "0.6.2"
-source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls4#57747ea02e1486fd775a55d92e53b8f07cf398eb"
+source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls5#89c70a6d3d3672e7310ea2cd37a3e15bdb567f42"
 dependencies = [
  "ed25519-dalek",
  "futures",
@@ -2926,7 +2926,7 @@ dependencies = [
 [[package]]
 name = "libp2p-upnp"
 version = "0.5.0"
-source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls4#57747ea02e1486fd775a55d92e53b8f07cf398eb"
+source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls5#89c70a6d3d3672e7310ea2cd37a3e15bdb567f42"
 dependencies = [
  "futures",
  "futures-timer",
@@ -2940,7 +2940,7 @@ dependencies = [
 [[package]]
 name = "libp2p-yamux"
 version = "0.47.0"
-source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls4#57747ea02e1486fd775a55d92e53b8f07cf398eb"
+source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls5#89c70a6d3d3672e7310ea2cd37a3e15bdb567f42"
 dependencies = [
  "either",
  "futures",
@@ -3196,7 +3196,7 @@ dependencies = [
 [[package]]
 name = "multistream-select"
 version = "0.13.0"
-source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls4#57747ea02e1486fd775a55d92e53b8f07cf398eb"
+source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls5#89c70a6d3d3672e7310ea2cd37a3e15bdb567f42"
 dependencies = [
  "bytes",
  "futures",
@@ -3977,7 +3977,7 @@ dependencies = [
 [[package]]
 name = "quick-protobuf-codec"
 version = "0.3.1"
-source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls4#57747ea02e1486fd775a55d92e53b8f07cf398eb"
+source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls5#89c70a6d3d3672e7310ea2cd37a3e15bdb567f42"
 dependencies = [
  "asynchronous-codec",
  "bytes",
@@ -4440,7 +4440,7 @@ dependencies = [
 [[package]]
 name = "rw-stream-sink"
 version = "0.4.0"
-source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls4#57747ea02e1486fd775a55d92e53b8f07cf398eb"
+source = "git+https://github.com/hypha-space/rust-libp2p?tag=v0.56.0-mtls5#89c70a6d3d3672e7310ea2cd37a3e15bdb567f42"
 dependencies = [
  "futures",
  "pin-project",

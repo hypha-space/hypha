@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use documented::{Documented, DocumentedFieldsOpt};
-use hypha_config::{ConfigWithMetadata, TLSConfig, ValidatableConfig};
+use hypha_config::{ConfigWithMetadata, NetworkConfig, TLSConfig, ValidatableConfig};
 use libp2p::Multiaddr;
 use serde::{Deserialize, Serialize};
 
@@ -54,6 +54,14 @@ pub struct Config {
     /// NOTE: Defaults to placeholder addresses so users must configure real endpoints.
     #[serde(alias = "gateways")]
     gateway_addresses: Vec<Multiaddr>,
+
+    /// Network tuning for QUIC transport (bandwidth, RTT, handshake timeout).
+    ///
+    /// These values size QUIC flow-control windows using the bandwidth-delay product
+    /// and set the handshake timeout. Defaults target a 1 Gbps link with 100 ms RTT
+    /// and a 30s handshake deadline.
+    #[serde(default)]
+    network: NetworkConfig,
 }
 
 impl Default for Config {
@@ -71,6 +79,7 @@ impl Default for Config {
                     .parse()
                     .expect("default address parses into a Multiaddr"),
             ],
+            network: NetworkConfig::default(),
         }
     }
 }
@@ -78,6 +87,10 @@ impl Default for Config {
 impl Config {
     pub fn gateway_addresses(&self) -> &Vec<Multiaddr> {
         &self.gateway_addresses
+    }
+
+    pub fn network(&self) -> &NetworkConfig {
+        &self.network
     }
 }
 

@@ -99,6 +99,7 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
         config.load_trust_chain()?,
         config.load_crls()?,
         exclude_cidrs,
+        config.network(),
     )
     .into_diagnostic()?;
 
@@ -340,6 +341,7 @@ async fn main() -> miette::Result<()> {
                 config.load_trust_chain()?,
                 config.load_crls()?,
                 exclude_cidrs,
+                config.network(),
             )
             .into_diagnostic()?;
 

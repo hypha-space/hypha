@@ -101,9 +101,15 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
     let ready = Arc::new(AtomicBool::new(false));
 
     // Load certificates and private key
-    let (network, network_driver) =
-        Network::create(cert_chain, private_key, ca_certs, crls, exclude_cidrs)
-            .into_diagnostic()?;
+    let (network, network_driver) = Network::create(
+        cert_chain,
+        private_key,
+        ca_certs,
+        crls,
+        exclude_cidrs,
+        config.network(),
+    )
+    .into_diagnostic()?;
 
     let network_handle = tokio::spawn(network_driver.run());
 
@@ -394,6 +400,7 @@ async fn main() -> miette::Result<()> {
                 config.load_trust_chain()?,
                 config.load_crls()?,
                 exclude_cidrs,
+                config.network(),
             )
             .into_diagnostic()?;
             tokio::spawn(driver.run());

@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use documented::{Documented, DocumentedFieldsOpt};
-use hypha_config::{ConfigError, ConfigWithMetadata, TLSConfig, ValidatableConfig};
+use hypha_config::{ConfigError, ConfigWithMetadata, NetworkConfig, TLSConfig, ValidatableConfig};
 use hypha_network::{IpNet, find_containing_cidr, reserved_cidrs};
 use hypha_telemetry::{
     attributes::Attributes,
@@ -182,6 +182,14 @@ pub struct Config {
     /// Contains settings for resource allocation, job scheduling policies, and worker
     /// management strategies.
     scheduler: SchedulerConfig,
+
+    /// Network tuning for QUIC transport (bandwidth, RTT, handshake timeout).
+    ///
+    /// These values size QUIC flow-control windows using the bandwidth-delay product
+    /// and set the handshake timeout. Defaults target a 1 Gbps link with 100 ms RTT
+    /// and a 30s handshake deadline.
+    #[serde(default)]
+    network: NetworkConfig,
 }
 
 impl Default for Config {
@@ -220,6 +228,7 @@ impl Default for Config {
             telemetry_sampler: None,
             telemetry_sample_ratio: None,
             scheduler: SchedulerConfig::default(),
+            network: NetworkConfig::default(),
         }
     }
 }
@@ -273,6 +282,10 @@ impl Config {
 
     pub fn scheduler_config(&self) -> &SchedulerConfig {
         &self.scheduler
+    }
+
+    pub fn network(&self) -> &NetworkConfig {
+        &self.network
     }
 }
 
