@@ -12,7 +12,7 @@ from accelerate import Accelerator
 from safetensors.torch import save_file, save_model
 
 from .api import Session
-from .dataset import IterableStreamDataSet, dataset_wrapper
+from .dataset import IterableStreamDataSet
 from .model import get_model
 from .utils import (
     extract_gradients,
@@ -83,7 +83,7 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR09
         )
 
         model, optimizer, training_dataloader, scheduler = accelerator.prepare(model, optimizer, data_loader, scheduler)
-        training_data_iter = dataset_wrapper(training_dataloader)
+        training_data_iter = iter(training_dataloader)
 
         # Serialize the model to disk
         previous_model_path = os.path.join(work_dir, "global_weights.pt")
