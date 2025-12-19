@@ -1964,6 +1964,7 @@ dependencies = [
  "miette",
  "rayon",
  "serde",
+ "serde_json",
  "tokio",
  "tokio-retry",
  "tracing",

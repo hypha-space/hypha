@@ -1,12 +1,12 @@
 use std::{
     collections::HashMap,
     io,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use clap::Parser;
@@ -27,8 +27,10 @@ use hypha_network::{
 };
 use hypha_telemetry as telemetry;
 use libp2p::{Multiaddr, multiaddr::Protocol};
-use miette::{IntoDiagnostic, Result};
+use miette::{Context, IntoDiagnostic, Result};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
+use serde::{Deserialize, Serialize};
+use serde_json::ser::PrettyFormatter;
 use tokio::{
     fs,
     signal::unix::{SignalKind, signal},
@@ -45,6 +47,81 @@ use tracing_subscriber::{
 #[path = "../cli.rs"]
 mod cli;
 use cli::{Cli, Commands};
+
+#[derive(Debug, Deserialize, Serialize)]
+struct DatasetIndex {
+    entries: Vec<DatasetIndexEntry>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct DatasetIndexEntry {
+    hash: u64,
+    path: PathBuf,
+}
+
+fn read_dataset_index(index_path: &Path, dataset_path: &Path) -> Result<HashMap<u64, PathBuf>> {
+    let file = std::fs::File::open(index_path)
+        .into_diagnostic()
+        .wrap_err_with(|| format!("Failed to open dataset index at {}", index_path.display()))?;
+    let index: DatasetIndex = serde_json::from_reader(file)
+        .into_diagnostic()
+        .wrap_err_with(|| format!("Failed to parse dataset index at {}", index_path.display()))?;
+    if index.entries.is_empty() {
+        return Err(miette::miette!("Dataset index is empty"));
+    }
+
+    let mut hashes = HashMap::with_capacity(index.entries.len());
+    for entry in index.entries {
+        hashes.insert(entry.hash, dataset_path.join(entry.path));
+    }
+
+    Ok(hashes)
+}
+
+fn write_dataset_index(
+    index_path: &Path,
+    dataset_path: &Path,
+    dataset_hashes: &HashMap<u64, PathBuf>,
+) -> Result<()> {
+    let mut entries = Vec::with_capacity(dataset_hashes.len());
+    for (hash, path) in dataset_hashes {
+        let relative = path
+            .strip_prefix(dataset_path)
+            .into_diagnostic()
+            .wrap_err_with(|| {
+                format!(
+                    "Failed to write dataset index for path outside dataset root: {}",
+                    path.display()
+                )
+            })?
+            .to_path_buf();
+        entries.push(DatasetIndexEntry {
+            hash: *hash,
+            path: relative,
+        });
+    }
+
+    let index = DatasetIndex { entries };
+    let tmp_path = index_path.with_extension("json.tmp");
+    let file = std::fs::File::create(&tmp_path)
+        .into_diagnostic()
+        .wrap_err_with(|| format!("Failed to create dataset index at {}", tmp_path.display()))?;
+    let formatter = PrettyFormatter::with_indent(b"  ");
+    let mut serializer = serde_json::Serializer::with_formatter(file, formatter);
+    index
+        .serialize(&mut serializer)
+        .into_diagnostic()
+        .wrap_err_with(|| format!("Failed to write dataset index at {}", tmp_path.display()))?;
+    std::fs::rename(&tmp_path, index_path)
+        .into_diagnostic()
+        .wrap_err_with(|| {
+            format!(
+                "Failed to persist dataset index at {}",
+                index_path.display()
+            )
+        })?;
+    Ok(())
+}
 
 async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
     let tracing = telemetry::tracing(
@@ -236,24 +313,60 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
         Err(err) => Err(miette::miette!("Failed to read dataset directory: {}", err)),
     }?;
 
-    if dataset_files.is_empty() {
-        return Err(miette::miette!("Dataset directory is empty"));
-    }
+    let index_path = dataset_path.join("index.json");
+    let dataset_hashes = if index_path.exists() {
+        tracing::info!(
+            dataset = %dataset_name,
+            index = %index_path.display(),
+            "Using dataset index"
+        );
+        read_dataset_index(&index_path, dataset_path)?
+    } else {
+        if dataset_files.is_empty() {
+            return Err(miette::miette!("Dataset directory is empty"));
+        }
 
-    let dataset_hashes = tokio::task::spawn_blocking(move || {
-        // Hash the dataset files
-        dataset_files
-            .par_iter()
-            .map(|file| {
-                let hash = get_file_hash(file);
-                hash.map(|h| (h, file.clone()))
-            })
-            .collect::<Result<Vec<_>, io::Error>>()
-    })
-    .await
-    .into_diagnostic()?
-    .into_diagnostic()?;
-    let dataset_hashes: HashMap<u64, PathBuf> = HashMap::from_iter(dataset_hashes);
+        tracing::info!(
+            dataset = %dataset_name,
+            total_files = dataset_files.len(),
+            "Hashing dataset files"
+        );
+        let dataset_hashes = tokio::task::spawn_blocking(move || {
+            // Hash the dataset files
+            let start = Instant::now();
+            let total_files = dataset_files.len();
+            let log_every = std::cmp::max(1, total_files / 10);
+            let progress = AtomicUsize::new(0);
+            dataset_files
+                .par_iter()
+                .map(|file| {
+                    let hash = get_file_hash(file);
+                    let done = progress.fetch_add(1, Ordering::Relaxed) + 1;
+                    if done.is_multiple_of(log_every) || done == total_files {
+                        tracing::info!(
+                            hashed_files = done,
+                            total_files,
+                            elapsed_ms = start.elapsed().as_millis(),
+                            "Hashing dataset files"
+                        );
+                    }
+                    hash.map(|h| (h, file.clone()))
+                })
+                .collect::<Result<Vec<_>, io::Error>>()
+        })
+        .await
+        .into_diagnostic()?
+        .into_diagnostic()?;
+        let dataset_hashes: HashMap<u64, PathBuf> = HashMap::from_iter(dataset_hashes);
+
+        write_dataset_index(&index_path, dataset_path, &dataset_hashes)?;
+        tracing::info!(
+            dataset = %dataset_name,
+            index = %index_path.display(),
+            "Wrote dataset index"
+        );
+        dataset_hashes
+    };
 
     // Announce our dataset
     tracing::info!(dataset_name, "Announcing");
