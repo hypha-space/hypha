@@ -110,6 +110,7 @@ impl Worker {
                                 duration = duration.as_millis(),
                                 safe_duration = safe_duration.as_millis(),
                                 %lease_id,
+                                %peer_id,
                                 "Lease renewed, renewing in {}ms",
                                 safe_duration.as_millis()
                             );
