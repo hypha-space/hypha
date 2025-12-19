@@ -23,7 +23,7 @@ from transformers.optimization import (
     get_wsd_schedule,
 )
 
-from .api import Session
+from .api import Session, fetch
 
 
 def prepare_files(config: dict[str, Any], session: Session) -> None:
@@ -61,10 +61,10 @@ def get_adam(optimizer: dict[str, Any], parameters: Iterable[torch.Tensor]) -> O
     return torch.optim.AdamW(parameters, lr=lr)
 
 
-def fetch_data(session: Session, data: str, work_dir: str) -> Iterator[str]:
+def fetch_data(socket_path: str, data: str, work_dir: str) -> Iterator[str]:
     def wrap() -> Iterator[str]:
         while True:
-            tensor_data = session.fetch(data)
+            tensor_data = fetch(socket_path, data)
             yield os.path.join(work_dir, tensor_data[0]["path"])
 
     return iter(wrap())
