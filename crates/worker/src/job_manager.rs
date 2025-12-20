@@ -113,7 +113,7 @@ impl JobManager {
                     self.config.clone(),
                 );
                 let execution = executor
-                    .execute(spec.clone(), cancel_token.clone(), spec.job_id, scheduler)
+                    .execute(spec.clone(), cancel_token.clone(), scheduler)
                     .await?;
                 let job = Job {
                     id,
@@ -143,7 +143,7 @@ impl JobManager {
                     self.work_dir_base.clone(),
                 );
                 let execution = executor
-                    .execute(spec.clone(), cancel_token.clone(), spec.job_id, scheduler)
+                    .execute(spec.clone(), cancel_token.clone(), scheduler)
                     .await?;
                 let job = Job {
                     id,

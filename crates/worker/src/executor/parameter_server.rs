@@ -85,10 +85,10 @@ impl JobExecutor for ParameterServerExecutor {
         &self,
         job: hypha_messages::JobSpec,
         cancel: CancellationToken,
-        job_id: Uuid,
         scheduler_id: PeerId,
     ) -> Result<ParameterServerExecution, Error> {
         tracing::info!(job_spec = ?job, "Executing parameter server job");
+        let job_id = job.job_id;
 
         let retry_strategy = ExponentialBackoff::from_millis(100)
             .map(jitter) // add jitter to delays
