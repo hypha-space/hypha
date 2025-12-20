@@ -109,7 +109,7 @@ def merge_models(old_model: str, weight_path: str) -> dict[str, torch.Tensor]:
             # state_dict[name] += (alpha * (b.get_tensor(name) - state_dict[name])).to(state_dict[name].dtype)
             # The gradient from 'extract_gradients' is negative. Thus, add instead of subtract.
             model_weight = m.get_tensor(name)
-            state_dict[name] = model_weight + g.get_tensor(name).to(model_weight.dtype)
+            state_dict[name] = model_weight + g.get_tensor(name)#.to(model_weight.dtype)
     return state_dict
 
 
@@ -124,5 +124,5 @@ def extract_gradients(
             # Weighting will fail here and its ok to just sum them up.
             if weight != 1 and "num_batches_tracked" not in name:
                 state_dict[name] *= weight
-                state_dict[name] = state_dict[name].to(torch.bfloat16)
+                # state_dict[name] = state_dict[name].to(torch.bfloat16)
     return state_dict
