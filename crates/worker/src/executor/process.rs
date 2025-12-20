@@ -98,7 +98,6 @@ impl JobExecutor for ProcessExecutor {
         &self,
         job: hypha_messages::JobSpec,
         cancel: CancellationToken,
-        _job_id: Uuid,
         scheduler: PeerId,
     ) -> Result<ProcessExecution, Error> {
         if !matches!(&job.executor, Executor::Train(_)) {
