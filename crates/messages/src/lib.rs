@@ -94,6 +94,7 @@ pub mod action {
     #[derive(Clone, Debug, Serialize, Deserialize)]
     #[serde(tag = "state", rename_all = "kebab-case")]
     pub enum TrainStatus {
+        Joined,
         Idle,
         BatchCompleted {
             batch_size: u32,
@@ -104,6 +105,9 @@ pub mod action {
         },
         AppliedUpdate,
         PushedToHub,
+        SentModel,
+        ReceivedModel,
+        WaitedForModel,
         Terminated,
         Error(TrainError),
     }
@@ -149,6 +153,17 @@ pub mod action {
     pub enum TrainAction {
         Idle {
             timeout: SystemTime,
+        },
+        WaitForModel{
+            timeout: SystemTime,
+        },
+        ReceiveModel{
+            source: Reference,
+            timeout: SystemTime,
+        },
+        SendModel{
+          target: Reference,
+          timeout: SystemTime,
         },
         ExecuteBatch,
         SendUpdate {

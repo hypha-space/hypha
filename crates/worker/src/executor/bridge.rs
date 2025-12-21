@@ -49,6 +49,8 @@ use crate::{
     network::Network,
 };
 
+const FETCH_DIR: &str = "artifacts";
+
 #[derive(Error, Debug)]
 pub enum Error {
     #[error("Network error: {0}")]
@@ -280,14 +282,13 @@ async fn fetch_resource(
             let out = Retry::spawn(retry_strategy, || {
                 let data_providers = data_providers.clone();
                 let state = state.clone();
-                let dir_rel = "artifacts".to_string();
                 let mut out: Vec<FileResponse> = Vec::new();
                 async move {
-                    let dir_abs = safe_join(&state.work_dir, &dir_rel)?;
+                    let dir_abs = safe_join(&state.work_dir, FETCH_DIR)?;
                     fs::create_dir_all(&dir_abs).await?;
 
                     let file_name = hash;
-                    let rel = format!("{}/{}", dir_rel, file_name);
+                    let rel = format!("{}/{}", FETCH_DIR, file_name);
                     let abs = safe_join(&state.work_dir, &rel)?;
 
                     match fs::try_exists(&abs).await {
@@ -363,16 +364,15 @@ async fn fetch_resource(
             let out = Retry::spawn(retry_strategy, || {
                 let state = state.clone();
                 let resource = resource.clone();
-                let dir_rel = "artifacts".to_string();
                 let mut out: Vec<FileResponse> = Vec::new();
                 async move {
-                    let dir_abs = safe_join(&state.work_dir, &dir_rel)?;
+                    let dir_abs = safe_join(&state.work_dir, &FETCH_DIR)?;
                     fs::create_dir_all(&dir_abs).await?;
                     let mut items = state.connector.fetch(resource).await?;
                     let mut idx: usize = 0;
                     while let Some(item) = items.next().await.transpose().map_err(Error::Io)? {
                         let (file_name, mut reader) = derive_name_and_reader(item, idx);
-                        let rel = format!("{}/{}", dir_rel, file_name);
+                        let rel = format!("{}/{}", &FETCH_DIR, file_name);
                         let abs = safe_join(&state.work_dir, &rel)?;
                         if let Some(parent) = abs.parent() {
                             fs::create_dir_all(parent).await?;
@@ -401,6 +401,7 @@ async fn fetch_resource(
 struct SendRequest {
     resource: Send,
     path: String,
+    remove_file: bool,
 }
 
 async fn send_resource(
@@ -440,7 +441,9 @@ async fn send_resource(
                         }
 
                         // We no longer need the file once it has been sent, so remove it.
-                        fs::remove_file(&file_path).await?;
+                        if req.remove_file{
+                            fs::remove_file(&file_path).await?;
+                        }
                         break;
                     };
                     let item = item_result?;
