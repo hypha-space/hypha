@@ -55,6 +55,8 @@ struct TrainingState {
     update_target: u32,
     counter: u32,
     peer_updates: HashMap<PeerId, u32>,
+    worker_without_model: Vec<PeerId>,
+    receive_from: HashMap<PeerId, PeerId>,
 }
 
 impl TrainingState {
@@ -63,6 +65,8 @@ impl TrainingState {
             update_target,
             counter: 0,
             peer_updates: HashMap::new(),
+            worker_without_model: vec![],
+            receive_from: HashMap::new(),
         }
     }
 
@@ -94,6 +98,26 @@ impl TrainingState {
 
     fn get_peer_updates(&self, peer_id: &PeerId) -> u32 {
         *self.peer_updates.get(peer_id).unwrap_or(&0u32)
+    }
+
+    fn pop_worker_without_model(&mut self) -> Option<PeerId> {
+        self.worker_without_model.pop()
+    }
+
+    fn push_worker_without_model(&mut self, peer_id: PeerId) {
+        self.worker_without_model.push(peer_id);
+    }
+
+    fn remove_receive_from(&mut self, peer_id: &PeerId) -> Option<PeerId> {
+        self.receive_from.remove(peer_id)
+    }
+
+    fn insert_receive_from(&mut self, source: PeerId, destination: PeerId) {
+        self.receive_from.insert(destination, source);
+    }
+
+    fn get_waiting_workers(&self) -> &[PeerId] {
+        &self.worker_without_model[..]
     }
 }
 
@@ -148,6 +172,52 @@ where
 
     let next_action = match status {
         ExecutorStatus::Train(train) => match train {
+            TrainStatus::Joined => {
+                let state = round_state.lock().await;
+                if state.round == 0 {
+                    ExecutorAction::Train(TrainAction::Idle {
+                        timeout: now + Duration::from_millis(100),
+                    })
+                } else {
+                    training_state
+                        .lock()
+                        .await
+                        .push_worker_without_model(peer_id);
+                    ExecutorAction::Train(TrainAction::WaitForModel {
+                        timeout: now + Duration::from_secs(1),
+                    })
+                }
+            }
+            TrainStatus::WaitedForModel => {
+                if let Some(sending_peer) =
+                    training_state.lock().await.remove_receive_from(&peer_id)
+                {
+                    ExecutorAction::Train(TrainAction::ReceiveModel {
+                        source: Reference::Peers {
+                            peers: vec![sending_peer],
+                            strategy: SelectionStrategy::All,
+                            resource: None,
+                        },
+                        timeout: now + Duration::from_secs(60),
+                    })
+                } else {
+                    ExecutorAction::Train(TrainAction::WaitForModel {
+                        timeout: now + Duration::from_secs(1),
+                    })
+                }
+            }
+            TrainStatus::ReceivedModel => {
+                // Lazy transition to other state
+                ExecutorAction::Train(TrainAction::Idle {
+                    timeout: now + Duration::from_secs(1),
+                })
+            }
+            TrainStatus::SentModel => {
+                // Lazy transition to other state
+                ExecutorAction::Train(TrainAction::Idle {
+                    timeout: now + Duration::from_secs(1),
+                })
+            }
             TrainStatus::Idle => {
                 let mut state = round_state.lock().await;
                 if !state.training_complete {
@@ -405,7 +475,20 @@ where
                         timeout: now + Duration::from_secs(1),
                     })
                 } else {
-                    ExecutorAction::Train(TrainAction::ExecuteBatch)
+                    let mut training = training_state.lock().await;
+                    if let Some(update_worker) = training.pop_worker_without_model() {
+                        training.insert_receive_from(peer_id, update_worker);
+                        ExecutorAction::Train(TrainAction::SendModel {
+                            target: Reference::Peers {
+                                peers: vec![update_worker],
+                                strategy: SelectionStrategy::One,
+                                resource: None,
+                            },
+                            timeout: now + Duration::from_secs(30),
+                        })
+                    } else {
+                        ExecutorAction::Train(TrainAction::ExecuteBatch)
+                    }
                 }
             }
             TrainStatus::PushedToHub => {
@@ -457,11 +540,16 @@ where
                         timeout: now + Duration::from_secs(5),
                     })
                 } else {
-                    let workers: Vec<_> = worker_pool
-                        .statistics()
-                        .into_iter()
-                        .map(|w| w.peer_id)
-                        .collect();
+                    let workers: Vec<_> = {
+                        let training = training_state.lock().await;
+                        let non_participating_worker = training.get_waiting_workers();
+                        worker_pool
+                            .statistics()
+                            .into_iter()
+                            .map(|w| w.peer_id)
+                            .filter(|w| !non_participating_worker.contains(w))
+                            .collect()
+                    };
 
                     if workers.is_empty() {
                         ExecutorAction::Aggregate(AggregateAction::Idle {
