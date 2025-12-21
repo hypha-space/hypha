@@ -59,15 +59,6 @@ wheels = [
 ]
 
 [[package]]
-name = "amdsmi"
-version = "7.0.2"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/45/c1/330da195623ec7d9f699be2dbec98df364b1def9b48aa169f1abe369804f/amdsmi-7.0.2.tar.gz", hash = "sha256:3e622e48c630b889045a6f57387455cdf082066348718172dd8af6d275baf8f2", size = 61577, upload-time = "2025-10-11T05:17:44.898Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/2b/cf/bacc741d9926d662e76fd694f5bc63dd4c2471e32cedfb1c3cca7e47aa3c/amdsmi-7.0.2-py3-none-any.whl", hash = "sha256:db5aa757f8ed82dfd799c4d39e2828542678dc4e485b0ab7fabe5f398fec5652", size = 64366, upload-time = "2025-10-11T05:17:44.047Z" },
-]
-
-[[package]]
 name = "annotated-types"
 version = "0.7.0"
 source = { registry = "https://pypi.org/simple" }
@@ -649,7 +640,6 @@ version = "0.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "accelerate" },
-    { name = "amdsmi" },
     { name = "httpx" },
     { name = "openlit" },
     { name = "opentelemetry-instrumentation-system-metrics" },
@@ -708,7 +698,6 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "accelerate", specifier = "==1.10.1" },
-    { name = "amdsmi", specifier = ">=7.0.2" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "openlit", specifier = ">=1.36.3" },
     { name = "opentelemetry-instrumentation-system-metrics", specifier = ">=0.60b1" },

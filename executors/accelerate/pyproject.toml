@@ -15,7 +15,6 @@ dependencies = [
     "torchvision>=0.22.0",
     "openlit>=1.36.3",
     "pynvml>=13.0.1",
-    "amdsmi>=7.0.2",
     "opentelemetry-instrumentation-system-metrics>=0.60b1",
 ]
 
