@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import shutil
 import time
 import uuid
 
@@ -9,7 +10,7 @@ import openlit  # type: ignore[import-untyped]
 import torch
 import torch.utils.data
 from accelerate import Accelerator
-from safetensors.torch import save_file, save_model
+from safetensors.torch import load_file, save_file, save_model
 
 from .api import Session
 from .dataset import IterableStreamDataSet
@@ -25,6 +26,7 @@ from .utils import (
 )
 
 FETCH_PATH = "artifacts"
+CURRENT_MODEL_NAME = "global_weights.pt"
 MIN_LOOP_TIME_MS = 100
 
 # NOTE: Enable system and GPU metrics collection on supported platforms.
@@ -86,7 +88,8 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR09
         training_data_iter = iter(training_dataloader)
 
         # Serialize the model to disk
-        previous_model_path = os.path.join(work_dir, "global_weights.pt")
+        previous_model_path = os.path.join(work_dir, CURRENT_MODEL_NAME)
+        # model = accelerator.unwrap_model(model)
         save_model(model, previous_model_path)
 
         epoch_counter = 1
@@ -97,7 +100,7 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR09
 
         current_status = {
             "executor": "train",
-            "details": {"state": "idle"},
+            "details": {"state": "joined"},
         }
 
         while True:
@@ -296,6 +299,110 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR09
                         }
                         continue
                 current_status = {"executor": "train", "details": {"state": "pushed-to-hub"}}
+            elif kind == "send-model":
+                target = action.get("target")
+                if target is None:
+                    current_status = {
+                        "executor": "train",
+                        "details": {
+                            "state": "error",
+                            "type": "other",
+                            "message": "SendModel missing target reference",
+                        },
+                    }
+                    continue
+
+                timeout_ms = system_time_to_epoch_ms(action.get("timeout"))
+                timeout_sec = (timeout_ms - int(time.time() * 1000.0)) / 1000.0 if timeout_ms else None
+                if timeout_sec is not None and timeout_sec < 1.0:
+                    timeout_sec = 1.0
+
+                try:
+                    session.send_resource(target, CURRENT_MODEL_NAME, remove_file=False, timeout=timeout_sec)
+                    current_status = {
+                        "executor": "train",
+                        "details": {"state": "sent-model"},
+                    }
+                except Exception as exc:  # noqa: BLE001
+                    current_status = {
+                        "executor": "train",
+                        "details": {
+                            "state": "error",
+                            "type": "connection",
+                            "message": str(exc),
+                        },
+                    }
+
+            elif kind == "receive-model":
+                source = action.get("source")
+                if source is None:
+                    current_status = {
+                        "executor": "train",
+                        "details": {
+                            "state": "error",
+                            "type": "other",
+                            "message": "ReceiveModel missing source reference",
+                        },
+                    }
+                    continue
+
+                timeout_ms = system_time_to_epoch_ms(action.get("timeout"))
+                read_timeout = (timeout_ms - int(time.time() * 1000.0)) / 1000.0 if timeout_ms else None
+                if read_timeout is not None and read_timeout <= 0:
+                    # Scheduler will tell us what to do next.
+                    current_status = {
+                        "executor": "train",
+                        "details": {
+                            "state": "error",
+                            "type": "connection",
+                            "message": "ReceiveModel timeout reached before receive",
+                        },
+                    }
+                    continue
+                try:
+                    receive_path = f"incoming-{uuid.uuid4()}"
+                    with session.receive(source, receive_path, timeout=read_timeout) as receiver:
+                        updates_iter = iter(receiver)
+                        pointers = next(updates_iter)
+                        if pointers:
+                            incomming = pointers[-1] if isinstance(pointers, list) else pointers
+                            rel_path = incomming.get("path")
+                            if isinstance(rel_path, str):
+                                path = os.path.join(work_dir, rel_path)
+                                model.load_state_dict(load_file(path))
+                                os.remove(previous_model_path)
+                                shutil.copy(path, previous_model_path)
+                                os.remove(path)
+                except StopIteration:
+                    current_status = {
+                        "executor": "train",
+                        "details": {
+                            "state": "error",
+                            "type": "connection",
+                            "message": "Receiver stream closed; no updates to merge.",
+                        },
+                    }
+                    continue
+                except Exception as exc:  # noqa: BLE001
+                    current_status = {
+                        "executor": "train",
+                        "details": {
+                            "state": "error",
+                            "type": "connection",
+                            "message": str(exc),
+                        },
+                    }
+                    continue
+
+                current_status = {
+                    "executor": "train",
+                    "details": {"state": "applied-update"},
+                }
+            elif kind == "wait-for-model":
+                timeout_ms = system_time_to_epoch_ms(action.get("timeout"))
+                if timeout_ms is not None:
+                    sleep_until_epoch_ms(timeout_ms)
+                current_status = {"executor": "train", "details": {"state": "waited-for-model"}}
             else:
                 raise RuntimeError(f"Unhandled action kind: {kind}")
 
