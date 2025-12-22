@@ -3,20 +3,17 @@ use std::{
     os::unix::fs::{MetadataExt, PermissionsExt},
     path::{Path, PathBuf},
     sync::Arc,
-    time::Duration,
+    time::SystemTime,
 };
 
 use axum::{
     Json, Router,
     extract::State,
     http::StatusCode,
-    response::{
-        IntoResponse, Response,
-        sse::{Event, KeepAlive, Sse},
-    },
+    response::{IntoResponse, Response},
     routing::{get, post},
 };
-use futures_util::{StreamExt, stream};
+use futures_util::StreamExt;
 use hypha_data::hash::get_file_hash;
 use hypha_messages::{
     DataSlice, Fetch, Receive, Reference, Send,
@@ -35,10 +32,11 @@ use tokio::{
     fs::{self, set_permissions},
     io::{self, AsyncWriteExt},
     net::UnixListener,
+    time::sleep,
 };
 use tokio_retry::{
     Retry,
-    strategy::{ExponentialBackoff, FibonacciBackoff, jitter},
+    strategy::{ExponentialBackoff, FibonacciBackoff, FixedInterval, jitter},
 };
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use utoipa::OpenApi;
@@ -138,7 +136,6 @@ struct SockState {
     network: Network,
     job_id: Uuid,
     scheduler: PeerId,
-    task_tracker: TaskTracker,
     cancel: CancellationToken,
 }
 
@@ -171,7 +168,6 @@ impl Bridge {
             network,
             job_id,
             scheduler,
-            task_tracker: task_tracker.clone(),
             cancel: cancel_token.clone(),
         });
 
@@ -408,9 +404,7 @@ async fn send_resource(
     State(state): State<Arc<SockState>>,
     Json(req): Json<SendRequest>,
 ) -> Result<(), Error> {
-    let retry_strategy = ExponentialBackoff::from_millis(100)
-        .map(jitter) // add jitter to delays
-        .take(3); // limit to 3 retries
+    let retry_strategy = FixedInterval::from_millis(50).map(jitter).take(20);
 
     Retry::spawn(retry_strategy, || {
         let state = state.clone();
@@ -518,6 +512,7 @@ fn validate_fetch(resource: &Fetch) -> Result<(), Error> {
 struct ReceiveSubscribeRequest {
     resource: Receive,
     path: Option<String>,
+    timeout: Option<SystemTime>,
 }
 
 #[derive(Debug, Serialize)]
@@ -530,119 +525,114 @@ struct UpdatePointer {
 async fn receive_subscribe(
     State(state): State<Arc<SockState>>,
     Json(req): Json<ReceiveSubscribeRequest>,
-) -> Result<Sse<impl futures_util::Stream<Item = Result<Event, std::convert::Infallible>>>, Error> {
+) -> Result<Response, Error> {
     let dir_rel = req.path.unwrap_or_else(|| "incoming".to_string());
     let dir_abs = safe_join(&state.work_dir, &dir_rel)?;
     fs::create_dir_all(&dir_abs).await?;
 
-    // Channel to push events to the SSE stream
-    let (tx, rx) = tokio::sync::mpsc::channel::<Event>(64);
-    let connector = state.connector.clone();
-    let work_dir = state.work_dir.clone();
-    let resource = req.resource.clone();
-    let cancel = state.cancel.clone();
-    let task_tracker = state.task_tracker.clone();
-    let dir_rel_clone = dir_rel.clone();
+    let idle_timeout = req
+        .timeout
+        .and_then(|t| t.duration_since(SystemTime::now()).ok());
+    if idle_timeout
+        .as_ref()
+        .is_some_and(|duration| duration.is_zero())
+    {
+        return Ok(StatusCode::NO_CONTENT.into_response());
+    }
 
-    // Background task: receive loops until the client disconnects or an error occurs
-    task_tracker.spawn(async move {
-        let mut incoming = match connector.receive(resource).await {
-            Ok(s) => s,
+    let mut incoming = match state.connector.receive(req.resource.clone()).await {
+        Ok(s) => s,
+        Err(err) => {
+            tracing::error!(error = %err, path = %dir_rel, "receive_subscribe: failed to start stream");
+            return Ok(StatusCode::NO_CONTENT.into_response());
+        }
+    };
+    let work_dir = state.work_dir.clone();
+    let cancel = state.cancel.clone();
+    let mut idle_timer = idle_timeout.map(|duration| Box::pin(sleep(duration)));
+    let mut pointer: Option<UpdatePointer> = None;
+
+    while let Some(item_result) = tokio::select! {
+        _ = cancel.cancelled() => {
+            tracing::debug!(path = %dir_rel, "receive_subscribe: task cancelled");
+            None
+        }
+        _ = async {
+            if let Some(timer) = idle_timer.as_mut() {
+                timer.as_mut().await;
+            } else {
+                std::future::pending::<()>().await;
+            }
+        },
+        if idle_timer.is_some() => {
+            tracing::warn!(path = %dir_rel, "receive_subscribe: idle timeout reached");
+            None
+        }
+        item = incoming.next() => item,
+    } {
+        let item = match item_result {
+            Ok(item) => item,
             Err(err) => {
-                tracing::error!(error = %err, path = %dir_rel_clone, "receive_subscribe: failed to start stream");
-                return;
+                tracing::warn!(error = %err, path = %dir_rel, "receive_subscribe: stream error");
+                continue;
             }
         };
-        let mut index = 0usize;
-        while let Some(item_result) = tokio::select! {
-            _ = tx.closed() => {
-                tracing::debug!(path = %dir_rel_clone, "receive_subscribe: client stream dropped");
-                None
+        // Once data starts flowing, disable idle timeout so long copies are not interrupted.
+        idle_timer = None;
+        let (file_name, mut reader) = derive_name_and_reader(item, 0);
+        let file_rel = format!("{}/{}", dir_rel, file_name);
+        let file_abs = match safe_join(&work_dir, &file_rel) {
+            Ok(p) => p,
+            Err(err) => {
+                tracing::error!(error = %err, file = %file_rel, "receive_subscribe: invalid target path");
+                continue;
             }
-            _ = cancel.cancelled() => {
-                tracing::debug!(path = %dir_rel_clone, "receive_subscribe: task cancelled");
-                None
-            }
-            item = incoming.next() => item,
-        } {
-            let item = match item_result {
-                Ok(item) => item,
+        };
+        if let Some(parent) = file_abs.parent() {
+            match fs::create_dir_all(parent).await {
+                Ok(()) => (),
                 Err(err) => {
-                    tracing::warn!(error = %err, path = %dir_rel_clone, "receive_subscribe: stream error");
+                    tracing::error!(error = %err, directory = %parent.display(), "receive_subscribe: failed to create directory");
                     continue;
                 }
-            };
-            let (file_name, mut reader) = derive_name_and_reader(item, index);
-            let file_rel = format!("{}/{}", dir_rel_clone, file_name);
-            let file_abs = match safe_join(&work_dir, &file_rel) {
-                Ok(p) => p,
-                Err(err) => {
-                    tracing::error!(error = %err, file = %file_rel, "receive_subscribe: invalid target path");
-                    continue;
-                }
-            };
-            if let Some(parent) = file_abs.parent() {
-                match fs::create_dir_all(parent).await {
-                    Ok(()) => (),
-                    Err(err) => {
-                        tracing::error!(error = %err, directory = %parent.display(), "receive_subscribe: failed to create directory");
-                        continue;
-                    }
-                }
             }
-            let mut file = match fs::File::create(&file_abs).await {
-                Ok(f) => f,
-                Err(err) => {
-                    tracing::error!(error = %err, file = %file_abs.display(), "receive_subscribe: failed to create file");
-                    continue;
-                }
-            };
-            let size = match tokio::io::copy(&mut reader, &mut file).await {
-                Ok(n) => n,
-                Err(err) => {
-                    tracing::warn!(error = %err, file = %file_abs.display(), "receive_subscribe: failed to copy resource");
-                    continue;
-                }
-            };
-            if let Err(err) = file.sync_all().await {
-                tracing::warn!(error = %err, file = %file_abs.display(), "receive_subscribe: failed to sync file");
-            }
-            if let Err(err) = set_permissions(&file_abs, Permissions::from_mode(0o600)).await {
-                tracing::warn!(error = %err, file = %file_abs.display(), "receive_subscribe: failed to set permissions");
-            }
-
-            tracing::info!(size, file = %file_abs.display(), "Received resource");
-
-            let from_peer = file_name.split('.').next().unwrap_or("").to_string();
-            let pointer = UpdatePointer {
-                path: file_rel,
-                size,
-                from_peer,
-            };
-            let ev = match serde_json::to_string(&pointer) {
-                Ok(data) => Event::default().data(data),
-                Err(err) => {
-                    tracing::error!(error = %err, "receive_subscribe: failed to serialize pointer");
-                    Event::default().data(r#"{"error":"serialize"}"#)
-                }
-            };
-            if tx.send(ev).await.is_err() {
-                tracing::debug!(path = %dir_rel_clone, "receive_subscribe: client disconnected");
-                break;
-            }
-            index += 1;
         }
-    });
+        let mut file = match fs::File::create(&file_abs).await {
+            Ok(f) => f,
+            Err(err) => {
+                tracing::error!(error = %err, file = %file_abs.display(), "receive_subscribe: failed to create file");
+                continue;
+            }
+        };
+        let size = match tokio::io::copy(&mut reader, &mut file).await {
+            Ok(n) => n,
+            Err(err) => {
+                tracing::warn!(error = %err, file = %file_abs.display(), "receive_subscribe: failed to copy resource");
+                continue;
+            }
+        };
+        if let Err(err) = file.sync_all().await {
+            tracing::warn!(error = %err, file = %file_abs.display(), "receive_subscribe: failed to sync file");
+        }
+        if let Err(err) = set_permissions(&file_abs, Permissions::from_mode(0o600)).await {
+            tracing::warn!(error = %err, file = %file_abs.display(), "receive_subscribe: failed to set permissions");
+        }
 
-    let stream = stream::unfold(rx, |mut rx| async move {
-        rx.recv().await.map(|ev| (Ok(ev), rx))
-    });
+        tracing::info!(size, file = %file_abs.display(), "Received resource");
 
-    Ok(Sse::new(stream).keep_alive(
-        KeepAlive::new()
-            .interval(Duration::from_secs(5))
-            .text("keepalive"),
-    ))
+        let from_peer = file_name.split('.').next().unwrap_or("").to_string();
+        pointer = Some(UpdatePointer {
+            path: file_rel,
+            size,
+            from_peer,
+        });
+        break;
+    }
+
+    Ok(match pointer {
+        Some(p) => (StatusCode::OK, Json(p)).into_response(),
+        None => StatusCode::NO_CONTENT.into_response(),
+    })
 }
 
 async fn send_action(
