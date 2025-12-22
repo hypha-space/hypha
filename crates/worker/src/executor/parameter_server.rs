@@ -28,7 +28,7 @@ use tokio::{
 };
 use tokio_retry::{
     Retry,
-    strategy::{ExponentialBackoff, jitter},
+    strategy::{FixedInterval, jitter},
 };
 use tokio_util::{future::FutureExt, sync::CancellationToken, task::TaskTracker};
 use uuid::Uuid;
@@ -92,9 +92,9 @@ impl JobExecutor for ParameterServerExecutor {
     ) -> Result<ParameterServerExecution, Error> {
         tracing::info!(job_spec = ?job, "Executing parameter server job");
 
-        let retry_strategy = ExponentialBackoff::from_millis(100)
-            .map(jitter) // add jitter to delays
-            .take(3); // limit to 3 retries
+        // NOTE: Retry for a second, please note that this needs to align with
+        // the batch scheduler timings
+        let retry_strategy = FixedInterval::from_millis(50).map(jitter).take(20);
 
         let id = Uuid::new_v4();
         let work_dir = self.work_dir_base.join(format!("hypha-{}", id));
@@ -568,6 +568,8 @@ async fn broadcast_update(
     gradient_file: &Path,
     cancel: CancellationToken,
 ) -> Result<(), Error> {
+    tracing::info!("Broadcasting update to {:?}", send);
+
     let payload_len = fs::metadata(gradient_file).await?.len();
     let mut writers = connector.send(send, payload_len).await?;
 

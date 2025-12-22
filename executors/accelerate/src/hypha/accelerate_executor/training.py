@@ -82,7 +82,7 @@ def system_time_to_epoch_ms(timeout: object) -> int | None:
 
 
 def sleep_until_epoch_ms(target_ms: int) -> None:
-    now_ms = int(time.time() * 1000.0)
+    now_ms = time.time() * 1000.0
     if target_ms > now_ms:
         time.sleep((target_ms - now_ms) / 1000.0)
 

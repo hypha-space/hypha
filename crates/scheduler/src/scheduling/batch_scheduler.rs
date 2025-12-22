@@ -38,6 +38,7 @@ use crate::{
 // decide when to instruct the parameter server to aggregate.
 #[derive(Default)]
 struct RoundState {
+    aggregated_updates: bool,
     sent_updates: HashSet<PeerId>,
     first_update_at: Option<Instant>,
     min_quorum: usize,
@@ -48,6 +49,8 @@ struct RoundState {
     training_complete: bool,
     applied_final_update: HashSet<PeerId>,
     push_done: bool,
+    // NOTE: Tracks workers that have applied the update for the current round.
+    applied_updates: HashSet<PeerId>,
 }
 
 #[derive(Default)]
@@ -164,6 +167,11 @@ where
     tracing::debug!(%peer_id, ?status, %job_id, "Received action request");
 
     let now = SystemTime::now();
+    // Rimeouts sized for ~100ms RTT with generous margins.
+    let short_idle = now + Duration::from_millis(500);
+    let wait_model = now + Duration::from_secs(1);
+    let long_io = now + Duration::from_secs(60);
+    let ps_broadcast_idle = now + Duration::from_secs(5);
 
     let since_start = start.elapsed().as_millis() as u64;
     // NOTE: We rely on Pool::members() being oldest-first ordered by join time.
@@ -176,7 +184,7 @@ where
                 let state = round_state.lock().await;
                 if state.round == 0 {
                     ExecutorAction::Train(TrainAction::Idle {
-                        timeout: now + Duration::from_millis(100),
+                        timeout: short_idle,
                     })
                 } else {
                     training_state
@@ -184,7 +192,7 @@ where
                         .await
                         .push_worker_without_model(peer_id);
                     ExecutorAction::Train(TrainAction::WaitForModel {
-                        timeout: now + Duration::from_secs(1),
+                        timeout: wait_model,
                     })
                 }
             }
@@ -198,25 +206,21 @@ where
                             strategy: SelectionStrategy::All,
                             resource: None,
                         },
-                        timeout: now + Duration::from_secs(60),
+                        timeout: long_io,
                     })
                 } else {
                     ExecutorAction::Train(TrainAction::WaitForModel {
-                        timeout: now + Duration::from_secs(1),
+                        timeout: wait_model,
                     })
                 }
             }
             TrainStatus::ReceivedModel => {
                 // Lazy transition to other state
-                ExecutorAction::Train(TrainAction::Idle {
-                    timeout: now + Duration::from_secs(1),
-                })
+                ExecutorAction::Train(TrainAction::Idle { timeout: now })
             }
             TrainStatus::SentModel => {
                 // Lazy transition to other state
-                ExecutorAction::Train(TrainAction::Idle {
-                    timeout: now + Duration::from_secs(1),
-                })
+                ExecutorAction::Train(TrainAction::Idle { timeout: now })
             }
             TrainStatus::Idle => {
                 let mut state = round_state.lock().await;
@@ -281,13 +285,26 @@ where
                         (false, count)
                     };
 
-                    if !should_update {
+                    if state.aggregated_updates && !state.applied_updates.contains(&peer_id) {
+                        ExecutorAction::Train(TrainAction::ApplyUpdate {
+                            source: Reference::Peers {
+                                peers: parameter_servers,
+                                strategy: SelectionStrategy::All,
+                                resource: None,
+                            },
+                            timeout: now + Duration::from_secs(10),
+                        })
+                    } else if state.sent_updates.contains(&peer_id) {
+                        ExecutorAction::Train(TrainAction::Idle {
+                            timeout: short_idle,
+                        })
+                    } else if !should_update {
                         ExecutorAction::Train(TrainAction::ExecuteBatch)
                     } else if parameter_servers.is_empty() {
                         // NOTE: If we need to send an update but there are no parameter servers,
                         // we must wait (idle) until one becomes available.
                         ExecutorAction::Train(TrainAction::Idle {
-                            timeout: now + Duration::from_secs(1),
+                            timeout: short_idle,
                         })
                     } else {
                         ExecutorAction::Train(TrainAction::SendUpdate {
@@ -319,7 +336,7 @@ where
                     }
                 } else {
                     ExecutorAction::Train(TrainAction::Idle {
-                        timeout: now + Duration::from_secs(1),
+                        timeout: short_idle,
                     })
                 }
             }
@@ -342,9 +359,17 @@ where
                     )
                 };
 
-                if round_state.lock().await.training_complete {
+                let (training_complete, sent_update) = {
+                    let state = round_state.lock().await;
+                    (
+                        state.training_complete,
+                        state.sent_updates.contains(&peer_id),
+                    )
+                };
+
+                if training_complete || sent_update {
                     ExecutorAction::Train(TrainAction::Idle {
-                        timeout: now + Duration::from_secs(1),
+                        timeout: short_idle,
                     })
                 } else {
                     let stats: Vec<u64> =
@@ -398,7 +423,7 @@ where
                         // NOTE: If we need to send an update but there are no parameter servers,
                         // we must wait (idle) until one becomes available.
                         ExecutorAction::Train(TrainAction::Idle {
-                            timeout: now + Duration::from_secs(1),
+                            timeout: short_idle,
                         })
                     } else {
                         ExecutorAction::Train(TrainAction::SendUpdate {
@@ -439,24 +464,15 @@ where
                     since_first_ms = elapsed_ms,
                     "Worker reported SentUpdate; recorded for round"
                 );
-                if parameter_servers.is_empty() {
-                    ExecutorAction::Train(TrainAction::Idle {
-                        timeout: now + Duration::from_secs(1),
-                    })
-                } else {
-                    ExecutorAction::Train(TrainAction::ApplyUpdate {
-                        source: Reference::Peers {
-                            peers: parameter_servers,
-                            strategy: SelectionStrategy::All,
-                            resource: None,
-                        },
-                        timeout: now + Duration::from_secs(30),
-                    })
-                }
+
+                ExecutorAction::Train(TrainAction::Idle {
+                    timeout: short_idle,
+                })
             }
             TrainStatus::AppliedUpdate => {
                 let training_complete = {
                     let mut state = round_state.lock().await;
+                    state.applied_updates.insert(peer_id);
 
                     if state.training_complete {
                         state.applied_final_update.insert(peer_id);
@@ -468,7 +484,7 @@ where
 
                 if training_complete {
                     ExecutorAction::Train(TrainAction::Idle {
-                        timeout: now + Duration::from_secs(1),
+                        timeout: now + Duration::from_millis(500),
                     })
                 } else {
                     let mut training = training_state.lock().await;
@@ -503,7 +519,7 @@ where
                     }
                 }
                 ExecutorAction::Train(TrainAction::Idle {
-                    timeout: now + Duration::from_secs(1),
+                    timeout: short_idle,
                 })
             }
             TrainStatus::Error(TrainError::Other { message }) => {
@@ -532,7 +548,7 @@ where
                         );
                     }
                     ExecutorAction::Aggregate(AggregateAction::Idle {
-                        timeout: now + Duration::from_secs(5),
+                        timeout: short_idle,
                     })
                 } else {
                     let workers: Vec<_> = {
@@ -548,7 +564,7 @@ where
 
                     if workers.is_empty() {
                         ExecutorAction::Aggregate(AggregateAction::Idle {
-                            timeout: now + Duration::from_secs(1),
+                            timeout: short_idle,
                         })
                     } else {
                         // Start aggregation when either all workers have sent updates,
@@ -575,7 +591,7 @@ where
                             })
                         } else {
                             ExecutorAction::Aggregate(AggregateAction::Idle {
-                                timeout: now + Duration::from_millis(500),
+                                timeout: short_idle,
                             })
                         }
                     }
@@ -585,7 +601,7 @@ where
                 // Only allow the primary PS to proceed to broadcast.
                 if Some(peer_id) != primary_ps {
                     ExecutorAction::Aggregate(AggregateAction::Idle {
-                        timeout: now + Duration::from_secs(5),
+                        timeout: ps_broadcast_idle,
                     })
                 } else {
                     let workers: Vec<_> = worker_pool
@@ -596,52 +612,17 @@ where
 
                     if workers.is_empty() {
                         ExecutorAction::Aggregate(AggregateAction::Idle {
-                            timeout: now + Duration::from_secs(1),
+                            timeout: short_idle,
                         })
                     } else {
                         // Log that we are moving to broadcast for this round.
                         let round = {
-                            let state = round_state.lock().await;
+                            let mut state = round_state.lock().await;
+                            state.aggregated_updates = true;
+                            state.applied_updates.clear();
                             state.round
                         };
                         tracing::info!(round = %round, "Trigger BroadcastUpdate");
-
-                        // Reset round state befor completing a broadcast on the primary PS.
-                        // Because workers will directly continue training after receiving
-                        // updates and speed varies. The PS returns after ALL workers
-                        // received their updates.
-                        if Some(peer_id) == primary_ps {
-                            let next_round = {
-                                let mut state = round_state.lock().await;
-
-                                tracing::info!(
-                                    round = state.round,
-                                    "Broadcast completed; advancing round"
-                                );
-
-                                state.sent_updates.clear();
-                                state.first_update_at = None;
-                                state.round = state.round.saturating_add(1);
-
-                                if state.round >= state.update_rounds {
-                                    state.training_complete = true;
-                                    tracing::info!(
-                                        round = state.round,
-                                        target = state.update_rounds,
-                                        "Target update rounds reached; entering completion phase"
-                                    );
-                                }
-
-                                state.round
-                            };
-
-                            let mut training = training_state.lock().await;
-                            training.reset_round();
-                            tracing::info!(
-                                round = next_round,
-                                "Next round started; training state reset"
-                            );
-                        }
 
                         ExecutorAction::Aggregate(AggregateAction::BroadcastUpdate {
                             target: Reference::Peers {
@@ -660,23 +641,63 @@ where
                         .map_err(BatchSchedulerError::from)?;
                 }
 
-                let training_complete = { round_state.lock().await.training_complete };
+                let next_round = {
+                    let mut state = round_state.lock().await;
+
+                    tracing::info!(round = state.round, "Broadcast completed; advancing round");
+
+                    state.sent_updates.clear();
+                    state.first_update_at = None;
+                    state.round = state.round.saturating_add(1);
+
+                    if state.round >= state.update_rounds {
+                        state.training_complete = true;
+                        tracing::info!(
+                            round = state.round,
+                            target = state.update_rounds,
+                            "Target update rounds reached; entering completion phase"
+                        );
+                    }
+
+                    state.round
+                };
+
+                let mut training = training_state.lock().await;
+                training.reset_round();
+                tracing::info!(
+                    round = next_round,
+                    "Next round started; training state reset"
+                );
+
+                let training_complete = {
+                    let mut state = round_state.lock().await;
+                    state.aggregated_updates = false;
+                    state.training_complete
+                };
                 if training_complete {
                     ExecutorAction::Aggregate(AggregateAction::Terminate)
                 } else {
                     ExecutorAction::Aggregate(AggregateAction::Idle {
-                        timeout: now + Duration::from_secs(1),
+                        timeout: short_idle,
                     })
                 }
             }
             AggregateStatus::Error(AggregateError::Connection { message }) => {
                 tracing::warn!(%peer_id, message = %message, "Aggregator reported connection error");
+                {
+                    let mut state = round_state.lock().await;
+                    state.aggregated_updates = false;
+                }
                 ExecutorAction::Aggregate(AggregateAction::Idle {
-                    timeout: now + Duration::from_secs(1),
+                    timeout: short_idle,
                 })
             }
             AggregateStatus::Error(AggregateError::Other { message }) => {
                 tracing::warn!(%peer_id, message = %message, "Aggregator reported error");
+                {
+                    let mut state = round_state.lock().await;
+                    state.aggregated_updates = false;
+                }
                 ExecutorAction::Aggregate(AggregateAction::Terminate)
             }
 
@@ -735,6 +756,8 @@ impl BatchScheduler {
                 training_complete: false,
                 applied_final_update: HashSet::new(),
                 push_done: false,
+                aggregated_updates: false,
+                applied_updates: HashSet::new(),
             }));
             let training_state = Arc::new(Mutex::new(TrainingState::new(samples_between_updates)));
             network
@@ -796,7 +819,10 @@ impl BatchScheduler {
 
 #[cfg(test)]
 mod batch_scheduler_tests {
-    use std::{collections::HashMap, time::SystemTime};
+    use std::{
+        collections::{HashMap, HashSet},
+        time::SystemTime,
+    };
 
     use futures_util::StreamExt;
     use hypha_messages::{
@@ -1271,6 +1297,8 @@ mod batch_scheduler_tests {
             training_complete: false,
             applied_final_update: Default::default(),
             push_done: false,
+            aggregated_updates: false,
+            applied_updates: HashSet::default(),
         }));
         let training_state = std::sync::Arc::new(tokio::sync::Mutex::new(TrainingState::new(800)));
         let batch_sizer = std::sync::Arc::new(|resources: &Resources| resources.gpu() as u32);
