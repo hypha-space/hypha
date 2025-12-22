@@ -1,15 +1,26 @@
 import argparse
 import json
+import logging
 import os
 import shutil
+import sys
 import time
 import uuid
 
 import numpy as np
-import openlit  # type: ignore[import-untyped]
 import torch
 import torch.utils.data
 from accelerate import Accelerator
+from opentelemetry import metrics
+from opentelemetry._logs import set_logger_provider
+from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
+from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
+from opentelemetry.instrumentation.system_metrics import SystemMetricsInstrumentor
+from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
+from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
+from opentelemetry.sdk.resources import OTELResourceDetector, get_aggregated_resources
 from safetensors.torch import load_file, save_file, save_model
 
 from .api import Session
@@ -17,9 +28,7 @@ from .dataset import IterableStreamDataSet
 from .model import get_model
 from .utils import (
     extract_gradients,
-    fetch_data,
     get_adam,
-    get_preprocessor,
     get_scheduler,
     merge_models,
     prepare_files,
@@ -29,8 +38,33 @@ FETCH_PATH = "artifacts"
 CURRENT_MODEL_NAME = "global_weights.pt"
 MIN_LOOP_TIME_MS = 100
 
-# NOTE: Enable system and GPU metrics collection on supported platforms.
-openlit.init(collect_system_metrics=True, collect_gpu_stats=True)
+resource = get_aggregated_resources([OTELResourceDetector()])
+
+# Configure OTEL
+logger_provider = LoggerProvider(resource=resource)
+set_logger_provider(logger_provider)
+
+exporter = OTLPLogExporter()
+logger_provider.add_log_record_processor(BatchLogRecordProcessor(exporter))
+otel_handler = LoggingHandler(level=logging.NOTSET, logger_provider=logger_provider)
+
+metric_exporter = OTLPMetricExporter()
+metric_reader = PeriodicExportingMetricReader(metric_exporter)
+meter_provider = MeterProvider(resource=resource, metric_readers=[metric_reader])
+metrics.set_meter_provider(meter_provider)
+SystemMetricsInstrumentor().instrument(meter_provider=meter_provider)
+
+# NOTE: Set the root logger level to NOTSET to ensure all messages are captured
+# and attach OTLP + console handlers to root logger
+console_handler = logging.StreamHandler(sys.stdout)
+console_handler.setLevel(logging.INFO)
+console_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+
+logging.getLogger().setLevel(logging.NOTSET)
+logging.getLogger().addHandler(otel_handler)
+logging.getLogger().addHandler(console_handler)
+
+logger = logging.getLogger(__name__)
 
 
 def system_time_to_epoch_ms(timeout: object) -> int | None:
@@ -60,28 +94,22 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR09
         assert executor["class"] == "train"
         config = executor["config"]
 
-        print(json.dumps(executor))
-
         accelerator = Accelerator(project_dir=work_dir)
 
         prepare_files(config, session)
         local_fetch_path = f"{work_dir}/{FETCH_PATH}"
-        print(os.listdir(local_fetch_path))
+        logger.info("Fetched artifacts: %s", os.listdir(local_fetch_path))
 
         model = get_model(local_fetch_path, config["model"]["task"])
         optimizer = get_adam(config["optimizer"], model.parameters())
         scheduler = get_scheduler(config.get("scheduler"), optimizer)
-        preprocessor_config = config.get("preprocessor")
         data_loader = torch.utils.data.DataLoader(
-            IterableStreamDataSet(
-                fetch_data(socket_path, config["data"], work_dir),
-                config["batch_size"],
-                config["model"]["input-names"],
-                preprocessor_config["input-names"] if preprocessor_config else [],
-                get_preprocessor(preprocessor_config, local_fetch_path),
-            ),
+            IterableStreamDataSet(socket_path, work_dir, local_fetch_path, config["batch_size"], config),
             batch_size=None,
             pin_memory=True,
+            num_workers=4,
+            persistent_workers=True,
+            timeout=600,
         )
 
         model, optimizer, training_dataloader, scheduler = accelerator.prepare(model, optimizer, data_loader, scheduler)
@@ -114,10 +142,10 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR09
             action = next_action.get("action", {})
             kind = action.get("kind")
 
-            print(f"Action: {kind}", flush=True)
+            logger.info("Action: %s", kind)
 
             if kind == "terminate":
-                print("Training finished", flush=True)
+                logger.info("Training finished")
                 break
 
             if kind == "idle":
@@ -288,10 +316,10 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR09
                     continue
 
                 if accelerator.is_main_process:
-                    print("Received deprecated push-to-hub action; pushing model", flush=True)
+                    logger.info("Received deprecated push-to-hub action; pushing model")
                     try:
                         accelerator.unwrap_model(model).push_to_hub(repository, token=token)
-                        print("Model pushed. Training finished", flush=True)
+                        logger.info("Model pushed. Training finished")
                     except Exception as exc:  # noqa: BLE001
                         current_status = {
                             "executor": "train",
@@ -410,7 +438,7 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR09
             if elapsed < MIN_LOOP_TIME_MS:
                 time.sleep((MIN_LOOP_TIME_MS - elapsed) / 1000.0)
 
-        print(f"Finished training of {epoch_counter - 1} DiLoCo update rounds", flush=True)
+        logger.info("Finished training of %s DiLoCo update rounds", epoch_counter - 1)
 
 
 if __name__ == "__main__":
