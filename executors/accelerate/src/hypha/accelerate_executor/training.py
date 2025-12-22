@@ -211,13 +211,8 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR09
                     }
                     continue
 
-                timeout_ms = system_time_to_epoch_ms(action.get("timeout"))
-                timeout_sec = (timeout_ms - int(time.time() * 1000.0)) / 1000.0 if timeout_ms else None
-                if timeout_sec is not None and timeout_sec < 1.0:
-                    timeout_sec = 1.0
-
                 try:
-                    session.send_resource(target, last_gradient, timeout=timeout_sec)
+                    session.send_resource(target, last_gradient)
                     current_status = {
                         "executor": "train",
                         "details": {
@@ -346,13 +341,8 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR09
                     }
                     continue
 
-                timeout_ms = system_time_to_epoch_ms(action.get("timeout"))
-                timeout_sec = (timeout_ms - int(time.time() * 1000.0)) / 1000.0 if timeout_ms else None
-                if timeout_sec is not None and timeout_sec < 1.0:
-                    timeout_sec = 1.0
-
                 try:
-                    session.send_resource(target, CURRENT_MODEL_NAME, remove_file=False, timeout=timeout_sec)
+                    session.send_resource(target, CURRENT_MODEL_NAME, remove_file=False)
                     current_status = {
                         "executor": "train",
                         "details": {"state": "sent-model"},

@@ -163,13 +163,11 @@ pub mod action {
         },
         SendModel {
             target: Reference,
-            timeout: SystemTime,
         },
         ExecuteBatch,
         SendUpdate {
             target: Reference,
             weight: f32,
-            timeout: SystemTime,
         },
         ApplyUpdate {
             source: Reference,
