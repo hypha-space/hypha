@@ -298,8 +298,6 @@ where
                                 resource: None,
                             },
                             weight: peer_contribution as f32 / projected_target as f32,
-                            // TODO: We need a way to properly determine a good sent timeout
-                            timeout: now + Duration::from_secs(30),
                         })
                     }
                 } else if state.push_done {
@@ -411,8 +409,6 @@ where
                                 resource: None,
                             },
                             weight: peer_contribution as f32 / projected_target as f32,
-                            // TODO: We need a way to properly determine a good sent timeout
-                            timeout: now + Duration::from_secs(30),
                         })
                     }
                 }
@@ -484,7 +480,6 @@ where
                                 strategy: SelectionStrategy::One,
                                 resource: None,
                             },
-                            timeout: now + Duration::from_secs(30),
                         })
                     } else {
                         ExecutorAction::Train(TrainAction::ExecuteBatch)
@@ -1351,7 +1346,6 @@ mod batch_scheduler_tests {
                         resource: None,
                     },
                     weight: 0.3,
-                    timeout: SystemTime::now(),
                 }),
                 2000,
             ),
@@ -1365,7 +1359,6 @@ mod batch_scheduler_tests {
                         resource: None,
                     },
                     weight: 0.3,
-                    timeout: SystemTime::now(),
                 }),
                 2400,
             ),
