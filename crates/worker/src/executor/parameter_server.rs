@@ -533,7 +533,8 @@ async fn broadcast_update(
     gradient_file: &Path,
     cancel: CancellationToken,
 ) -> Result<(), Error> {
-    let mut writers = connector.send(send).await?;
+    let payload_len = fs::metadata(gradient_file).await?.len();
+    let mut writers = connector.send(send, payload_len).await?;
 
     let mut set = JoinSet::new();
     let file_path = gradient_file.to_path_buf();

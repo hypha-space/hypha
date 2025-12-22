@@ -315,7 +315,7 @@ async fn fetch_resource(
 
                             let mut reader = state
                                 .network
-                                .stream_pull(
+                                .open_pull_stream(
                                     data_provider,
                                     &DataSlice {
                                         dataset: dataset.clone(),
@@ -416,10 +416,11 @@ async fn send_resource(
         let req = req.clone();
         async move {
             let abs = safe_join(&state.work_dir, &req.path)?;
-            let mut writers = state.connector.send(req.resource).await?;
-
             let cancel = state.cancel.clone();
             let file_path = abs.clone();
+            let metadata = fs::metadata(&file_path).await?;
+            let payload_len = metadata.len();
+            let mut writers = state.connector.send(req.resource, payload_len).await?;
 
             // Don't copy the resource in the background. We need to wait until its done.
             // If run in the background, the Python code never knows when the send
@@ -564,8 +565,8 @@ async fn receive_subscribe(
             let item = match item_result {
                 Ok(item) => item,
                 Err(err) => {
-                    tracing::error!(error = %err, path = %dir_rel_clone, "receive_subscribe: stream error");
-                    break;
+                    tracing::warn!(error = %err, path = %dir_rel_clone, "receive_subscribe: stream error");
+                    continue;
                 }
             };
             let (file_name, mut reader) = derive_name_and_reader(item, index);
@@ -574,7 +575,7 @@ async fn receive_subscribe(
                 Ok(p) => p,
                 Err(err) => {
                     tracing::error!(error = %err, file = %file_rel, "receive_subscribe: invalid target path");
-                    break;
+                    continue;
                 }
             };
             if let Some(parent) = file_abs.parent() {
@@ -582,7 +583,7 @@ async fn receive_subscribe(
                     Ok(()) => (),
                     Err(err) => {
                         tracing::error!(error = %err, directory = %parent.display(), "receive_subscribe: failed to create directory");
-                        break;
+                        continue;
                     }
                 }
             }
@@ -590,14 +591,14 @@ async fn receive_subscribe(
                 Ok(f) => f,
                 Err(err) => {
                     tracing::error!(error = %err, file = %file_abs.display(), "receive_subscribe: failed to create file");
-                    break;
+                    continue;
                 }
             };
             let size = match tokio::io::copy(&mut reader, &mut file).await {
                 Ok(n) => n,
                 Err(err) => {
-                    tracing::error!(error = %err, file = %file_abs.display(), "receive_subscribe: failed to copy resource");
-                    break;
+                    tracing::warn!(error = %err, file = %file_abs.display(), "receive_subscribe: failed to copy resource");
+                    continue;
                 }
             };
             if let Err(err) = file.sync_all().await {

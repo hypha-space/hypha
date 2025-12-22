@@ -6,14 +6,22 @@
 
 // TODO: Decide whether to model this as an abstract stream interface with the protocol identifier as an argument or
 
-use libp2p::{PeerId, Stream, StreamProtocol};
-use libp2p_stream::{AlreadyRegistered, Control, IncomingStreams, OpenStreamError};
+use futures_util::{Stream, StreamExt};
+use libp2p::{PeerId, StreamProtocol};
+use libp2p_stream::{AlreadyRegistered, Control, OpenStreamError};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio_util::compat::FuturesAsyncReadCompatExt;
+
+use crate::utils::{FixedAsyncRead, FixedAsyncWrite};
 
 /// The protocol identifier for Hypha's tensor streaming protocol.
 ///
 /// This constant defines the libp2p protocol string used for tensor data streaming
 /// between peers. It follows the libp2p convention of using a path-like identifier.
-const TENSOR_STREAM_PROTOCOL: StreamProtocol = StreamProtocol::new("/hypha-tensor-stream/push");
+const TENSOR_STREAM_PROTOCOL: StreamProtocol = StreamProtocol::new("/hypha-tensor-stream/push/2");
+
+/// The fixed header length used for announcing payload size.
+const PAYLOAD_LENGTH_HEADER_SIZE: usize = size_of::<u64>();
 
 /// Base trait for accessing libp2p stream control functionality.
 /// Meant for pushing data from one peer to another.
@@ -39,21 +47,46 @@ pub trait StreamPushInterface {
 pub trait StreamPushReceiverInterface: StreamPushInterface {
     /// Accept incoming streams.
     ///
-    /// This method registers the streaming protocol and returns a stream
-    /// of incoming connections from other peers wanting to send data.
+    /// This method registers the streaming protocol and returns a stream of
+    /// framed incoming connections. The returned reader verifies a trailing
+    /// size marker and sends an ACK back to the sender before yielding EOF.
     ///
     /// # Returns
     ///
-    /// * `Ok(IncomingStreams)` - A stream of incoming connections
+    /// * `Ok(Stream)` - A stream of framed incoming connections
     /// * `Err(AlreadyRegistered)` - The protocol was already registered
     ///
     /// # Errors
     ///
     /// Returns [`AlreadyRegistered`] if the protocol has already been
     /// registered with the stream control.
-    fn streams_push(&self) -> Result<IncomingStreams, AlreadyRegistered> {
-        self.stream_control()
-            .accept_with_limit(TENSOR_STREAM_PROTOCOL, Some(8))
+    fn streams_push(
+        &self,
+    ) -> Result<
+        impl Stream<
+            Item = (
+                PeerId,
+                FixedAsyncRead<impl AsyncRead + Send + Unpin + 'static>,
+            ),
+        > + Send
+        + 'static,
+        AlreadyRegistered,
+    > {
+        let incoming = self
+            .stream_control()
+            .accept_with_limit(TENSOR_STREAM_PROTOCOL, Some(8))?
+            .filter_map(|(peer_id, stream)| async move {
+                let mut stream = stream.compat();
+                let mut header = [0u8; PAYLOAD_LENGTH_HEADER_SIZE];
+                if let Err(e) = stream.read_exact(&mut header).await {
+                    tracing::warn!("Failed to read push header: {}", e);
+                    return None;
+                }
+                let payload_len = u64::from_le_bytes(header);
+
+                Some((peer_id, FixedAsyncRead::new(stream, payload_len)))
+            });
+        Ok(incoming)
     }
 }
 
@@ -75,16 +108,29 @@ pub trait StreamPushSenderInterface: StreamPushInterface + Sync {
     ///
     /// # Returns
     ///
-    /// * `Ok(Stream)` - A successfully opened stream to the peer
+    /// * `Ok(AsyncWrite)` - A successfully opened writer to the peer
     /// * `Err(OpenStreamError)` - An error occurred during stream establishment
-    fn stream_push(
+    fn open_push_stream(
         &self,
         peer_id: PeerId,
-    ) -> impl Future<Output = Result<Stream, OpenStreamError>> + Send {
+        payload_len: u64,
+    ) -> impl Future<
+        Output = Result<FixedAsyncWrite<impl AsyncWrite + Send + Unpin + 'static>, OpenStreamError>,
+    > + Send {
         async move {
-            self.stream_control()
+            let stream = self
+                .stream_control()
                 .open_stream(peer_id, TENSOR_STREAM_PROTOCOL)
+                .await?;
+            let mut stream = stream.compat();
+
+            stream
+                .write_all(&payload_len.to_le_bytes())
                 .await
+                .map_err(OpenStreamError::Io)?;
+            stream.flush().await.map_err(OpenStreamError::Io)?;
+
+            Ok(FixedAsyncWrite::new(stream, payload_len))
         }
     }
 }
