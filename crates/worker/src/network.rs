@@ -197,6 +197,7 @@ impl Network {
             .map_err(|_| {
                 SwarmError::BehaviourCreation("Failed to create swarm behavior.".to_string())
             })?
+            .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(30)))
             .build();
 
         Ok((
