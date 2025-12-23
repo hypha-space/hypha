@@ -36,7 +36,7 @@ use tokio::{
 };
 use tokio_retry::{
     Retry,
-    strategy::{ExponentialBackoff, FibonacciBackoff, FixedInterval, jitter},
+    strategy::{FibonacciBackoff, FixedInterval, jitter},
 };
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use utoipa::OpenApi;
@@ -643,7 +643,7 @@ async fn send_action(
         return Err(Error::InvalidStatus("job_id mismatch".to_string()));
     }
 
-    let retry_strategy = ExponentialBackoff::from_millis(100).map(jitter).take(3);
+    let retry_strategy = FixedInterval::from_millis(200).map(jitter).take(6);
 
     // TODO we should ensure that a message is not received repeatedly. Otherwise it will distort the training.
     let result = Retry::spawn(retry_strategy, || {
