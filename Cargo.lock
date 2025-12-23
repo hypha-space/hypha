@@ -2007,6 +2007,7 @@ dependencies = [
  "hypha-config",
  "hypha-messages",
  "hypha-network",
+ "hypha-telemetry",
  "indicatif",
  "indoc",
  "libp2p",

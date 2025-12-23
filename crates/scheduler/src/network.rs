@@ -28,7 +28,7 @@ use hypha_network::{
     stream_push::{StreamPushInterface, StreamPushSenderInterface},
     swarm::{SwarmDriver, SwarmError},
 };
-use hypha_telemetry::{bandwidth, metrics};
+use hypha_telemetry::{bandwidth, metrics, rtt};
 use libp2p::{
     PeerId, StreamProtocol, Swarm, SwarmBuilder,
     core::{muxing::StreamMuxerBox, transport::Transport},
@@ -85,6 +85,7 @@ pub struct NetworkDriver {
     data_record_outbound_responses_map: OutboundResponses,
     data_record_request_handlers: Vec<RequestHandler<data_record::Codec>>,
     exclude_cidrs: Vec<IpNet>,
+    rrt_metrics: rtt::RttMetrics,
 }
 
 #[allow(clippy::large_enum_variant, clippy::enum_variant_names)]
@@ -238,6 +239,7 @@ impl Network {
                 data_record_request_handlers: Vec::new(),
                 action_receiver,
                 exclude_cidrs,
+                rrt_metrics: rtt::RttMetrics::new(&meter),
             },
         ))
     }
@@ -285,6 +287,11 @@ impl SwarmDriver<Behaviour> for NetworkDriver {
                         }
                         SwarmEvent::Behaviour(BehaviourEvent::Dcutr(event)) => {
                             tracing::debug!("dcutr event: {:?}", event);
+                        }
+                        SwarmEvent::Behaviour(BehaviourEvent::Ping(ping::Event { peer, result, .. })) => {
+                            if let Ok(rtt) = result {
+                                self.rrt_metrics.record(&peer, rtt);
+                            }
                         }
                         _ => {
                             tracing::debug!("Unhandled event: {:?}", event);

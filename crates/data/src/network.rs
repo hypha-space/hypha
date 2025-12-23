@@ -17,6 +17,7 @@ use hypha_network::{
     stream_pull::{StreamPullInterface, StreamPullReceiverInterface},
     swarm::{SwarmDriver, SwarmError},
 };
+use hypha_telemetry::{metrics, rtt};
 use libp2p::{
     StreamProtocol, Swarm, SwarmBuilder, dcutr, gossipsub, identify, kad, ping, relay,
     request_response,
@@ -61,6 +62,7 @@ pub struct NetworkDriver {
     health_outbound_responses_map: OutboundResponses,
     health_request_handlers: HealthRequestHandlers,
     exclude_cidrs: Vec<IpNet>,
+    rtt_metrics: rtt::RttMetrics,
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -83,6 +85,7 @@ impl Network {
         network_config: &NetworkConfig,
     ) -> Result<(Self, NetworkDriver), SwarmError> {
         let (action_sender, action_receiver) = mpsc::channel(5);
+        let meter = metrics::global::meter();
 
         let swarm = SwarmBuilder::with_existing_identity(cert_chain, private_key, ca_certs, crls)
             .with_tokio()
@@ -182,6 +185,7 @@ impl Network {
                 health_request_handlers: Vec::new(),
                 action_receiver,
                 exclude_cidrs,
+                rtt_metrics: rtt::RttMetrics::new(&meter),
             },
         ))
     }
@@ -223,6 +227,11 @@ impl SwarmDriver<Behaviour> for NetworkDriver {
                         }
                         SwarmEvent::Behaviour(BehaviourEvent::HealthRequestResponse(event)) => {
                             <NetworkDriver as RequestResponseDriver<Behaviour, health::Codec>>::process_request_response_event(&mut self, event).await;
+                        }
+                        SwarmEvent::Behaviour(BehaviourEvent::Ping(ping::Event { peer, result, .. })) => {
+                            if let Ok(rtt) = result {
+                                self.rtt_metrics.record(&peer, rtt);
+                            }
                         }
 
                         _ => {

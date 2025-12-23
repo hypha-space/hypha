@@ -5,6 +5,7 @@ pub mod layer;
 pub mod logging;
 pub mod metrics;
 pub mod otlp;
+pub mod rtt;
 pub mod tracing;
 
 // NOTE: Re-export a minimal opentelemetry surface so downstream crates do not
