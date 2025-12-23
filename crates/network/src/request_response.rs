@@ -861,6 +861,9 @@ where
 ///
 /// This enables `network.on::<P>(...)` and `network.request::<P>(...)` where `P: Protocol`.
 pub trait RequestResponseInterfaceExt: Clone + Sized + Send + Sync + 'static {
+    /// Default channel capacity for handler streams. Sized to tolerate bursty arrivals under RTT.
+    const DEFAULT_HANDLER_BUFFER: usize = 512;
+
     /// Create a handler builder for the protocol `P` using the given pattern.
     fn on<TCodec, Pat>(&self, pattern: Pat) -> HandlerBuilder<'_, TCodec, Self>
     where
@@ -872,7 +875,7 @@ pub trait RequestResponseInterfaceExt: Clone + Sized + Send + Sync + 'static {
         HandlerBuilder {
             interface: self,
             matcher: pattern.into_matcher(),
-            buffer_size: 32,
+            buffer_size: Self::DEFAULT_HANDLER_BUFFER,
         }
     }
 
