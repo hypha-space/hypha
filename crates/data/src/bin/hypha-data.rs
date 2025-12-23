@@ -36,7 +36,7 @@ use tokio::{
 };
 use tokio_retry::{
     Retry,
-    strategy::{ExponentialBackoff, jitter},
+    strategy::{FixedInterval, jitter},
 };
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{
@@ -156,7 +156,9 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
 
     // Dial each gateway and, on success, set up a relay circuit listen via it.
     let gateway_peer_ids = Retry::spawn(
-        ExponentialBackoff::from_millis(100).map(jitter).take(3),
+        FixedInterval::from_millis(config.network().rtt_ms().max(100))
+            .map(jitter)
+            .take(6),
         || {
             let network = network.clone();
 
