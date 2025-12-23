@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use futures_util::StreamExt;
 use hypha_config::NetworkConfig;
@@ -86,6 +86,8 @@ impl Network {
     ) -> Result<(Self, NetworkDriver), SwarmError> {
         let (action_sender, action_receiver) = mpsc::channel(5);
         let meter = metrics::global::meter();
+        let request_timeout =
+            (Duration::from_millis(network_config.rtt_ms()) * 10).max(Duration::from_secs(10));
 
         let swarm = SwarmBuilder::with_existing_identity(cert_chain, private_key, ca_certs, crls)
             .with_tokio()
@@ -150,14 +152,15 @@ impl Network {
                                 StreamProtocol::new(data_record::IDENTIFIER),
                                 request_response::ProtocolSupport::Inbound,
                             )],
-                            request_response::Config::default(),
+                            request_response::Config::default()
+                                .with_request_timeout(request_timeout),
                         ),
                     health_request_response: request_response::Behaviour::<health::Codec>::new(
                         [(
                             StreamProtocol::new(health::IDENTIFIER),
                             request_response::ProtocolSupport::Full,
                         )],
-                        request_response::Config::default(),
+                        request_response::Config::default().with_request_timeout(request_timeout),
                     ),
                 }
             })

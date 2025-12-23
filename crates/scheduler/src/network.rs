@@ -3,7 +3,7 @@
 //! The scheduler orchestrates workers via libp2p. This module brings together
 //! the networking primitives and drives the underlying swarm.
 
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use futures_util::stream::StreamExt;
 use hypha_config::NetworkConfig;
@@ -112,6 +112,8 @@ impl Network {
     ) -> Result<(Self, NetworkDriver), SwarmError> {
         let (action_sender, action_receiver) = mpsc::channel(5);
         let meter = metrics::global::meter();
+        let request_timeout =
+            (Duration::from_millis(network_config.rtt_ms()) * 10).max(Duration::from_secs(10));
 
         // Build libp2p Swarm using the derived identity and mTLS config
         let swarm = SwarmBuilder::with_existing_identity(cert_chain, private_key, ca_certs, crls)
@@ -182,21 +184,21 @@ impl Network {
                             StreamProtocol::new(api::IDENTIFIER),
                             request_response::ProtocolSupport::Full,
                         )],
-                        request_response::Config::default(),
+                        request_response::Config::default().with_request_timeout(request_timeout),
                     ),
                     health_request_response: request_response::Behaviour::<health::Codec>::new(
                         [(
                             StreamProtocol::new(health::IDENTIFIER),
                             request_response::ProtocolSupport::Outbound,
                         )],
-                        request_response::Config::default(),
+                        request_response::Config::default().with_request_timeout(request_timeout),
                     ),
                     action_request_response: request_response::Behaviour::<action::Codec>::new(
                         [(
                             StreamProtocol::new(action::IDENTIFIER),
                             request_response::ProtocolSupport::Full,
                         )],
-                        request_response::Config::default(),
+                        request_response::Config::default().with_request_timeout(request_timeout),
                     ),
                     data_record_request_response:
                         request_response::Behaviour::<data_record::Codec>::new(
@@ -204,7 +206,8 @@ impl Network {
                                 StreamProtocol::new(data_record::IDENTIFIER),
                                 request_response::ProtocolSupport::Outbound,
                             )],
-                            request_response::Config::default(),
+                            request_response::Config::default()
+                                .with_request_timeout(request_timeout),
                         ),
                 }
             })
