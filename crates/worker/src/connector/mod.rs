@@ -19,7 +19,7 @@ use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_retry::{
     Retry,
-    strategy::{ExponentialBackoff, jitter},
+    strategy::{FixedInterval, jitter},
 };
 use tokio_util::io::StreamReader;
 
@@ -347,44 +347,47 @@ where
                 } => match strategy {
                     SelectionStrategy::All => {
                         let network = self.network.clone();
-                        let it = futures_util::stream::iter(peers.clone()).then(move |peer| {
-                            let network = network.clone();
-                            async move {
-                                let retry_strategy =
-                                    ExponentialBackoff::from_millis(100).map(jitter).take(3);
+                        let count = peers.len();
+                        let it = futures_util::stream::iter(peers.clone())
+                            .map(move |peer| {
+                                let network = network.clone();
+                                async move {
+                                    let retry_strategy =
+                                        FixedInterval::from_millis(200).map(jitter).take(6);
 
-                                async fn attempt_push<T>(
-                                    network: T,
-                                    peer: PeerId,
-                                    payload_len: u64,
-                                ) -> Result<BoxAsyncWrite, ConnectorError>
-                                where
-                                    T: StreamPushSenderInterface,
-                                {
-                                    let writer = network
-                                        .open_push_stream(peer, payload_len)
-                                        .await
-                                        .map_err(ConnectorError::OpenStream)?;
-                                    Ok(Box::pin(writer))
+                                    async fn attempt_push<T>(
+                                        network: T,
+                                        peer: PeerId,
+                                        payload_len: u64,
+                                    ) -> Result<BoxAsyncWrite, ConnectorError>
+                                    where
+                                        T: StreamPushSenderInterface,
+                                    {
+                                        let writer = network
+                                            .open_push_stream(peer, payload_len)
+                                            .await
+                                            .map_err(ConnectorError::OpenStream)?;
+                                        Ok(Box::pin(writer))
+                                    }
+
+                                    let result = Retry::spawn(retry_strategy, move || {
+                                        attempt_push(network.clone(), peer, payload_len)
+                                    })
+                                    .await;
+
+                                    match result {
+                                        Ok(writer) => Ok(WriteItem {
+                                            meta: ItemMeta {
+                                                kind: "peer",
+                                                name: peer.to_string(),
+                                            },
+                                            writer,
+                                        }),
+                                        Err(e) => Err(e),
+                                    }
                                 }
-
-                                let result = Retry::spawn(retry_strategy, move || {
-                                    attempt_push(network.clone(), peer, payload_len)
-                                })
-                                .await;
-
-                                match result {
-                                    Ok(writer) => Ok(WriteItem {
-                                        meta: ItemMeta {
-                                            kind: "peer",
-                                            name: peer.to_string(),
-                                        },
-                                        writer,
-                                    }),
-                                    Err(e) => Err(e),
-                                }
-                            }
-                        });
+                            })
+                            .buffer_unordered(count.max(1));
                         Ok(Box::pin(it) as WriteItemStream)
                     }
                     SelectionStrategy::One | SelectionStrategy::Random => {

@@ -1,6 +1,4 @@
-import json
-from collections.abc import Iterator
-from contextlib import AbstractContextManager, contextmanager
+from contextlib import AbstractContextManager
 from types import TracebackType
 from typing import Any, override
 
@@ -33,47 +31,32 @@ class Session(AbstractContextManager["Session", None]):
         req = {"resource": resource, "path": path, "timeout_ms": timeout_ms, "remove_file": remove_file}
         # We must allow the client to wait at least as long as the requested timeout.
         # If timeout is None, wait forever.
-        _ = self._client.post("http://hypha/resources/send", json=req, timeout=timeout).raise_for_status()
+        _ = self._client.post(
+            "http://hypha/resources/send", json=req, timeout=httpx.Timeout(None, connect=0.1)
+        ).raise_for_status()
 
     def send_action(self, payload: Any) -> Any:
-        resp = self._client.post("http://hypha/action/update", json=payload, timeout=None).raise_for_status()
+        resp = self._client.post(
+            "http://hypha/action/update", json=payload, timeout=httpx.Timeout(None, connect=0.1)
+        ).raise_for_status()
         return resp.json()
 
     def fetch(self, resource: Any) -> Any:
-        resp = self._client.post("http://hypha/resources/fetch", json=resource, timeout=None).raise_for_status()
+        resp = self._client.post(
+            "http://hypha/resources/fetch", json=resource, timeout=httpx.Timeout(None, connect=0.1)
+        ).raise_for_status()
         return resp.json()
 
-    @contextmanager
-    def receive(self, resource: Any, path: str, timeout: float | None = None) -> Iterator["EventSource"]:
-        req = {"resource": resource, "path": path}
-        # Use a short connect timeout to fail fast if the local side is unresponsive,
-        # but respect the provided timeout for the total duration/read.
-        # If timeout is None, we still enforce a connect timeout.
-        timeout_config = httpx.Timeout(timeout, connect=5.0)
-        with self._client.stream(
-            "POST",
+    def receive(self, resource: Any, path: str, timeout: Any | None = None) -> Any | None:
+        req = {"resource": resource, "path": path, "timeout": timeout}
+        resp = self._client.post(
             "http://hypha/resources/receive",
             json=req,
-            headers={"Accept": "text/event-stream"},
-            timeout=timeout_config,
-        ) as resp:
-            yield EventSource(resp)
-
-
-class EventSource:
-    def __init__(self, response: httpx.Response) -> None:
-        self._response: httpx.Response = response
-
-    @property
-    def response(self) -> httpx.Response:
-        return self._response
-
-    def __iter__(self) -> Iterator[Any]:
-        for line in self._response.iter_lines():
-            fieldname, _, value = line.rstrip("\n").partition(":")
-
-            if fieldname == "data":
-                result = json.loads(value)
-
-                yield result
-            # Ignore other SSE fields (e.g., event:, id:, retry:)
+            timeout=httpx.Timeout(None, connect=0.1),
+        )
+        if resp.status_code == httpx.codes.NO_CONTENT:
+            return None
+        resp.raise_for_status()
+        if resp.status_code == httpx.codes.NO_CONTENT:
+            return None
+        return resp.json()

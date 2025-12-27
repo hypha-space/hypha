@@ -672,32 +672,34 @@ where
                         let handler = handlers.iter().find(|h| (h.matcher)(&request));
 
                         if let Some(handler) = handler {
-                            match handler
-                                .sender
-                                .send(Ok(InboundRequest {
-                                    request_id,
-                                    channel,
-                                    peer_id: peer,
-                                    request,
-                                }))
-                                .await
-                            {
-                                Ok(_) => {
-                                    tracing::trace!(
-                                        peer = %peer,
-                                        request_id = ?request_id,
-                                        handler_id = %handler.id,
-                                        "Successfully sent request to handler channel"
-                                    );
+                            let sender = handler.sender.clone();
+                            let handler_id = handler.id;
+                            let inbound_request = InboundRequest {
+                                request_id,
+                                channel,
+                                peer_id: peer,
+                                request,
+                            };
+
+                            tokio::spawn(async move {
+                                match sender.send(Ok(inbound_request)).await {
+                                    Ok(_) => {
+                                        tracing::trace!(
+                                            peer = %peer,
+                                            request_id = ?request_id,
+                                            handler_id = %handler_id,
+                                            "Successfully sent request to handler channel"
+                                        );
+                                    }
+                                    Err(_) => {
+                                        tracing::warn!(
+                                            peer = %peer,
+                                            handler_id = %handler_id,
+                                            "Handler channel closed, request dropped"
+                                        );
+                                    }
                                 }
-                                Err(_) => {
-                                    tracing::warn!(
-                                        peer = %peer,
-                                        handler_id = %handler.id,
-                                        "Handler channel closed, request dropped"
-                                    );
-                                }
-                            }
+                            });
                         } else {
                             tracing::warn!(
                                 peer = %peer,
@@ -861,6 +863,9 @@ where
 ///
 /// This enables `network.on::<P>(...)` and `network.request::<P>(...)` where `P: Protocol`.
 pub trait RequestResponseInterfaceExt: Clone + Sized + Send + Sync + 'static {
+    /// Default channel capacity for handler streams. Sized to tolerate bursty arrivals under RTT.
+    const DEFAULT_HANDLER_BUFFER: usize = 512;
+
     /// Create a handler builder for the protocol `P` using the given pattern.
     fn on<TCodec, Pat>(&self, pattern: Pat) -> HandlerBuilder<'_, TCodec, Self>
     where
@@ -872,7 +877,7 @@ pub trait RequestResponseInterfaceExt: Clone + Sized + Send + Sync + 'static {
         HandlerBuilder {
             interface: self,
             matcher: pattern.into_matcher(),
-            buffer_size: 32,
+            buffer_size: Self::DEFAULT_HANDLER_BUFFER,
         }
     }
 

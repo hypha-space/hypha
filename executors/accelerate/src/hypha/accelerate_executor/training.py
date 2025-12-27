@@ -82,7 +82,7 @@ def system_time_to_epoch_ms(timeout: object) -> int | None:
 
 
 def sleep_until_epoch_ms(target_ms: int) -> None:
-    now_ms = int(time.time() * 1000.0)
+    now_ms = time.time() * 1000.0
     if target_ms > now_ms:
         time.sleep((target_ms - now_ms) / 1000.0)
 
@@ -211,13 +211,8 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR09
                     }
                     continue
 
-                timeout_ms = system_time_to_epoch_ms(action.get("timeout"))
-                timeout_sec = (timeout_ms - int(time.time() * 1000.0)) / 1000.0 if timeout_ms else None
-                if timeout_sec is not None and timeout_sec < 1.0:
-                    timeout_sec = 1.0
-
                 try:
-                    session.send_resource(target, last_gradient, timeout=timeout_sec)
+                    session.send_resource(target, last_gradient)
                     current_status = {
                         "executor": "train",
                         "details": {
@@ -248,49 +243,31 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR09
                     }
                     continue
 
-                timeout_ms = system_time_to_epoch_ms(action.get("timeout"))
-                read_timeout = (timeout_ms - int(time.time() * 1000.0)) / 1000.0 if timeout_ms else None
-                if read_timeout is not None and read_timeout <= 0:
-                    # Scheduler will tell us what to do next.
-                    current_status = {
-                        "executor": "train",
-                        "details": {
-                            "state": "error",
-                            "type": "connection",
-                            "message": "ApplyUpdate timeout reached before receive",
-                        },
-                    }
-                    continue
-
                 receive_path = f"incoming-{uuid.uuid4()}"
 
                 try:
-                    with session.receive(source, receive_path, timeout=read_timeout) as receiver:
-                        updates_iter = iter(receiver)
-                        pointers = next(updates_iter)
-                        if pointers:
-                            latest = pointers[-1] if isinstance(pointers, list) else pointers
-                            parameters = (
-                                latest.get("parameters") if isinstance(latest.get("parameters"), dict) else None
-                            )
-                            rel_path = parameters.get("path") if parameters else latest.get("path")
-                            if isinstance(rel_path, str):
-                                path = os.path.join(work_dir, rel_path)
-                                model.load_state_dict(merge_models(previous_model_path, path))
-                                save_model(model, previous_model_path)
+                    pointers = session.receive(source, receive_path, timeout=action.get("timeout"))
+                    if pointers:
+                        latest = pointers[-1] if isinstance(pointers, list) else pointers
+                        parameters = latest.get("parameters") if isinstance(latest.get("parameters"), dict) else None
+                        rel_path = parameters.get("path") if parameters else latest.get("path")
+                        if isinstance(rel_path, str):
+                            path = os.path.join(work_dir, rel_path)
+                            model.load_state_dict(merge_models(previous_model_path, path))
+                            save_model(model, previous_model_path)
 
-                                # Once we updated the model, we no longer need the parameter file.
-                                os.remove(path)
-                except StopIteration:
-                    current_status = {
-                        "executor": "train",
-                        "details": {
-                            "state": "error",
-                            "type": "connection",
-                            "message": "Receiver stream closed; no updates to merge.",
-                        },
-                    }
-                    continue
+                            # Once we updated the model, we no longer need the parameter file.
+                            os.remove(path)
+                    else:
+                        current_status = {
+                            "executor": "train",
+                            "details": {
+                                "state": "error",
+                                "type": "connection",
+                                "message": "No updates received before timeout.",
+                            },
+                        }
+                        continue
                 except Exception as exc:  # noqa: BLE001
                     current_status = {
                         "executor": "train",
@@ -346,13 +323,8 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR09
                     }
                     continue
 
-                timeout_ms = system_time_to_epoch_ms(action.get("timeout"))
-                timeout_sec = (timeout_ms - int(time.time() * 1000.0)) / 1000.0 if timeout_ms else None
-                if timeout_sec is not None and timeout_sec < 1.0:
-                    timeout_sec = 1.0
-
                 try:
-                    session.send_resource(target, CURRENT_MODEL_NAME, remove_file=False, timeout=timeout_sec)
+                    session.send_resource(target, CURRENT_MODEL_NAME, remove_file=False)
                     current_status = {
                         "executor": "train",
                         "details": {"state": "sent-model"},
@@ -380,43 +352,28 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR09
                     }
                     continue
 
-                timeout_ms = system_time_to_epoch_ms(action.get("timeout"))
-                read_timeout = (timeout_ms - int(time.time() * 1000.0)) / 1000.0 if timeout_ms else None
-                if read_timeout is not None and read_timeout <= 0:
-                    # Scheduler will tell us what to do next.
-                    current_status = {
-                        "executor": "train",
-                        "details": {
-                            "state": "error",
-                            "type": "connection",
-                            "message": "ReceiveModel timeout reached before receive",
-                        },
-                    }
-                    continue
                 try:
                     receive_path = f"incoming-{uuid.uuid4()}"
-                    with session.receive(source, receive_path, timeout=read_timeout) as receiver:
-                        updates_iter = iter(receiver)
-                        pointers = next(updates_iter)
-                        if pointers:
-                            incomming = pointers[-1] if isinstance(pointers, list) else pointers
-                            rel_path = incomming.get("path")
-                            if isinstance(rel_path, str):
-                                path = os.path.join(work_dir, rel_path)
-                                model.load_state_dict(load_file(path))
-                                os.remove(previous_model_path)
-                                shutil.copy(path, previous_model_path)
-                                os.remove(path)
-                except StopIteration:
-                    current_status = {
-                        "executor": "train",
-                        "details": {
-                            "state": "error",
-                            "type": "connection",
-                            "message": "Receiver stream closed; no updates to merge.",
-                        },
-                    }
-                    continue
+                    pointers = session.receive(source, receive_path, timeout=action.get("timeout"))
+                    if pointers:
+                        incomming = pointers[-1] if isinstance(pointers, list) else pointers
+                        rel_path = incomming.get("path")
+                        if isinstance(rel_path, str):
+                            path = os.path.join(work_dir, rel_path)
+                            model.load_state_dict(load_file(path))
+                            os.remove(previous_model_path)
+                            shutil.copy(path, previous_model_path)
+                            os.remove(path)
+                    else:
+                        current_status = {
+                            "executor": "train",
+                            "details": {
+                                "state": "error",
+                                "type": "connection",
+                                "message": "No model received before timeout.",
+                            },
+                        }
+                        continue
                 except Exception as exc:  # noqa: BLE001
                     current_status = {
                         "executor": "train",

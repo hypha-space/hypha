@@ -4,7 +4,7 @@
 //! It ties together the networking primitives and drives the swarm. This
 //! documentation follows the [rustdoc guidelines](https://doc.rust-lang.org/rustdoc/how-to-write-documentation.html).
 
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use futures_util::stream::StreamExt;
 use hypha_config::NetworkConfig;
@@ -104,8 +104,10 @@ impl Network {
         exclude_cidrs: Vec<IpNet>,
         network_config: &NetworkConfig,
     ) -> Result<(Self, NetworkDriver), SwarmError> {
-        let (action_sender, action_receiver) = mpsc::channel(5);
+        let (action_sender, action_receiver) = mpsc::channel(64);
         let meter = metrics::global::meter();
+        let request_timeout =
+            (Duration::from_millis(network_config.rtt_ms()) * 10).max(Duration::from_secs(10));
 
         let swarm = SwarmBuilder::with_existing_identity(cert_chain, private_key, ca_certs, crls)
             .with_tokio()
@@ -174,27 +176,28 @@ impl Network {
                             StreamProtocol::new(api::IDENTIFIER),
                             request_response::ProtocolSupport::Full,
                         )],
-                        request_response::Config::default(),
+                        request_response::Config::default().with_request_timeout(request_timeout),
                     ),
                     health_request_response: request_response::Behaviour::<health::Codec>::new(
                         [(
                             StreamProtocol::new(health::IDENTIFIER),
                             request_response::ProtocolSupport::Full,
                         )],
-                        request_response::Config::default(),
+                        request_response::Config::default().with_request_timeout(request_timeout),
                     ),
                     action_request_response: request_response::Behaviour::<action::Codec>::new(
                         [(
                             StreamProtocol::new(action::IDENTIFIER),
                             request_response::ProtocolSupport::Full,
                         )],
-                        request_response::Config::default(),
+                        request_response::Config::default().with_request_timeout(request_timeout),
                     ),
                 }
             })
             .map_err(|_| {
                 SwarmError::BehaviourCreation("Failed to create swarm behavior.".to_string())
             })?
+            .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(30)))
             .build();
 
         Ok((

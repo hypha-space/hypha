@@ -28,7 +28,7 @@ use tokio::{
 };
 use tokio_retry::{
     Retry,
-    strategy::{ExponentialBackoff, jitter},
+    strategy::{FixedInterval, jitter},
 };
 use tokio_util::{future::FutureExt, sync::CancellationToken, task::TaskTracker};
 use uuid::Uuid;
@@ -92,9 +92,9 @@ impl JobExecutor for ParameterServerExecutor {
     ) -> Result<ParameterServerExecution, Error> {
         tracing::info!(job_spec = ?job, "Executing parameter server job");
 
-        let retry_strategy = ExponentialBackoff::from_millis(100)
-            .map(jitter) // add jitter to delays
-            .take(3); // limit to 3 retries
+        // NOTE: Retry for a second, please note that this needs to align with
+        // the batch scheduler timings
+        let retry_strategy = FixedInterval::from_millis(50).map(jitter).take(20);
 
         let id = Uuid::new_v4();
         let work_dir = self.work_dir_base.join(format!("hypha-{}", id));
@@ -183,6 +183,12 @@ impl JobExecutor for ParameterServerExecutor {
                             let pid = peer.parse().unwrap_or_else(|_| PeerId::random());
                             let entry = store.entry(pid).or_default();
                             entry.push(file_path.clone());
+                            tracing::debug!(
+                                peer_id = %peer,
+                                stored = entry.len(),
+                                total_peers = store.len(),
+                                "Stored incoming update"
+                            );
                         }
                         updates_notify.notify_one();
                     }.with_cancellation_token_owned(cancel.clone()));
@@ -268,9 +274,9 @@ impl JobExecutor for ParameterServerExecutor {
 
                                 // NOTE: Allowed peers come from scheduler. If empty, accept any.
                                 let allowed = receive.get_peers().clone();
-                                // TODO: These should come from the scheduler and must be configurable.
-                                let max_delay = std::time::Duration::from_millis(500);
-                                let action_deadline = std::time::Duration::from_secs(30);
+                                // NOTE: Timeouts sized for ~100ms RTT.
+                                let gap_timeout = std::time::Duration::from_secs(10);
+                                let action_deadline = std::time::Duration::from_secs(60);
 
                                 match aggregate_updates(
                                     updates_store.clone(),
@@ -278,7 +284,7 @@ impl JobExecutor for ParameterServerExecutor {
                                     work_dir.clone(),
                                     &device,
                                     &optimizer,
-                                    max_delay,
+                                    gap_timeout,
                                     action_deadline,
                                     updates_notify.clone(),
                                     cancel.clone(),
@@ -295,10 +301,16 @@ impl JobExecutor for ParameterServerExecutor {
                                     }
                                     Err(e) => {
                                         tracing::warn!(error = %e, "Failed to aggregate updates");
+                                        let agg_error = match e {
+                                            Error::InvalidExecutorConfig(msg) => {
+                                                AggregateError::Connection { message: msg }
+                                            }
+                                            other => AggregateError::Other {
+                                                message: other.to_string(),
+                                            },
+                                        };
                                         current_status = ExecutorStatus::Aggregate(
-                                            action::AggregateStatus::Error(AggregateError::Other {
-                                                message: e.to_string(),
-                                            }),
+                                            action::AggregateStatus::Error(agg_error),
                                         );
                                     }
                                 }
@@ -405,8 +417,7 @@ async fn aggregate_updates(
     let mut used: HashSet<PeerId> = HashSet::new();
     let deadline = tokio::time::Instant::now() + action_deadline;
 
-    // NOTE: Max delay we allow for any peer to send an update
-    // when, if have not received an update within this time, we end the action.
+    // NOTE: Max delay we allow between updates before ending the action.
     let max_delay = tokio::time::sleep(gap_timeout);
     tokio::pin!(max_delay);
 
@@ -488,14 +499,31 @@ async fn aggregate_updates(
         tokio::select! {
             _ = cancel.cancelled() => return Err(Error::InvalidExecutorConfig("aggregation cancelled".to_string())),
             _ = &mut max_delay => {
-                tracing::debug!("Aggregate max delay reached");
+                tracing::debug!(
+                    waited_ms = gap_timeout.as_millis(),
+                    used = used.len(),
+                    allow = allowed.len(),
+                    "Aggregate max delay reached"
+                );
                 break;
             },
             _ = tokio::time::sleep_until(deadline) => {
-                tracing::warn!("Aggregate deadline reached");
+                tracing::warn!(
+                    waited_ms = action_deadline.as_millis(),
+                    used = used.len(),
+                    allow = allowed.len(),
+                    "Aggregate deadline reached"
+                );
                 break;
             },
             _ = notify.notified() => {
+                tracing::debug!(
+                    waited_ms = gap_timeout.as_millis(),
+                    "Aggregation notified of new update; resetting gap timer"
+                );
+                max_delay
+                    .as_mut()
+                    .reset(tokio::time::Instant::now() + gap_timeout);
                 // New updates available; loop to try again
                 continue;
             }
@@ -510,6 +538,11 @@ async fn aggregate_updates(
         )
         .await?;
     } else {
+        tracing::warn!(
+            used_peers = used.len(),
+            allowed_peers = allowed.len(),
+            "Aggregation finished without receiving any updates"
+        );
         return Err(Error::InvalidExecutorConfig(
             "no updates available to aggregate".to_string(),
         ));
@@ -535,6 +568,8 @@ async fn broadcast_update(
     gradient_file: &Path,
     cancel: CancellationToken,
 ) -> Result<(), Error> {
+    tracing::info!("Broadcasting update to {:?}", send);
+
     let payload_len = fs::metadata(gradient_file).await?.len();
     let mut writers = connector.send(send, payload_len).await?;
 

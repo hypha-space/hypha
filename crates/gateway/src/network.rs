@@ -3,7 +3,7 @@
 //! This module wires together the various networking primitives to run the
 //! gateway's event loop.
 
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use futures_util::stream::StreamExt;
 use hypha_config::NetworkConfig;
@@ -163,8 +163,7 @@ impl Network {
                 .map_err(|_| {
                     SwarmError::BehaviourCreation("Failed to create swarm behavior.".to_string())
                 })?
-                // TODO: Tune swarm configuration
-                .with_swarm_config(|config| config)
+                .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(30)))
                 .build();
 
         swarm

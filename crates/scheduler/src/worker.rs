@@ -11,6 +11,10 @@ use hypha_resources::Resources;
 use libp2p::PeerId;
 use thiserror::Error;
 use tokio::{task::JoinHandle, time::sleep};
+use tokio_retry::{
+    Retry,
+    strategy::{FixedInterval, jitter},
+};
 use uuid::Uuid;
 
 use crate::network::Network;
@@ -85,19 +89,26 @@ impl Worker {
             async move {
                 loop {
                     tracing::debug!(%lease_id, %peer_id, "Refreshing lease");
-                    match network
-                        .request::<api::Codec>(
-                            peer_id,
-                            api::Request::RenewLease(renew_lease::Request { id: lease_id }),
-                        )
-                        .await
-                    {
-                        Ok(api::Response::RenewLease(renew_lease::Response::Renewed {
-                            id: _,
-                            timeout,
-                        })) => {
-                            // Handle successful response
+                    let retry_strategy = FixedInterval::from_millis(200).map(jitter).take(6);
 
+                    let result = Retry::spawn(retry_strategy, || {
+                        let network = network.clone();
+                        async move {
+                            network
+                                .request::<api::Codec>(
+                                    peer_id,
+                                    api::Request::RenewLease(renew_lease::Request { id: lease_id }),
+                                )
+                                .await
+                        }
+                    })
+                    .await;
+
+                    match result {
+                        Ok(api::Response::RenewLease(renew_lease::Response::Renewed {
+                            timeout,
+                            ..
+                        })) => {
                             // TODO: Make the min refresh configurable
 
                             let duration = timeout
@@ -118,15 +129,18 @@ impl Worker {
                             sleep(safe_duration).await;
                         }
                         Ok(api::Response::RenewLease(renew_lease::Response::Failed)) => {
-                            // Handle failed response
                             return Err(WorkerError::LeaseExpired);
                         }
                         Err(error) => {
-                            // Handle error
+                            tracing::warn!(
+                                %lease_id,
+                                %peer_id,
+                                error = %error,
+                                "Lease renewal failed after retries"
+                            );
                             return Err(WorkerError::NetworkError(error));
                         }
                         _ => {
-                            // Handle unexpected response
                             return Err(WorkerError::DispatchFailed(
                                 "Unexpected response".to_string(),
                             ));
