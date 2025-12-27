@@ -140,15 +140,19 @@ the token will be shared with a worker. Only use a token with limited rights and
 **Training Duration**:
 
 To control the training process, there are two essential parameters. First, the number of DiLoCo rounds and second, the
-number of data samples that should be processed between updates. The Scheduler determines batch size automatically, 
+number of data samples that should be processed between updates. The Scheduler determines batch size automatically,
 that can be processed by a worker depending on it's capabilities. To prevent a single worker to run with an extremely
 large batch size, one can also cap the batch size with a `max_batch_size`.
+Additionally, the Scheduler can assign up to `multi_batch_size` batches within a single message. This reduces the
+communication between Scheduler and Workers and can speed-up the training on high-latency connections. It also defines
+how many batches the Scheduler will project into the future befor assigning batches to a worker.
 
 ```toml
 [scheduler.job.rounds]
 update_rounds = 100
 avg_samples_between_updates = 1200
 max_batch_size = 600
+multi_batch_size = 3
 ```
 
 > [!NOTE]

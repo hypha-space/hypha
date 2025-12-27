@@ -164,7 +164,9 @@ pub mod action {
         SendModel {
             target: Reference,
         },
-        ExecuteBatch,
+        ExecuteBatch {
+            batches: u32,
+        },
         SendUpdate {
             target: Reference,
             weight: f32,

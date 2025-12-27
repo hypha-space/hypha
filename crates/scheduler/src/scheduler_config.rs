@@ -108,6 +108,7 @@ impl Default for DiLoCo {
                 update_rounds: 100,
                 avg_samples_between_updates: 1200,
                 max_batch_size: Some(600),
+                multi_batch_size: 3,
             },
             metrics: vec![
                 MetricsConfig::Otel,
@@ -219,6 +220,7 @@ pub struct DiLoCoRounds {
     pub avg_samples_between_updates: u32,
     pub update_rounds: u32,
     pub max_batch_size: Option<u32>,
+    pub multi_batch_size: u32,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, Copy)]
