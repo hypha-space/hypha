@@ -422,6 +422,7 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
             diloco_config.rounds.update_rounds,
             diloco_config.model_destination.clone(),
             batch_sizer.clone(),
+            diloco_config.rounds.multi_batch_size,
             token.clone(),
         )
         .await

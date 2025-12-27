@@ -169,20 +169,23 @@ if __name__ == "__main__":  # noqa: PLR0915, PLR0912
                     sleep_until_epoch_ms(timeout_ms)
                 current_status = {"executor": "train", "details": {"state": "idle"}}
             elif kind == "execute-batch":
-                batch = next(training_data_iter)
-                optimizer.zero_grad(set_to_none=True)
-                outputs = model(**{k: v.to(accelerator.device, non_blocking=True) for k, v in batch.items()})
-                loss = outputs if isinstance(outputs, torch.Tensor) else outputs["loss"]
-                accelerator.backward(loss)
-                optimizer.step()
-                scheduler.step()
-                if accelerator.is_main_process:
-                    batch_size = next(iter(batch.values())).shape[0]
-                    current_status = {
-                        "executor": "train",
-                        "details": {"state": "batch-completed", "batch_size": batch_size},
-                    }
-                    loss_list.append(loss.detach().cpu().numpy())
+                local_batches = action.get("batches")
+                logger.info(f"Excecute {local_batches} local batches.")
+                for _ in range(local_batches):
+                    batch = next(training_data_iter)
+                    optimizer.zero_grad(set_to_none=True)
+                    outputs = model(**{k: v.to(accelerator.device, non_blocking=True) for k, v in batch.items()})
+                    loss = outputs if isinstance(outputs, torch.Tensor) else outputs["loss"]
+                    accelerator.backward(loss)
+                    optimizer.step()
+                    scheduler.step()
+                    if accelerator.is_main_process:
+                        batch_size = next(iter(batch.values())).shape[0]
+                        current_status = {
+                            "executor": "train",
+                            "details": {"state": "batch-completed", "batch_size": batch_size},
+                        }
+                        loss_list.append(loss.detach().cpu().numpy())
             elif kind == "send-update":
                 target = action.get("target")
                 if target is None:
