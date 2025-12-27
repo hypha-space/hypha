@@ -38,21 +38,24 @@ FETCH_PATH = "artifacts"
 CURRENT_MODEL_NAME = "global_weights.pt"
 MIN_LOOP_TIME_MS = 100
 
-resource = get_aggregated_resources([OTELResourceDetector()])
+otel_handler = None
+if "OTEL" in os.environ:
+    resource = get_aggregated_resources([OTELResourceDetector()])
 
-# Configure OTEL
-logger_provider = LoggerProvider(resource=resource)
-set_logger_provider(logger_provider)
+    # Configure OTEL
+    logger_provider = LoggerProvider(resource=resource)
+    print(logger_provider)
+    set_logger_provider(logger_provider)
 
-exporter = OTLPLogExporter()
-logger_provider.add_log_record_processor(BatchLogRecordProcessor(exporter))
-otel_handler = LoggingHandler(level=logging.NOTSET, logger_provider=logger_provider)
+    exporter = OTLPLogExporter()
+    logger_provider.add_log_record_processor(BatchLogRecordProcessor(exporter))
+    otel_handler = LoggingHandler(level=logging.NOTSET, logger_provider=logger_provider)
 
-metric_exporter = OTLPMetricExporter()
-metric_reader = PeriodicExportingMetricReader(metric_exporter)
-meter_provider = MeterProvider(resource=resource, metric_readers=[metric_reader])
-metrics.set_meter_provider(meter_provider)
-SystemMetricsInstrumentor().instrument(meter_provider=meter_provider)
+    metric_exporter = OTLPMetricExporter()
+    metric_reader = PeriodicExportingMetricReader(metric_exporter)
+    meter_provider = MeterProvider(resource=resource, metric_readers=[metric_reader])
+    metrics.set_meter_provider(meter_provider)
+    SystemMetricsInstrumentor().instrument(meter_provider=meter_provider)
 
 # NOTE: Set the root logger level to NOTSET to ensure all messages are captured
 # and attach OTLP + console handlers to root logger
@@ -61,7 +64,8 @@ console_handler.setLevel(logging.INFO)
 console_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
 
 logging.getLogger().setLevel(logging.NOTSET)
-logging.getLogger().addHandler(otel_handler)
+if otel_handler:
+    logging.getLogger().addHandler(otel_handler)
 logging.getLogger().addHandler(console_handler)
 
 logger = logging.getLogger(__name__)
