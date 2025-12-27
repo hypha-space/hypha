@@ -124,8 +124,7 @@ impl TrainingState {
     }
 }
 
-// NOTE: time_cap is u64 (time), update_cap is u32 (count)
-const SIM_TIME_CAP_MS: u64 = 10_000;
+// NOTE: update_cap is u32 (count)
 const SIM_UPDATE_CAP: u32 = 3;
 
 type BatchSizer = Arc<dyn Fn(&Resources) -> u32 + Send + Sync>;
@@ -262,7 +261,6 @@ where
                             &batch_sizes,
                             stats,
                             update_target.saturating_sub(count),
-                            SIM_TIME_CAP_MS,
                             SIM_UPDATE_CAP,
                         );
 
@@ -270,6 +268,7 @@ where
                             time = %time,
                             count = %cnt,
                             peer = %peer_id,
+                            capped,
                             "Simulation with projection {:?} and {:?}",
                             projection,
                             update_target.saturating_sub(count)
@@ -394,7 +393,6 @@ where
                             &batch_sizes,
                             stats,
                             update_target.saturating_sub(count),
-                            SIM_TIME_CAP_MS,
                             SIM_UPDATE_CAP,
                         );
 
@@ -402,6 +400,7 @@ where
                             time = %time,
                             count = %cnt,
                             peer = %peer_id,
+                            capped,
                             "Simulation with projection {:?} and {:?}",
                             projection,
                             update_target.saturating_sub(count)
