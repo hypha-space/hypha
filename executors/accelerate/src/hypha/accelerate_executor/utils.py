@@ -1,5 +1,4 @@
-import os
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable
 from typing import Any
 
 import torch
@@ -23,7 +22,7 @@ from transformers.optimization import (
     get_wsd_schedule,
 )
 
-from .api import Session, fetch
+from .api import Session
 
 
 def prepare_files(config: dict[str, Any], session: Session) -> None:
@@ -59,15 +58,6 @@ def get_adam(optimizer: dict[str, Any], parameters: Iterable[torch.Tensor]) -> O
     if optimizer.get("epsilon"):
         return torch.optim.AdamW(parameters, lr=lr, eps=optimizer["epsilon"])
     return torch.optim.AdamW(parameters, lr=lr)
-
-
-def fetch_data(socket_path: str, data: str, work_dir: str) -> Iterator[str]:
-    def wrap() -> Iterator[str]:
-        while True:
-            tensor_data = fetch(socket_path, data)
-            yield os.path.join(work_dir, tensor_data[0]["path"])
-
-    return iter(wrap())
 
 
 def get_loss_fn(loss_fn: str) -> Module:

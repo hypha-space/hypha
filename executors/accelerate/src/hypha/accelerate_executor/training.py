@@ -10,7 +10,7 @@ import uuid
 import numpy as np
 import torch
 import torch.utils.data
-from accelerate import Accelerator
+from accelerate import Accelerator, DataLoaderConfiguration
 from opentelemetry import metrics
 from opentelemetry._logs import set_logger_provider
 from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
@@ -28,9 +28,7 @@ from .dataset import IterableStreamDataSet
 from .model import get_model
 from .utils import (
     extract_gradients,
-    fetch_data,
     get_adam,
-    get_preprocessor,
     get_scheduler,
     merge_models,
     prepare_files,
@@ -40,21 +38,24 @@ FETCH_PATH = "artifacts"
 CURRENT_MODEL_NAME = "global_weights.pt"
 MIN_LOOP_TIME_MS = 100
 
-resource = get_aggregated_resources([OTELResourceDetector()])
+otel_handler = None
+if "OTEL" in os.environ:
+    resource = get_aggregated_resources([OTELResourceDetector()])
 
-# Configure OTEL
-logger_provider = LoggerProvider(resource=resource)
-set_logger_provider(logger_provider)
+    # Configure OTEL
+    logger_provider = LoggerProvider(resource=resource)
+    print(logger_provider)
+    set_logger_provider(logger_provider)
 
-exporter = OTLPLogExporter()
-logger_provider.add_log_record_processor(BatchLogRecordProcessor(exporter))
-otel_handler = LoggingHandler(level=logging.NOTSET, logger_provider=logger_provider)
+    exporter = OTLPLogExporter()
+    logger_provider.add_log_record_processor(BatchLogRecordProcessor(exporter))
+    otel_handler = LoggingHandler(level=logging.NOTSET, logger_provider=logger_provider)
 
-metric_exporter = OTLPMetricExporter()
-metric_reader = PeriodicExportingMetricReader(metric_exporter)
-meter_provider = MeterProvider(resource=resource, metric_readers=[metric_reader])
-metrics.set_meter_provider(meter_provider)
-SystemMetricsInstrumentor().instrument(meter_provider=meter_provider)
+    metric_exporter = OTLPMetricExporter()
+    metric_reader = PeriodicExportingMetricReader(metric_exporter)
+    meter_provider = MeterProvider(resource=resource, metric_readers=[metric_reader])
+    metrics.set_meter_provider(meter_provider)
+    SystemMetricsInstrumentor().instrument(meter_provider=meter_provider)
 
 # NOTE: Set the root logger level to NOTSET to ensure all messages are captured
 # and attach OTLP + console handlers to root logger
@@ -63,7 +64,8 @@ console_handler.setLevel(logging.INFO)
 console_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
 
 logging.getLogger().setLevel(logging.NOTSET)
-logging.getLogger().addHandler(otel_handler)
+if otel_handler:
+    logging.getLogger().addHandler(otel_handler)
 logging.getLogger().addHandler(console_handler)
 
 logger = logging.getLogger(__name__)
@@ -87,16 +89,28 @@ def sleep_until_epoch_ms(target_ms: int) -> None:
         time.sleep((target_ms - now_ms) / 1000.0)
 
 
-def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR0915, PLR0912
-    # Background receiver context that fills a queue with update pointers
-    with Session(socket_path) as session:
-        job_spec = json.loads(job_json)
+if __name__ == "__main__":  # noqa: PLR0915, PLR0912
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--socket", required=True)
+    parser.add_argument("--work-dir", required=True)
+    parser.add_argument("--job", required=True)
+    args = parser.parse_args()
+    work_dir = args.work_dir
+
+    with Session(args.socket) as session:
+        job_spec = json.loads(args.job)
 
         executor = job_spec["executor"]
         assert executor["class"] == "train"
         config = executor["config"]
 
-        accelerator = Accelerator(project_dir=work_dir)
+        dataloader_config = DataLoaderConfiguration(
+            dispatch_batches=False,  # avoid rank-0 bottleneck on IterableDataset
+            split_batches=False,  # each process gets full batches (data parallel)
+            non_blocking=True,
+        )
+
+        accelerator = Accelerator(project_dir=work_dir, dataloader_config=dataloader_config)
 
         prepare_files(config, session)
         local_fetch_path = f"{work_dir}/{FETCH_PATH}"
@@ -105,21 +119,16 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR09
         model = get_model(local_fetch_path, config["model"]["task"])
         optimizer = get_adam(config["optimizer"], model.parameters())
         scheduler = get_scheduler(config.get("scheduler"), optimizer)
-        preprocessor_config = config.get("preprocessor")
         data_loader = torch.utils.data.DataLoader(
-            IterableStreamDataSet(
-                fetch_data(socket_path, config["data"], work_dir),
-                config["batch_size"],
-                config["model"]["input-names"],
-                preprocessor_config["input-names"] if preprocessor_config else [],
-                get_preprocessor(preprocessor_config, local_fetch_path),
-            ),
+            IterableStreamDataSet(args.socket, work_dir, local_fetch_path, config["batch_size"], config),
             batch_size=None,
             pin_memory=True,
+            num_workers=4,
+            persistent_workers=True,
         )
 
-        model, optimizer, training_dataloader, scheduler = accelerator.prepare(model, optimizer, data_loader, scheduler)
-        training_data_iter = iter(training_dataloader)
+        model, optimizer, scheduler = accelerator.prepare(model, optimizer, scheduler)
+        training_data_iter = iter(data_loader)
 
         # Serialize the model to disk
         previous_model_path = os.path.join(work_dir, CURRENT_MODEL_NAME)
@@ -161,8 +170,8 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR09
                 current_status = {"executor": "train", "details": {"state": "idle"}}
             elif kind == "execute-batch":
                 batch = next(training_data_iter)
-                optimizer.zero_grad()
-                outputs = model(**batch)
+                optimizer.zero_grad(set_to_none=True)
+                outputs = model(**{k: v.to(accelerator.device, non_blocking=True) for k, v in batch.items()})
                 loss = outputs if isinstance(outputs, torch.Tensor) else outputs["loss"]
                 accelerator.backward(loss)
                 optimizer.step()
@@ -402,12 +411,3 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:  # noqa: PLR09
                 time.sleep((MIN_LOOP_TIME_MS - elapsed) / 1000.0)
 
         logger.info("Finished training of %s DiLoCo update rounds", epoch_counter - 1)
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--socket", required=True)
-    parser.add_argument("--work-dir", required=True)
-    parser.add_argument("--job", required=True)
-    args = parser.parse_args()
-    main(args.socket, args.work_dir, args.job)
