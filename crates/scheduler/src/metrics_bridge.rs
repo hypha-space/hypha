@@ -200,7 +200,6 @@ impl Connector for OtelConnector {
                 let attrs = [
                     KeyValue::new("job_id", self.job_id.clone()),
                     KeyValue::new("peer_id", peer_id.to_string()),
-                    KeyValue::new("round", metrics.round.to_string()),
                     KeyValue::new("metric_name", metric_name.clone()),
                 ];
 
