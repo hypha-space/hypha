@@ -1,6 +1,6 @@
 //! Scheduler binary.
 
-use std::{collections::HashSet, fs, sync::Arc, time::Duration};
+use std::{collections::HashSet, fs, path::PathBuf, sync::Arc, time::Duration};
 
 use clap::Parser;
 use figment::{
@@ -22,7 +22,7 @@ use hypha_resources::{Resources, WeightedResourceEvaluator};
 use hypha_scheduler::{
     allocator::GreedyWorkerAllocator,
     config::Config,
-    metrics_bridge::{AimConnector, MetricsBridge, NoOpConnector, OtelConnector},
+    metrics_bridge::{AimConnector, CsvConnector, JsonlConnector, MetricsBridge, OtelConnector},
     network::Network,
     pool::{Pool, PoolConfig, PoolWithStatistics},
     scheduler_config::{Job as SchedulerJob, MetricsConfig},
@@ -291,16 +291,28 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
 
     let metrics_bridge_cfg = diloco_config.metrics.clone();
 
-    let mut metrics_bridge = match metrics_bridge_cfg {
-        Some(MetricsConfig::Aim { endpoint }) => {
-            MetricsBridge::new(Box::new(AimConnector::new(endpoint)))
-        }
-        Some(MetricsConfig::Otel) => {
-            let meter = telemetry::metrics::global::meter();
-            MetricsBridge::new(Box::new(OtelConnector::new(meter, metrics_job_id.clone())))
-        }
-        None => MetricsBridge::new(Box::new(NoOpConnector::new())),
-    };
+    let connectors: Vec<_> = metrics_bridge_cfg
+        .into_iter()
+        .map(
+            |cfg: MetricsConfig| -> Box<dyn hypha_scheduler::metrics_bridge::Connector> {
+                match cfg {
+                    MetricsConfig::Aim { endpoint } => {
+                        Box::new(AimConnector::new(endpoint.clone()))
+                    }
+                    MetricsConfig::Otel => {
+                        let meter = telemetry::metrics::global::meter();
+                        Box::new(OtelConnector::new(meter, metrics_job_id.clone()))
+                    }
+                    MetricsConfig::Csv { path } => Box::new(CsvConnector::new(PathBuf::from(path))),
+                    MetricsConfig::Jsonl { path } => {
+                        Box::new(JsonlConnector::new(PathBuf::from(path)))
+                    }
+                }
+            },
+        )
+        .collect();
+
+    let mut metrics_bridge = MetricsBridge::new(connectors);
 
     // Spawn dispatcher for parameter servers.
     let parameter_dispatcher = {

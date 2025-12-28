@@ -1,4 +1,12 @@
-use std::{collections::HashMap, future::Future, pin::Pin};
+use std::{
+    collections::HashMap,
+    fs::OpenOptions,
+    future::Future,
+    io::Write,
+    path::PathBuf,
+    pin::Pin,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use futures_util::{Stream, StreamExt, stream::SelectAll};
 use hypha_telemetry::otel::{
@@ -7,6 +15,7 @@ use hypha_telemetry::otel::{
 };
 use libp2p::PeerId;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 
@@ -16,6 +25,8 @@ pub enum MetricsError {
     ConnectionLost,
     #[error("Error when sending request: {0}")]
     Request(#[from] reqwest::Error),
+    #[error("Error when writing metrics: {0}")]
+    Io(#[from] std::io::Error),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -42,7 +53,7 @@ pub struct MetricsBridge
 where
     PeerId: Send + 'static,
 {
-    pub connector: Box<dyn Connector>,
+    pub connectors: Vec<Box<dyn Connector>>,
     streams: SelectAll<Pin<Box<dyn Stream<Item = PeerMetrics> + Send>>>,
 }
 
@@ -50,11 +61,20 @@ impl MetricsBridge
 where
     PeerId: Send + 'static,
 {
-    pub fn new(connector: Box<dyn Connector>) -> Self {
+    pub fn new(connectors: Vec<Box<dyn Connector>>) -> Self {
+        let mut connectors = connectors;
+        if connectors.is_empty() {
+            connectors.push(Box::new(NoOpConnector::new()));
+        }
+
         MetricsBridge {
-            connector,
+            connectors,
             streams: SelectAll::new(),
         }
+    }
+
+    pub fn add_connector(&mut self, connector: Box<dyn Connector>) {
+        self.connectors.push(connector);
     }
 
     pub fn register_stream<St>(&mut self, stream: St)
@@ -74,8 +94,10 @@ where
                     match item {
                         Some((per_id, metrics)) => {
                             tracing::debug!("Forwarding metric");
-                            if let Err(e) = self.connector.forward_metrics(per_id, metrics).await {
-                                tracing::warn!("Failed to forward metrics: {}", e);
+                            for connector in &self.connectors {
+                                if let Err(e) = connector.forward_metrics(per_id, metrics.clone()).await {
+                                    tracing::warn!("Failed to forward metrics: {}", e);
+                                }
                             }
                         }
                         None => {
@@ -161,6 +183,48 @@ impl Connector for AimConnector {
 }
 
 #[derive(Clone)]
+pub struct JsonlConnector {
+    path: PathBuf,
+}
+
+impl JsonlConnector {
+    pub fn new(path: PathBuf) -> Self {
+        JsonlConnector { path }
+    }
+}
+
+impl Connector for JsonlConnector {
+    fn forward_metrics<'a>(
+        &'a self,
+        peer_id: PeerId,
+        metrics: Metrics,
+    ) -> Pin<Box<dyn Future<Output = Result<(), MetricsError>> + Send + 'a>> {
+        Box::pin(async move {
+            let timestamp_ms = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis();
+
+            #[allow(clippy::disallowed_methods)]
+            let record = json!({
+                "timestamp": timestamp_ms,
+                "peer_id": peer_id.to_string(),
+                "round": metrics.round,
+                "metrics": metrics.metrics,
+            });
+
+            let mut file = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&self.path)?;
+            writeln!(file, "{}", record)?;
+
+            Ok(())
+        })
+    }
+}
+
+#[derive(Clone)]
 pub struct OtelConnector {
     gauge: Gauge<f64>,
     job_id: String,
@@ -212,6 +276,60 @@ impl Connector for OtelConnector {
                     "Recorded training metric"
                 );
             }
+
+            Ok(())
+        })
+    }
+}
+
+#[derive(Clone)]
+pub struct CsvConnector {
+    path: PathBuf,
+}
+
+impl CsvConnector {
+    pub fn new(path: PathBuf) -> Self {
+        CsvConnector { path }
+    }
+}
+
+impl Connector for CsvConnector {
+    fn forward_metrics<'a>(
+        &'a self,
+        peer_id: PeerId,
+        metrics: Metrics,
+    ) -> Pin<Box<dyn Future<Output = Result<(), MetricsError>> + Send + 'a>> {
+        Box::pin(async move {
+            let timestamp_ms = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis();
+
+            let mut keys: Vec<&String> = metrics.metrics.keys().collect();
+            keys.sort();
+
+            let mut file = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&self.path)?;
+
+            // NOTE: Write header if file is empty for compatibility with HF Trackio CSV import
+            if file.metadata()?.len() == 0 {
+                let mut header = String::from("step,timestamp,peer_id");
+                for key in &keys {
+                    header.push(',');
+                    header.push_str(key);
+                }
+                writeln!(file, "{}", header)?;
+            }
+
+            let mut row = format!("{},{},{}", metrics.round, timestamp_ms, peer_id);
+            for key in keys {
+                let val = metrics.metrics.get(key).copied().unwrap_or_default();
+                row.push(',');
+                row.push_str(&val.to_string());
+            }
+            writeln!(file, "{}", row)?;
 
             Ok(())
         })
