@@ -7,6 +7,7 @@ use hypha_telemetry::{
     attributes::Attributes,
     otlp::{Endpoint, Headers, Protocol},
     tracing::SamplerKind,
+    verbosity::Verbosity,
 };
 use libp2p::Multiaddr;
 use serde::{Deserialize, Serialize};
@@ -139,6 +140,19 @@ pub struct Config {
     #[serde(alias = "exporter_otlp_protocol")]
     telemetry_protocol: Option<Protocol>,
 
+    /// Verbosity for OpenTelemetry logs and traces.
+    ///
+    /// This only affects telemetry forwarded to the collector; stdout logs still
+    /// use RUST_LOG.
+    ///
+    /// If unset, defaults to "debug" at runtime.
+    ///
+    /// Accepted values: "off", "error", "warn", "info", "debug", "trace".
+    ///
+    /// Env override: OTEL_VERBOSITY.
+    #[serde(default, alias = "verbosity")]
+    telemetry_verbosity: Option<Verbosity>,
+
     /// Trace sampling strategy to control volume and costs.
     ///
     /// Options:
@@ -219,6 +233,7 @@ impl Default for Config {
             telemetry_endpoint: None,
             telemetry_headers: None,
             telemetry_protocol: None,
+            telemetry_verbosity: None,
             telemetry_sampler: None,
             telemetry_sample_ratio: None,
             exclude_cidr: reserved_cidrs(),
@@ -254,6 +269,10 @@ impl Config {
 
     pub fn telemetry_protocol(&self) -> Option<Protocol> {
         self.telemetry_protocol
+    }
+
+    pub fn telemetry_verbosity(&self) -> Option<Verbosity> {
+        self.telemetry_verbosity
     }
 
     /// Optional trace sampling ratio (0.0–1.0). If set, used to configure the tracer sampler.

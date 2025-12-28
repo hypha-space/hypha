@@ -7,6 +7,7 @@ pub mod metrics;
 pub mod otlp;
 pub mod rtt;
 pub mod tracing;
+pub mod verbosity;
 
 // NOTE: Re-export a minimal opentelemetry surface so downstream crates do not
 // need to depend on opentelemetry directly.

@@ -10,11 +10,19 @@ use serde::{Deserialize, Serialize};
 /// Selects where training metrics are forwarded:
 /// * `aim` - Send metrics to an AIM relay endpoint (e.g., "0.0.0.0:61000")
 /// * `otel` - Record metrics via the configured OTEL exporter using gauges.
+/// * `csv` - Append metrics as CSV rows (Trackio compatible).
+/// * `jsonl` - Append metrics as JSON lines (one per record).
+///
+/// You can provide a single entry or an array to fan out metrics to multiple sinks.
 pub enum MetricsConfig {
     /// Send metrics to an AIM relay endpoint.
     Aim { endpoint: String },
     /// Record metrics via the configured OTEL exporter using gauges.
     Otel,
+    /// Append metrics as CSV rows to a local file (Trackio-compatible header/columns).
+    Csv { path: String },
+    /// Append metrics as JSON lines to a local file.
+    Jsonl { path: String },
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
@@ -42,8 +50,7 @@ pub struct DiLoCo {
     pub preprocessor: Option<PreprocessorSource>,
     pub dataset: DataNodeSource,
     pub rounds: DiLoCoRounds,
-    #[serde(default)]
-    pub metrics: Option<MetricsConfig>,
+    pub metrics: Vec<MetricsConfig>,
     #[serde(rename = "inner_optimizer")]
     pub inner_optimizer: Adam,
     #[serde(rename = "outer_optimizer")]
@@ -102,7 +109,15 @@ impl Default for DiLoCo {
                 avg_samples_between_updates: 1200,
                 max_batch_size: Some(600),
             },
-            metrics: Some(MetricsConfig::Otel),
+            metrics: vec![
+                MetricsConfig::Otel,
+                MetricsConfig::Jsonl {
+                    path: "metrics.jsonl".to_string(),
+                },
+                MetricsConfig::Csv {
+                    path: "metrics.csv".to_string(),
+                },
+            ],
             inner_optimizer: Adam {
                 learning_rate: 1e-3,
                 betas: None,
