@@ -36,11 +36,12 @@ use crate::{
 
 // NOTE: Tracks per-round update signals from workers so the scheduler can
 // decide when to instruct the parameter server to aggregate.
-#[derive(Default)]
 struct RoundState {
     aggregated_updates: bool,
     sent_updates: HashSet<PeerId>,
     first_update_at: Option<Instant>,
+    round_started_at: Instant,
+    aggregate_started_at: Option<Instant>,
     min_quorum: usize,
     grace: Duration,
     round: u32,
@@ -51,6 +52,27 @@ struct RoundState {
     push_done: bool,
     // NOTE: Tracks workers that have applied the update for the current round.
     applied_updates: HashSet<PeerId>,
+}
+
+impl Default for RoundState {
+    fn default() -> Self {
+        Self {
+            aggregated_updates: false,
+            sent_updates: HashSet::new(),
+            first_update_at: None,
+            round_started_at: Instant::now(),
+            aggregate_started_at: None,
+            min_quorum: 0,
+            grace: Duration::from_millis(0),
+            round: 0,
+            update_rounds: 0,
+            push_assigned: None,
+            training_complete: false,
+            applied_final_update: HashSet::new(),
+            push_done: false,
+            applied_updates: HashSet::new(),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -438,7 +460,29 @@ where
                     }
                 }
             }
-            TrainStatus::SentUpdate { round, metrics } => {
+            TrainStatus::SentUpdate { mut metrics, .. } => {
+                let worker_samples = {
+                    let training = training_state.lock().await;
+                    training.get_peer_updates(&peer_id) as f32
+                };
+
+                let (round, round_started_at) = {
+                    let state = round_state.lock().await;
+                    (state.round, state.round_started_at)
+                };
+
+                let elapsed_secs = round_started_at.elapsed().as_secs_f32();
+                let worker_steps_per_sec = if elapsed_secs > 0.0 {
+                    worker_samples / elapsed_secs
+                } else {
+                    0.0
+                };
+
+                metrics.insert("round".to_string(), round as f32);
+                metrics.insert("data_points".to_string(), worker_samples as f32);
+                metrics.insert("steps".to_string(), worker_steps_per_sec as f32);
+                metrics.insert("duration".to_string(), elapsed.as_secs_f32());
+
                 tx.send((peer_id, Metrics { round, metrics }))
                     .await
                     .map_err(BatchSchedulerError::from)?;
@@ -570,7 +614,7 @@ where
                         // Start aggregation when either all workers have sent updates,
                         // or when a quorum (min workers) have sent updates and the
                         // grace period has elapsed since the first update in this round.
-                        let state = round_state.lock().await;
+                        let mut state = round_state.lock().await;
                         let all_sent = workers.iter().all(|w| state.sent_updates.contains(w));
                         let effective_quorum = state.min_quorum.min(workers.len());
                         let quorum_met = state.sent_updates.len() >= effective_quorum;
@@ -581,6 +625,9 @@ where
                         let ready = all_sent || (quorum_met && timebox_elapsed);
 
                         if ready {
+                            if state.aggregate_started_at.is_none() {
+                                state.aggregate_started_at = Some(Instant::now());
+                            }
                             tracing::info!(round = state.round, "Trigger AggregateUpdates");
                             ExecutorAction::Aggregate(AggregateAction::AggregateUpdates {
                                 source: Reference::Peers {
@@ -635,11 +682,38 @@ where
                 }
             }
             AggregateStatus::BroadcastedUpdate { metrics } => {
-                if let Some(metrics) = metrics {
-                    tx.send((peer_id, Metrics { round: 0, metrics }))
-                        .await
-                        .map_err(BatchSchedulerError::from)?;
-                }
+                let total_samples = {
+                    let training = training_state.lock().await;
+                    training.get_count() as f32
+                };
+
+                let (round_number, round_started_at) = {
+                    let state = round_state.lock().await;
+                    (state.round, state.round_started_at)
+                };
+
+                let mut metrics = metrics.unwrap_or_default();
+                let round_duration_secs = round_started_at.elapsed().as_secs_f32();
+                let steps_per_sec = if round_duration_secs > 0.0 {
+                    total_samples / round_duration_secs
+                } else {
+                    0.0
+                };
+
+                metrics.insert("round".to_string(), round_number as f32);
+                metrics.insert("data_points".to_string(), total_samples);
+                metrics.insert("steps".to_string(), steps_per_sec);
+                metrics.insert("duration".to_string(), round_duration_secs);
+
+                tx.send((
+                    peer_id,
+                    Metrics {
+                        round: round_number,
+                        metrics,
+                    },
+                ))
+                .await
+                .map_err(BatchSchedulerError::from)?;
 
                 let next_round = {
                     let mut state = round_state.lock().await;
@@ -648,6 +722,8 @@ where
 
                     state.sent_updates.clear();
                     state.first_update_at = None;
+                    state.aggregate_started_at = None;
+                    state.round_started_at = Instant::now();
                     state.round = state.round.saturating_add(1);
 
                     if state.round >= state.update_rounds {
@@ -748,6 +824,8 @@ impl BatchScheduler {
             let round_state = Arc::new(Mutex::new(RoundState {
                 sent_updates: HashSet::new(),
                 first_update_at: None,
+                round_started_at: start,
+                aggregate_started_at: None,
                 min_quorum,
                 grace,
                 round: 0,
@@ -821,7 +899,7 @@ impl BatchScheduler {
 mod batch_scheduler_tests {
     use std::{
         collections::{HashMap, HashSet},
-        time::SystemTime,
+        time::{Instant, SystemTime},
     };
 
     use futures_util::StreamExt;
@@ -1289,6 +1367,8 @@ mod batch_scheduler_tests {
         let round_state = std::sync::Arc::new(tokio::sync::Mutex::new(RoundState {
             sent_updates: Default::default(),
             first_update_at: None,
+            round_started_at: Instant::now(),
+            aggregate_started_at: None,
             min_quorum: 3,
             grace: Duration::from_millis(0),
             round: 0,
