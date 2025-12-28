@@ -479,9 +479,9 @@ where
                 };
 
                 metrics.insert("round".to_string(), round as f32);
-                metrics.insert("data_points".to_string(), worker_samples as f32);
-                metrics.insert("steps".to_string(), worker_steps_per_sec as f32);
-                metrics.insert("duration".to_string(), elapsed.as_secs_f32());
+                metrics.insert("data_points".to_string(), worker_samples);
+                metrics.insert("steps".to_string(), worker_steps_per_sec);
+                metrics.insert("duration".to_string(), elapsed_secs);
 
                 tx.send((peer_id, Metrics { round, metrics }))
                     .await
