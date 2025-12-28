@@ -35,14 +35,6 @@ pub struct Metrics {
     pub metrics: HashMap<String, f32>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AimMetrics {
-    pub worker_id: PeerId,
-    pub round: u32,
-    pub metric_name: String,
-    pub value: f32,
-}
-
 pub fn with_id<S: Stream>(id: PeerId, stream: S) -> impl Stream<Item = (PeerId, S::Item)> {
     stream.map(move |item| (id, item))
 }
@@ -141,44 +133,6 @@ impl Connector for NoOpConnector {
         _metrics: Metrics,
     ) -> Pin<Box<dyn Future<Output = Result<(), MetricsError>> + Send + 'a>> {
         Box::pin(async move { Ok(()) })
-    }
-}
-
-#[derive(Clone)]
-pub struct AimConnector {
-    connect_string: String,
-    client: reqwest::Client,
-    // peer_id: PeerId
-}
-
-impl AimConnector {
-    pub fn new(connect_string: String) -> Self {
-        AimConnector {
-            connect_string,
-            client: reqwest::Client::new(),
-        }
-    }
-}
-
-impl Connector for AimConnector {
-    fn forward_metrics<'a>(
-        &'a self,
-        peer_id: PeerId,
-        metrics: Metrics,
-    ) -> Pin<Box<dyn Future<Output = Result<(), MetricsError>> + Send + 'a>> {
-        Box::pin(async move {
-            let url = format!("http://{}/status", self.connect_string);
-            for metric in metrics.metrics {
-                let aim_status = AimMetrics {
-                    worker_id: peer_id,
-                    round: metrics.round,
-                    metric_name: metric.0,
-                    value: metric.1,
-                };
-                let _ = self.client.post(&url).json(&aim_status).send().await?;
-            }
-            Ok(())
-        })
     }
 }
 

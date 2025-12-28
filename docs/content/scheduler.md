@@ -30,7 +30,7 @@ The scheduler serves as the coordination point for distributed training:
 
 **Parameter Server Lifecycle Management**: Coordinating parameter server startup, informing it which workers will participate, and setting collection timeouts.
 
-**Metrics Aggregation**: Optionally forwarding training metrics to AIM for visualization and analysis.
+**Metrics Aggregation**: Optionally forwarding training metrics to Grafana for visualization and analysis or storing them to file.
 
 ## Installation
 
@@ -59,10 +59,6 @@ Scheduler configuration uses TOML format with network, security, and job specifi
 **Relay Configuration**:
 
 - `relay_circuit`: Enable relay via gateways (default: `true`)
-
-**AIM Integration**:
-
-- `status_bridge`: Endpoint for AIM metrics bridge (e.g., `127.0.0.1:61000`)
 
 ### Job Specification
 
@@ -240,16 +236,35 @@ hypha-scheduler run --config /etc/hypha/scheduler.toml
 
 Environment variables take precedence over configuration file settings, allowing flexible per-deployment customization.
 
-## AIM Integration
+## Monitoring
 
-AIM (Aim Integration Module) provides visualization and tracking for training metrics. If you want the Scheduler to send metrics to AIM, you can download and set up our AIM Driver Connector from our [releases page](https://github.com/hypha-space/hypha/releases). Please follow its instructions to set up the connector and scheduler.
+The Scheduler supports 3 different ways to monitor a training and to collect metrics. The methods are not exclusive an all can be used a the same time.
 
-### Configuring Status Bridge
+### OpenTelemetry
 
-Set `status_bridge` to the HTTP endpoint that should receive worker metrics:
+If OpenTelemetry is configured, metrics can be directly forwarded to Grafana:
 
-```toml
-status_bridge = "aim-bridge.internal:61000"
+```bash
+[[scheduler.job.metrics]]
+type = "otel"
 ```
 
-The scheduler **pushes** JSON payloads (`POST http://<status_bridge>/status`) using the configured address. Point this at the provided AIM bridge or any service that can accept the `AimMetrics` schema. The scheduler itself does not start an HTTP listener.
+### JSONL
+
+Metrics can be stored in a local JSONL file.
+
+```bash
+[[scheduler.job.metrics]]
+type = "jsonl"
+path = "metrics.jsonl"
+```
+
+### csv
+
+Metrics be stored in a local CSV file.
+
+```bash
+[[scheduler.job.metrics]]
+type = "csv"
+path = "metrics.csv"
+```
