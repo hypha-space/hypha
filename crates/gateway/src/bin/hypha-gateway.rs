@@ -63,6 +63,8 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
 
     telemetry::metrics::global::set_provider(metrics.provider());
 
+    let telemetry_verbosity = config.telemetry_verbosity().unwrap_or_default();
+
     Registry::default()
         .with(
             tracing_subscriber::fmt::layer().with_filter(
@@ -71,8 +73,8 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
                     .from_env_lossy(),
             ),
         )
-        .with(tracing.layer())
-        .with(logging.layer())
+        .with(tracing.layer().with_filter(telemetry_verbosity.as_filter()))
+        .with(logging.layer().with_filter(telemetry_verbosity.as_filter()))
         .init();
 
     // NOTE: Ready when listening on all addresses.
