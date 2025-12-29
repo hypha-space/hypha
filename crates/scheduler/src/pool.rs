@@ -4,7 +4,7 @@
 //! and pursuing a target size.
 
 use std::{
-    collections::{HashMap, HashSet, hash_map::Entry},
+    collections::{HashMap, HashSet},
     fmt::Display,
     future::Future,
     pin::Pin,
@@ -395,68 +395,87 @@ where
 
 /// Descriptor enriched with an optional statistic value.
 #[derive(Clone, Debug)]
-pub struct WorkerDescriptorWithStats {
+pub struct WorkerDescriptorWithProperties {
     pub peer_id: PeerId,
     pub resources: Resources,
     pub last_updated: Option<LastUpdated>,
     pub statistic: Option<u64>,
+    pub state: WorkerState,
 }
 
-impl WorkerDescriptorWithStats {
+impl WorkerDescriptorWithProperties {
     pub fn new(
         descriptor: &WorkerDescriptor,
         last_updated: Option<LastUpdated>,
         statistic: Option<u64>,
+        state: WorkerState,
     ) -> Self {
         Self {
             peer_id: descriptor.peer_id,
             resources: descriptor.resources,
             last_updated,
             statistic,
+            state,
         }
     }
 }
 
-type LastUpdated = u64;
-
-/// Snapshot view of current members enriched with statistics.
-pub struct PoolWithStatistics<T: RuntimeStatistic> {
-    pool: Pool,
-    handle: PoolStatisticsHandle<T>,
+#[derive(Clone, Debug, Default)]
+pub struct WorkerState {
+    pub sent_update: bool,
+    pub applied_update: bool,
+    pub applied_final_update: bool,
+    pub samples_processed: u32,
+    pub waiting_for_model: bool,
+    pub receiving_from: Option<PeerId>,
+    pub is_pusher: bool,
+    pub push_done: bool,
 }
 
-impl<T> PoolWithStatistics<T>
+type LastUpdated = u64;
+type WorkerProperties<T> = Arc<RwLock<HashMap<PeerId, (LastUpdated, T, WorkerState)>>>;
+
+/// Snapshot view of current members enriched with statistics.
+pub struct PoolWithWorkerProperties<T: RuntimeStatistic> {
+    pool: Pool,
+    handle: PoolWithWorkerPropertiesHandle<T>,
+}
+
+impl<T> PoolWithWorkerProperties<T>
 where
     T: RuntimeStatistic,
 {
     pub fn new(pool: Pool) -> Self {
-        let statistics = Arc::new(RwLock::new(HashMap::default()));
-        let handle = PoolStatisticsHandle {
+        let properties = Arc::new(RwLock::new(HashMap::default()));
+        let handle = PoolWithWorkerPropertiesHandle {
             pool: pool.handle(),
-            statistics,
+            properties,
             _marker: std::marker::PhantomData,
         };
         Self { pool, handle }
     }
 
     /// Returns a cloneable handle that exposes statistics and membership without owning the stream.
-    pub fn handle(&self) -> PoolStatisticsHandle<T> {
+    pub fn handle(&self) -> PoolWithWorkerPropertiesHandle<T> {
         self.handle.clone()
     }
 
     /// Returns current members decorated with their latest statistic (if any),
     /// after pruning stale statistics.
-    pub fn statistics(&self) -> Vec<WorkerDescriptorWithStats> {
-        self.handle.statistics()
+    pub fn properties(&self) -> Vec<WorkerDescriptorWithProperties> {
+        self.handle.properties()
     }
 
     /// Update statistics for a worker with the given timestamp.
-    pub fn update(&self, peer_id: &PeerId, now: u64) {
-        self.handle.update(peer_id, now)
+    pub fn update_statistics<F>(&self, peer_id: &PeerId, f: F)
+    where
+        F: FnOnce(&mut T, &mut u64),
+    {
+        self.handle.update_statistics(peer_id, f)
     }
 }
 
-impl<T> Stream for PoolWithStatistics<T>
+impl<T> Stream for PoolWithWorkerProperties<T>
 where
     T: RuntimeStatistic + std::marker::Unpin,
 {
@@ -467,67 +486,75 @@ where
     }
 }
 
-impl<T> PoolWithStatistics<T> where T: RuntimeStatistic {}
+impl<T> PoolWithWorkerProperties<T> where T: RuntimeStatistic {}
 
 /// Cloneable handle for statistics + membership/dispatchers without owning the stream.
-pub struct PoolStatisticsHandle<T: RuntimeStatistic> {
+pub struct PoolWithWorkerPropertiesHandle<T: RuntimeStatistic> {
     pool: PoolHandle,
-    statistics: Arc<RwLock<HashMap<PeerId, (LastUpdated, T)>>>,
+    properties: WorkerProperties<T>,
     _marker: std::marker::PhantomData<T>,
 }
 
-impl<T: RuntimeStatistic> Clone for PoolStatisticsHandle<T> {
+impl<T: RuntimeStatistic> Clone for PoolWithWorkerPropertiesHandle<T> {
     fn clone(&self) -> Self {
         Self {
             pool: self.pool.clone(),
-            statistics: Arc::clone(&self.statistics),
+            properties: Arc::clone(&self.properties),
             _marker: std::marker::PhantomData,
         }
     }
 }
 
-impl<T> PoolStatisticsHandle<T>
+impl<T> PoolWithWorkerPropertiesHandle<T>
 where
     T: RuntimeStatistic,
 {
-    pub fn statistics(&self) -> Vec<WorkerDescriptorWithStats> {
+    pub fn properties(&self) -> Vec<WorkerDescriptorWithProperties> {
         let members = &self.pool;
 
         let snapshot = members.inner.load_full();
         let active: HashSet<PeerId> = snapshot.iter().map(|worker| worker.peer_id).collect();
 
-        let mut statistics = self.statistics.write().expect("statistics lock poisoned");
-        statistics.retain(|peer_id, _| active.contains(peer_id));
+        let mut properties = self.properties.write().expect("properties lock poisoned");
+        properties.retain(|peer_id, _| active.contains(peer_id));
 
         snapshot
             .iter()
             .map(|descriptor| {
-                let statistic = statistics
+                let statistic = properties
                     .get(&descriptor.peer_id)
-                    .map(|(last_updated, stats)| (*last_updated, stats.value()));
+                    .map(|(last_updated, stats, state)| {
+                        (*last_updated, stats.value(), state.clone())
+                    });
 
-                WorkerDescriptorWithStats::new(
+                WorkerDescriptorWithProperties::new(
                     descriptor,
-                    statistic.map(|(last_updated, _)| last_updated),
-                    statistic.map(|(_, stat)| stat),
+                    statistic.as_ref().map(|(last_updated, _, _)| *last_updated),
+                    statistic.as_ref().map(|(_, stat, _)| *stat),
+                    statistic
+                        .map(|(_, _, state)| state)
+                        .unwrap_or_default(),
                 )
             })
             .collect()
     }
 
-    pub fn update(&self, peer_id: &PeerId, now: u64) {
-        let mut statistics = self.statistics.write().expect("statistics lock poisoned");
+    pub fn update_statistics<F>(&self, peer_id: &PeerId, f: F)
+    where
+        F: FnOnce(&mut T, &mut u64),
+    {
+        let mut data = self.properties.write().expect("lock poisoned");
+        let entry = data.entry(*peer_id).or_default();
+        f(&mut entry.1, &mut entry.0);
+    }
 
-        match statistics.entry(*peer_id) {
-            Entry::Occupied(mut entry) => {
-                let (last_updated, stats) = entry.get_mut();
-                stats.update(now.saturating_sub(*last_updated));
-                *last_updated = now;
-            }
-            Entry::Vacant(entry) => {
-                entry.insert((now, T::default()));
-            }
-        }
+    pub fn update_state<F>(&self, peer_id: &PeerId, f: F)
+    where
+        F: FnOnce(&mut WorkerState),
+    {
+        let mut data = self.properties.write().expect("lock poisoned");
+        let entry = data.entry(*peer_id).or_default();
+        f(&mut entry.2);
     }
 
     pub fn members(&self) -> PoolHandle {
@@ -764,7 +791,7 @@ mod tests {
         let peer_id = worker.peer_id();
         let allocator = StubAllocator::new(vec![vec![worker]]);
 
-        let mut pool_with_stats = PoolWithStatistics::<RunningMean>::new(Pool::new(
+        let mut pool_with_stats = PoolWithWorkerProperties::<RunningMean>::new(Pool::new(
             allocator,
             PoolConfig {
                 grace: Duration::from_millis(200),
@@ -783,11 +810,21 @@ mod tests {
         .await
         .expect("worker should join before timeout");
 
-        pool_with_stats.update(&peer_id, 10);
-        pool_with_stats.update(&peer_id, 25);
+        pool_with_stats.update_statistics(&peer_id, |stats, last_updated| {
+            if *last_updated > 0 {
+                stats.update(10u64.saturating_sub(*last_updated));
+            }
+            *last_updated = 10;
+        });
+        pool_with_stats.update_statistics(&peer_id, |stats, last_updated| {
+            if *last_updated > 0 {
+                stats.update(25u64.saturating_sub(*last_updated));
+            }
+            *last_updated = 25;
+        });
 
-        let statistics = pool_with_stats.statistics();
-        let first = statistics.first().expect("expected member with stats");
+        let properties = pool_with_stats.properties();
+        let first = properties.first().expect("expected member with stats");
         assert_eq!(first.peer_id, peer_id);
         assert_eq!(first.statistic, Some(15));
 
@@ -803,6 +840,6 @@ mod tests {
         .await
         .expect("worker should be removed");
 
-        assert!(pool_with_stats.statistics().is_empty());
+        assert!(pool_with_stats.properties().is_empty());
     }
 }
