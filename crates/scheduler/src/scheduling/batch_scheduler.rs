@@ -146,10 +146,6 @@ impl TrainingState {
     }
 }
 
-// NOTE: time_cap is u64 (time), update_cap is u32 (count)
-const SIM_TIME_CAP_MS: u64 = 10_000;
-const SIM_UPDATE_CAP: u32 = 3;
-
 type BatchSizer = Arc<dyn Fn(&Resources) -> u32 + Send + Sync>;
 
 #[derive(Debug, Error)]
@@ -175,6 +171,7 @@ async fn schedule<T, S>(
     round_state: Arc<Mutex<RoundState>>,
     training_state: Arc<Mutex<TrainingState>>,
     batch_sizer: BatchSizer,
+    multi_batch_size: u32,
     push_destination: Arc<Option<ModelDestiantion>>,
     start: std::time::Instant,
     request: (PeerId, action::ActionRequest),
@@ -273,8 +270,8 @@ where
                         .map(|w| (batch_sizer)(&w.resources))
                         .collect();
 
-                    let (should_update, projected_target) = if update_target <= count {
-                        (true, count)
+                    let (should_update, projected_target, batches) = if update_target <= count {
+                        (true, count, 0)
                     } else if !snapshot.is_empty()
                         && batch_sizes.iter().all(|&b| b > 0)
                         && stats.iter().all(|&s| s > 0 && s < u64::MAX)
@@ -284,14 +281,14 @@ where
                             &batch_sizes,
                             stats,
                             update_target.saturating_sub(count),
-                            SIM_TIME_CAP_MS,
-                            SIM_UPDATE_CAP,
+                            multi_batch_size,
                         );
 
                         tracing::debug!(
                             time = %time,
                             count = %cnt,
                             peer = %peer_id,
+                            capped,
                             "Simulation with projection {:?} and {:?}",
                             projection,
                             update_target.saturating_sub(count)
@@ -302,9 +299,10 @@ where
                                 && peer_position < projection.len()
                                 && projection[peer_position] == 0,
                             count.saturating_add(cnt.unsigned_abs()),
+                            projection[peer_position],
                         )
                     } else {
-                        (false, count)
+                        (false, count, multi_batch_size)
                     };
 
                     if state.aggregated_updates && !state.applied_updates.contains(&peer_id) {
@@ -321,7 +319,7 @@ where
                             timeout: short_idle,
                         })
                     } else if !should_update {
-                        ExecutorAction::Train(TrainAction::ExecuteBatch)
+                        ExecutorAction::Train(TrainAction::ExecuteBatch { batches })
                     } else if parameter_servers.is_empty() {
                         // NOTE: If we need to send an update but there are no parameter servers,
                         // we must wait (idle) until one becomes available.
@@ -405,8 +403,8 @@ where
                         .map(|w| (batch_sizer)(&w.resources))
                         .collect();
 
-                    let (should_update, projected_target) = if update_target <= count {
-                        (true, count)
+                    let (should_update, projected_target, batches) = if update_target <= count {
+                        (true, count, 0)
                     } else if !snapshot.is_empty()
                         && batch_sizes.iter().all(|&b| b > 0)
                         && stats.iter().all(|&s| s > 0 && s < u64::MAX)
@@ -416,14 +414,14 @@ where
                             &batch_sizes,
                             stats,
                             update_target.saturating_sub(count),
-                            SIM_TIME_CAP_MS,
-                            SIM_UPDATE_CAP,
+                            multi_batch_size,
                         );
 
                         tracing::debug!(
                             time = %time,
                             count = %cnt,
                             peer = %peer_id,
+                            capped,
                             "Simulation with projection {:?} and {:?}",
                             projection,
                             update_target.saturating_sub(count)
@@ -434,13 +432,14 @@ where
                                 && peer_position < projection.len()
                                 && projection[peer_position] == 0,
                             count.saturating_add(cnt.unsigned_abs()),
+                            projection[peer_position],
                         )
                     } else {
-                        (false, count)
+                        (false, count, multi_batch_size)
                     };
 
                     if !should_update {
-                        ExecutorAction::Train(TrainAction::ExecuteBatch)
+                        ExecutorAction::Train(TrainAction::ExecuteBatch { batches })
                     } else if parameter_servers.is_empty() {
                         // NOTE: If we need to send an update but there are no parameter servers,
                         // we must wait (idle) until one becomes available.
@@ -542,7 +541,11 @@ where
                             },
                         })
                     } else {
-                        ExecutorAction::Train(TrainAction::ExecuteBatch)
+                        // We can either move through idle or expect that the parameters are tuned
+                        // s.t., its okay to execute a multi batch in the first round.
+                        ExecutorAction::Train(TrainAction::ExecuteBatch {
+                            batches: multi_batch_size,
+                        })
                     }
                 }
             }
@@ -805,6 +808,7 @@ impl BatchScheduler {
         update_rounds: u32,
         push_destination: Option<ModelDestiantion>,
         batch_sizer: BatchSizer,
+        multi_batch_size: u32,
         cancel: CancellationToken,
     ) -> Result<(mpsc::Receiver<(PeerId, Metrics)>, JoinHandle<()>), BatchSchedulerError>
     where
@@ -866,6 +870,7 @@ impl BatchScheduler {
                             round_state,
                             training_state,
                             batch_sizer,
+                            multi_batch_size,
                             push_destination,
                             start,
                             request,
@@ -1042,6 +1047,7 @@ mod batch_scheduler_tests {
             round,
             training_state,
             batch_sizer,
+            3,
             push_destination,
             std::time::Instant::now(),
             (
@@ -1057,7 +1063,9 @@ mod batch_scheduler_tests {
         .unwrap();
 
         match resp.next {
-            hypha_messages::action::ExecutorAction::Train(TrainAction::ExecuteBatch) => {}
+            hypha_messages::action::ExecutorAction::Train(TrainAction::ExecuteBatch {
+                batches: 3,
+            }) => {}
             other => panic!("Unexpected response: {:?}", other),
         }
     }
@@ -1109,6 +1117,7 @@ mod batch_scheduler_tests {
             round,
             training_state,
             batch_sizer,
+            3,
             push_destination,
             std::time::Instant::now(),
             (
@@ -1124,7 +1133,9 @@ mod batch_scheduler_tests {
         .unwrap();
 
         match resp.next {
-            hypha_messages::action::ExecutorAction::Train(TrainAction::ExecuteBatch) => {}
+            hypha_messages::action::ExecutorAction::Train(TrainAction::ExecuteBatch {
+                batches: 3,
+            }) => {}
             other => panic!("Unexpected response: {:?}", other),
         }
     }
@@ -1176,6 +1187,7 @@ mod batch_scheduler_tests {
             round,
             training_state,
             batch_sizer,
+            3,
             push_destination,
             std::time::Instant::now(),
             (
@@ -1244,6 +1256,7 @@ mod batch_scheduler_tests {
             round,
             training_state,
             batch_sizer,
+            3,
             push_destination,
             std::time::Instant::now(),
             (
@@ -1405,43 +1418,57 @@ mod batch_scheduler_tests {
             Step::new(
                 w3_id,
                 ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 50 }),
-                hypha_messages::action::ExecutorAction::Train(TrainAction::ExecuteBatch),
+                hypha_messages::action::ExecutorAction::Train(TrainAction::ExecuteBatch {
+                    batches: 1,
+                }),
                 500,
             ),
             Step::new(
                 w2_id,
                 ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 100 }),
-                hypha_messages::action::ExecutorAction::Train(TrainAction::ExecuteBatch),
+                hypha_messages::action::ExecutorAction::Train(TrainAction::ExecuteBatch {
+                    batches: 1,
+                }),
                 800,
             ),
             Step::new(
                 w1_id,
                 ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 150 }),
-                hypha_messages::action::ExecutorAction::Train(TrainAction::ExecuteBatch),
+                hypha_messages::action::ExecutorAction::Train(TrainAction::ExecuteBatch {
+                    batches: 1,
+                }),
                 950,
             ),
             Step::new(
                 w3_id,
                 ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 50 }),
-                hypha_messages::action::ExecutorAction::Train(TrainAction::ExecuteBatch),
+                hypha_messages::action::ExecutorAction::Train(TrainAction::ExecuteBatch {
+                    batches: 1,
+                }),
                 1000,
             ),
             Step::new(
                 w3_id,
                 ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 50 }),
-                hypha_messages::action::ExecutorAction::Train(TrainAction::ExecuteBatch),
+                hypha_messages::action::ExecutorAction::Train(TrainAction::ExecuteBatch {
+                    batches: 1,
+                }),
                 1500,
             ),
             Step::new(
                 w2_id,
                 ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 100 }),
-                hypha_messages::action::ExecutorAction::Train(TrainAction::ExecuteBatch),
+                hypha_messages::action::ExecutorAction::Train(TrainAction::ExecuteBatch {
+                    batches: 1,
+                }),
                 1600,
             ),
             Step::new(
                 w1_id,
                 ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 150 }),
-                hypha_messages::action::ExecutorAction::Train(TrainAction::ExecuteBatch),
+                hypha_messages::action::ExecutorAction::Train(TrainAction::ExecuteBatch {
+                    batches: 1,
+                }),
                 1900,
             ),
             Step::new(
@@ -1559,19 +1586,25 @@ mod batch_scheduler_tests {
             Step::new(
                 w1_id,
                 ExecutorStatus::Train(TrainStatus::AppliedUpdate),
-                hypha_messages::action::ExecutorAction::Train(TrainAction::ExecuteBatch),
+                hypha_messages::action::ExecutorAction::Train(TrainAction::ExecuteBatch {
+                    batches: 1,
+                }),
                 2530,
             ),
             Step::new(
                 w2_id,
                 ExecutorStatus::Train(TrainStatus::AppliedUpdate),
-                hypha_messages::action::ExecutorAction::Train(TrainAction::ExecuteBatch),
+                hypha_messages::action::ExecutorAction::Train(TrainAction::ExecuteBatch {
+                    batches: 1,
+                }),
                 2530,
             ),
             Step::new(
                 w3_id,
                 ExecutorStatus::Train(TrainStatus::AppliedUpdate),
-                hypha_messages::action::ExecutorAction::Train(TrainAction::ExecuteBatch),
+                hypha_messages::action::ExecutorAction::Train(TrainAction::ExecuteBatch {
+                    batches: 1,
+                }),
                 2530,
             ),
         ];
@@ -1585,6 +1618,7 @@ mod batch_scheduler_tests {
                 round_state.clone(),
                 training_state.clone(),
                 batch_sizer.clone(),
+                1,
                 push_destination.clone(),
                 start_for(step.elapsed_ms),
                 (
@@ -1634,6 +1668,7 @@ mod batch_scheduler_tests {
                 round_state.clone(),
                 training_state.clone(),
                 batch_sizer.clone(),
+                1,
                 push_destination.clone(),
                 start_for(2600),
                 (
@@ -1648,7 +1683,9 @@ mod batch_scheduler_tests {
             .await
             .expect("applied update");
             match resp.next {
-                hypha_messages::action::ExecutorAction::Train(TrainAction::ExecuteBatch) => {}
+                hypha_messages::action::ExecutorAction::Train(TrainAction::ExecuteBatch {
+                    batches: 1,
+                }) => {}
                 other => panic!("Expected ExecuteBatch, got {:?}", other),
             }
         }
