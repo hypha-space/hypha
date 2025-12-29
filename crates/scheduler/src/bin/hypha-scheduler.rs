@@ -24,7 +24,7 @@ use hypha_scheduler::{
     config::Config,
     metrics_bridge::{AimConnector, CsvConnector, JsonlConnector, MetricsBridge, OtelConnector},
     network::Network,
-    pool::{Pool, PoolConfig, PoolWithStatistics},
+    pool::{Pool, PoolConfig, PoolWithWorkerProperties},
     scheduler_config::{Job as SchedulerJob, MetricsConfig},
     scheduling::{batch_scheduler::BatchScheduler, data_scheduler::DataScheduler},
     simulation::BasicSimulation,
@@ -236,7 +236,7 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
             grace: Duration::from_millis(diloco_config.resources.worker_pool.grace_ms),
         },
     );
-    let worker_pool = PoolWithStatistics::<RunningMean>::new(worker_pool);
+    let worker_pool = PoolWithWorkerProperties::<RunningMean>::new(worker_pool);
     let worker_handle = worker_pool.handle();
 
     let parameter_pool = Pool::new(
