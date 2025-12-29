@@ -38,37 +38,41 @@ FETCH_PATH = "artifacts"
 CURRENT_MODEL_NAME = "global_weights.pt"
 MIN_LOOP_TIME_MS = 100
 
-otel_handler = None
-if "OTEL" in os.environ:
+# NOTE: Set the root logger level to NOTSET to ensure all messages are captured
+# and attach console and OTEL (if configured) handlers to root logger
+logging.getLogger().setLevel(logging.NOTSET)
+
+# NOTE: Set level for httpx and httpcore to WARNING to reduce noise
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+console_handler = logging.StreamHandler(sys.stdout)
+console_handler.setLevel(logging.INFO)
+console_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+logging.getLogger().addHandler(console_handler)
+
+
+# NOTE: Only configure OTEL exporters if endpoint is defined.
+# If no endpoint is configured, skip exporters.
+otel_endpoint = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
+if otel_endpoint:
     resource = get_aggregated_resources([OTELResourceDetector()])
 
-    # Configure OTEL
+    exporter = OTLPLogExporter()
     logger_provider = LoggerProvider(resource=resource)
-    print(logger_provider)
+    logger_provider.add_log_record_processor(BatchLogRecordProcessor(exporter))
     set_logger_provider(logger_provider)
 
-    exporter = OTLPLogExporter()
-    logger_provider.add_log_record_processor(BatchLogRecordProcessor(exporter))
     otel_handler = LoggingHandler(level=logging.NOTSET, logger_provider=logger_provider)
+    logging.getLogger().addHandler(otel_handler)
 
     metric_exporter = OTLPMetricExporter()
     metric_reader = PeriodicExportingMetricReader(metric_exporter)
     meter_provider = MeterProvider(resource=resource, metric_readers=[metric_reader])
     metrics.set_meter_provider(meter_provider)
+
     SystemMetricsInstrumentor().instrument(meter_provider=meter_provider)
 
-# NOTE: Set the root logger level to NOTSET to ensure all messages are captured
-# and attach OTLP + console handlers to root logger
-console_handler = logging.StreamHandler(sys.stdout)
-console_handler.setLevel(logging.INFO)
-console_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
-
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("httpcore").setLevel(logging.WARNING)
-logging.getLogger().setLevel(logging.NOTSET)
-if otel_handler:
-    logging.getLogger().addHandler(otel_handler)
-logging.getLogger().addHandler(console_handler)
 
 logger = logging.getLogger(__name__)
 
