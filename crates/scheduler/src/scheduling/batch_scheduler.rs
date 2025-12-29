@@ -27,7 +27,7 @@ use uuid::Uuid;
 use crate::{
     metrics_bridge::Metrics,
     network::Network,
-    pool::{PoolHandle, PoolWithWorkerPropertiesHandle},
+    pool::{PoolHandle, PoolWithWorkerPropertiesHandle, WorkerDescriptorWithProperties},
     scheduler_config::ModelDestiantion,
     simulation::Simulation,
     statistics::RuntimeStatistic,
@@ -110,6 +110,103 @@ pub enum BatchSchedulerError {
     NetworkError(#[from] RequestResponseError),
     #[error("Send Metrics Error: {0}")]
     SendMetricsError(#[from] SendError<(PeerId, Metrics)>),
+}
+
+/// Handle common transitions in Idle and BatchCompleted
+#[allow(clippy::too_many_arguments)]
+async fn handle_common_transition<S>(
+    training_state: Arc<Mutex<TrainingState>>,
+    batch_sizer: BatchSizer,
+    multi_batch_size: u32,
+    snapshot: Vec<WorkerDescriptorWithProperties>,
+    peer_id: PeerId,
+    parameter_servers: Vec<PeerId>,
+    short_idle: SystemTime,
+) -> Result<ExecutorAction, BatchSchedulerError>
+where
+    S: Simulation + Send + Sync + 'static,
+{
+    let peer_position = snapshot
+        .iter()
+        .position(|w| w.peer_id == peer_id)
+        .unwrap_or(0);
+
+    // Get peer contribution from pool
+    let peer_contribution = snapshot
+        .iter()
+        .find(|w| w.peer_id == peer_id)
+        .map(|w| w.state.samples_processed)
+        .unwrap_or(0);
+
+    let (count, update_target) = {
+        let training = training_state.lock().await;
+        (training.get_count(), training.get_update_target())
+    };
+
+    let stats: Vec<u64> = snapshot.iter().map(|w| w.statistic.unwrap_or(0)).collect();
+    let progress: Vec<u64> = snapshot
+        .iter()
+        .map(|w| w.last_updated.unwrap_or(0))
+        .collect();
+    let batch_sizes: Vec<u32> = snapshot
+        .iter()
+        .map(|w| (batch_sizer)(&w.resources))
+        .collect();
+
+    let (should_update, projected_target, batches) = if update_target <= count {
+        (true, count, 0)
+    } else if !snapshot.is_empty()
+        && batch_sizes.iter().all(|&b| b > 0)
+        && stats.iter().all(|&s| s > 0 && s < u64::MAX)
+    {
+        let (time, cnt, projection, capped) = S::project(
+            &progress,
+            &batch_sizes,
+            stats,
+            update_target.saturating_sub(count),
+            multi_batch_size,
+        );
+
+        tracing::debug!(
+            time = %time,
+            count = %cnt,
+            peer = %peer_id,
+            capped,
+            "Simulation with projection {:?} and {:?}",
+            projection,
+            update_target.saturating_sub(count)
+        );
+        (
+            cnt <= 0
+                && !capped
+                && peer_position < projection.len()
+                && projection[peer_position] == 0,
+            count.saturating_add(cnt.unsigned_abs()),
+            projection[peer_position],
+        )
+    } else {
+        (false, count, multi_batch_size)
+    };
+
+    if !should_update {
+        Ok(ExecutorAction::Train(TrainAction::ExecuteBatch { batches }))
+    } else if parameter_servers.is_empty() {
+        // NOTE: If we need to send an update but there are no parameter servers,
+        // we must wait (idle) until one becomes available.
+        Ok(ExecutorAction::Train(TrainAction::Idle {
+            timeout: short_idle,
+        }))
+    } else {
+        Ok(ExecutorAction::Train(TrainAction::SendUpdate {
+            target: Reference::Peers {
+                // Selecting a single PS to avoid that workers send updates to multiple PS
+                peers: vec![parameter_servers[0]],
+                strategy: SelectionStrategy::One,
+                resource: None,
+            },
+            weight: peer_contribution as f32 / projected_target as f32,
+        }))
+    }
 }
 
 /// Handle action protocol requests and respond with next steps.
@@ -197,66 +294,6 @@ where
                 let mut state = round_state.lock().await;
                 if !state.training_complete {
                     let snapshot = worker_pool.properties();
-                    let peer_position = snapshot
-                        .iter()
-                        .position(|w| w.peer_id == peer_id)
-                        .unwrap_or(0);
-
-                    // Get peer contribution from pool
-                    let peer_contribution = snapshot
-                        .iter()
-                        .find(|w| w.peer_id == peer_id)
-                        .map(|w| w.state.samples_processed)
-                        .unwrap_or(0);
-
-                    let (count, update_target) = {
-                        let training = training_state.lock().await;
-                        (training.get_count(), training.get_update_target())
-                    };
-
-                    let stats: Vec<u64> =
-                        snapshot.iter().map(|w| w.statistic.unwrap_or(0)).collect();
-                    let progress: Vec<u64> = snapshot
-                        .iter()
-                        .map(|w| w.last_updated.unwrap_or(0))
-                        .collect();
-                    let batch_sizes: Vec<u32> = snapshot
-                        .iter()
-                        .map(|w| (batch_sizer)(&w.resources))
-                        .collect();
-
-                    let (should_update, projected_target) = if update_target <= count {
-                        (true, count)
-                    } else if !snapshot.is_empty()
-                        && batch_sizes.iter().all(|&b| b > 0)
-                        && stats.iter().all(|&s| s > 0 && s < u64::MAX)
-                    {
-                        let (time, cnt, projection, capped) = S::project(
-                            &progress,
-                            &batch_sizes,
-                            stats,
-                            update_target.saturating_sub(count),
-                            multi_batch_size,
-                        );
-
-                        tracing::debug!(
-                            time = %time,
-                            count = %cnt,
-                            peer = %peer_id,
-                            "Simulation with projection {:?} and {:?}",
-                            projection,
-                            update_target.saturating_sub(count)
-                        );
-                        (
-                            cnt <= 0
-                                && !capped
-                                && peer_position < projection.len()
-                                && projection[peer_position] == 0,
-                            count.saturating_add(cnt.unsigned_abs()),
-                        )
-                    } else {
-                        (false, count)
-                    };
 
                     // Check if peer has applied update or sent update
                     let (has_applied_update, has_sent_update, _applied_final_update) = snapshot
@@ -284,26 +321,17 @@ where
                         ExecutorAction::Train(TrainAction::Idle {
                             timeout: short_idle,
                         })
-                    } else if !should_update {
-                        ExecutorAction::Train(TrainAction::ExecuteBatch {
-                            batches: multi_batch_size,
-                        })
-                    } else if parameter_servers.is_empty() {
-                        // NOTE: If we need to send an update but there are no parameter servers,
-                        // we must wait (idle) until one becomes available.
-                        ExecutorAction::Train(TrainAction::Idle {
-                            timeout: short_idle,
-                        })
                     } else {
-                        ExecutorAction::Train(TrainAction::SendUpdate {
-                            target: Reference::Peers {
-                                // Selecting a single PS to avoid that workers send updates to multiple PS
-                                peers: vec![parameter_servers[0]],
-                                strategy: SelectionStrategy::One,
-                                resource: None,
-                            },
-                            weight: peer_contribution as f32 / projected_target as f32,
-                        })
+                        handle_common_transition::<S>(
+                            training_state,
+                            batch_sizer,
+                            multi_batch_size,
+                            snapshot,
+                            peer_id,
+                            parameter_servers,
+                            short_idle,
+                        )
+                        .await?
                     }
                 } else if state.push_done {
                     cancel.cancel();
@@ -362,28 +390,16 @@ where
                 });
 
                 let snapshot = worker_pool.properties();
-                let peer_position = snapshot
-                    .iter()
-                    .position(|w| w.peer_id == peer_id)
-                    .unwrap_or(0);
 
-                let (count, update_target) = {
+                {
                     let mut training = training_state.lock().await;
                     training.record_batch(batch_size);
-                    (training.get_count(), training.get_update_target())
                 };
 
                 // Update per-worker samples
                 worker_pool.update_state(&peer_id, |s| {
                     s.samples_processed = s.samples_processed.saturating_add(batch_size);
                 });
-
-                // Get fresh snapshot for peer contribution after update
-                let peer_contribution = snapshot
-                    .iter()
-                    .find(|w| w.peer_id == peer_id)
-                    .map(|w| w.state.samples_processed.saturating_add(batch_size))
-                    .unwrap_or(batch_size);
 
                 let (training_complete, sent_update) = {
                     let state = round_state.lock().await;
@@ -400,71 +416,16 @@ where
                         timeout: short_idle,
                     })
                 } else {
-                    let stats: Vec<u64> =
-                        snapshot.iter().map(|w| w.statistic.unwrap_or(0)).collect();
-                    let progress: Vec<u64> = snapshot
-                        .iter()
-                        .map(|w| w.last_updated.unwrap_or(0))
-                        .collect();
-                    let batch_sizes: Vec<u32> = snapshot
-                        .iter()
-                        .map(|w| (batch_sizer)(&w.resources))
-                        .collect();
-
-                    let (should_update, projected_target, batches) = if update_target <= count {
-                        (true, count, 0)
-                    } else if !snapshot.is_empty()
-                        && batch_sizes.iter().all(|&b| b > 0)
-                        && stats.iter().all(|&s| s > 0 && s < u64::MAX)
-                    {
-                        let (time, cnt, projection, capped) = S::project(
-                            &progress,
-                            &batch_sizes,
-                            stats,
-                            update_target.saturating_sub(count),
-                            multi_batch_size,
-                        );
-
-                        tracing::debug!(
-                            time = %time,
-                            count = %cnt,
-                            peer = %peer_id,
-                            capped,
-                            "Simulation with projection {:?} and {:?}",
-                            projection,
-                            update_target.saturating_sub(count)
-                        );
-                        (
-                            cnt <= 0
-                                && !capped
-                                && peer_position < projection.len()
-                                && projection[peer_position] == 0,
-                            count.saturating_add(cnt.unsigned_abs()),
-                            projection[peer_position],
-                        )
-                    } else {
-                        (false, count, multi_batch_size)
-                    };
-
-                    if !should_update {
-                        ExecutorAction::Train(TrainAction::ExecuteBatch { batches })
-                    } else if parameter_servers.is_empty() {
-                        // NOTE: If we need to send an update but there are no parameter servers,
-                        // we must wait (idle) until one becomes available.
-                        ExecutorAction::Train(TrainAction::Idle {
-                            timeout: short_idle,
-                        })
-                    } else {
-                        ExecutorAction::Train(TrainAction::SendUpdate {
-                            target: Reference::Peers {
-                                // Selecting a single PS to avoid that workers send updates to multiple PS
-                                peers: vec![parameter_servers[0]],
-                                strategy: SelectionStrategy::One,
-                                resource: None,
-                            },
-                            weight: peer_contribution as f32 / projected_target as f32,
-                        })
-                    }
+                    handle_common_transition::<S>(
+                        training_state,
+                        batch_sizer,
+                        multi_batch_size,
+                        snapshot,
+                        peer_id,
+                        parameter_servers,
+                        short_idle,
+                    )
+                    .await?
                 }
             }
             TrainStatus::SentUpdate { mut metrics, .. } => {
