@@ -213,8 +213,6 @@ if __name__ == "__main__":  # noqa: PLR0915, PLR0912
                 last_gradient = file_name
 
                 last_metrics = {"loss": float(np.mean(loss_list))} if loss_list else {}
-                # Reset Losses
-                loss_list = []
 
                 if last_gradient is None:
                     current_status = {
@@ -300,6 +298,9 @@ if __name__ == "__main__":  # noqa: PLR0915, PLR0912
                     "details": {"state": "applied-update"},
                 }
                 epoch_counter += 1
+                # Reset Losses here, because if we fail to send the update and empty the list allready we
+                # lose the values when we retry.
+                loss_list = []
             elif kind == "push-to-hub":
                 repository = action.get("repository")
                 token = action.get("token")
