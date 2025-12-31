@@ -251,6 +251,8 @@ pub mod renew_lease {
             /// New timeout for the lease
             timeout: SystemTime,
         },
+        NotFound,
+        Forbidden,
         Failed,
     }
 }
