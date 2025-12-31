@@ -24,7 +24,7 @@ use hypha_scheduler::{
     config::Config,
     metrics_bridge::{AimConnector, CsvConnector, JsonlConnector, MetricsBridge, OtelConnector},
     network::Network,
-    pool::{Pool, PoolConfig, PoolWithWorkerProperties},
+    pool::{Pool, PoolConfig, PoolWithAggregateInfo, PoolWithTrainInfo},
     scheduler_config::{Job as SchedulerJob, MetricsConfig},
     scheduling::{batch_scheduler::BatchScheduler, data_scheduler::DataScheduler},
     simulation::BasicSimulation,
@@ -225,7 +225,7 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
     let worker_price = diloco_config.resources.worker_price;
     let parameter_server_price = diloco_config.resources.parameter_server_price;
 
-    let worker_pool = Pool::new(
+    let worker_pool = PoolWithTrainInfo::<RunningMean>::new(Pool::new(
         GreedyWorkerAllocator::new(network.clone(), WeightedResourceEvaluator::default()),
         PoolConfig {
             name: "workers".into(),
@@ -235,11 +235,10 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
             target: diloco_config.resources.worker_pool.target as usize,
             grace: Duration::from_millis(diloco_config.resources.worker_pool.grace_ms),
         },
-    );
-    let worker_pool = PoolWithWorkerProperties::<RunningMean>::new(worker_pool);
+    ));
     let worker_handle = worker_pool.handle();
 
-    let parameter_pool = Pool::new(
+    let parameter_pool = PoolWithAggregateInfo::new(Pool::new(
         GreedyWorkerAllocator::new(network.clone(), WeightedResourceEvaluator::default()),
         PoolConfig {
             name: "parameter-servers".into(),
@@ -249,7 +248,7 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
             target: diloco_config.resources.parameter_server_pool.target as usize,
             grace: Duration::from_millis(diloco_config.resources.parameter_server_pool.grace_ms),
         },
-    );
+    ));
     let parameter_handle = parameter_pool.handle();
 
     let dataset = diloco_config.dataset.dataset.clone();

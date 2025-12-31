@@ -27,7 +27,7 @@ use uuid::Uuid;
 use crate::{
     metrics_bridge::Metrics,
     network::Network,
-    pool::{PoolHandle, PoolWithWorkerPropertiesHandle},
+    pool::{PoolWithAggregateInfoHandle, PoolWithTrainInfoHandle},
     scheduler_config::ModelDestiantion,
     simulation::Simulation,
     statistics::RuntimeStatistic,
@@ -116,8 +116,8 @@ pub enum BatchSchedulerError {
 #[allow(clippy::too_many_arguments)]
 async fn schedule<T, S>(
     tx: Sender<(PeerId, Metrics)>,
-    worker_pool: PoolWithWorkerPropertiesHandle<T>,
-    parameter_pool: PoolHandle,
+    worker_pool: PoolWithTrainInfoHandle<T>,
+    parameter_pool: PoolWithAggregateInfoHandle,
     round_state: Arc<Mutex<RoundState>>,
     training_state: Arc<Mutex<TrainingState>>,
     batch_sizer: BatchSizer,
@@ -143,8 +143,10 @@ where
     let ps_broadcast_idle = now + Duration::from_secs(5);
 
     let since_start = start.elapsed().as_millis() as u64;
+    // NOTE: Keep aggregate info aligned with active parameter servers.
+    parameter_pool.info();
     // NOTE: We rely on Pool::members() being oldest-first ordered by join time.
-    let parameter_servers: Vec<PeerId> = parameter_pool.iter().map(|w| w.peer_id).collect();
+    let parameter_servers: Vec<PeerId> = parameter_pool.info().iter().map(|w| w.peer_id).collect();
     let primary_ps = parameter_servers.first().copied();
 
     let next_action = match status {
@@ -164,7 +166,7 @@ where
             }
             TrainStatus::WaitedForModel => {
                 let sending_peer = {
-                    let snapshot = worker_pool.properties();
+                    let snapshot = worker_pool.info();
                     let worker = snapshot.iter().find(|w| w.peer_id == peer_id);
                     worker.and_then(|w| w.state.receiving_from)
                 };
@@ -196,7 +198,7 @@ where
             TrainStatus::Idle => {
                 let mut state = round_state.lock().await;
                 if !state.training_complete {
-                    let snapshot = worker_pool.properties();
+                    let snapshot = worker_pool.info();
                     let peer_position = snapshot
                         .iter()
                         .position(|w| w.peer_id == peer_id)
@@ -259,17 +261,20 @@ where
                     };
 
                     // Check if peer has applied update or sent update
-                    let (has_applied_update, has_sent_update, _applied_final_update) = snapshot
+                    let (has_applied_update, _applied_final_update) = snapshot
                         .iter()
                         .find(|w| w.peer_id == peer_id)
-                        .map(|w| {
-                            (
-                                w.state.applied_update,
-                                w.state.sent_update,
-                                w.state.applied_final_update,
-                            )
+                        .map(|w| (w.state.applied_update, w.state.applied_final_update))
+                        .unwrap_or((false, false));
+                    let has_sent_update = primary_ps
+                        .and_then(|ps| {
+                            parameter_pool
+                                .info()
+                                .into_iter()
+                                .find(|w| w.peer_id == ps)
+                                .map(|w| w.worker_updates.contains(&peer_id))
                         })
-                        .unwrap_or((false, false, false));
+                        .unwrap_or(false);
 
                     if state.aggregated_updates && !has_applied_update {
                         ExecutorAction::Train(TrainAction::ApplyUpdate {
@@ -309,7 +314,7 @@ where
                     cancel.cancel();
                     ExecutorAction::Train(TrainAction::Terminate)
                 } else {
-                    let snapshot = worker_pool.properties();
+                    let snapshot = worker_pool.info();
                     let has_push_assignment = snapshot.iter().any(|w| w.state.is_pusher);
                     let (applied_final_update, _am_pusher, has_applied_update) = snapshot
                         .iter()
@@ -361,7 +366,7 @@ where
                     *last_updated = since_start;
                 });
 
-                let snapshot = worker_pool.properties();
+                let snapshot = worker_pool.info();
                 let peer_position = snapshot
                     .iter()
                     .position(|w| w.peer_id == peer_id)
@@ -387,10 +392,14 @@ where
 
                 let (training_complete, sent_update) = {
                     let state = round_state.lock().await;
-                    let sent = snapshot
-                        .iter()
-                        .find(|w| w.peer_id == peer_id)
-                        .map(|w| w.state.sent_update)
+                    let sent = primary_ps
+                        .and_then(|ps| {
+                            parameter_pool
+                                .info()
+                                .into_iter()
+                                .find(|w| w.peer_id == ps)
+                                .map(|w| w.worker_updates.contains(&peer_id))
+                        })
                         .unwrap_or(false);
                     (state.training_complete, sent)
                 };
@@ -468,7 +477,7 @@ where
                 }
             }
             TrainStatus::SentUpdate { mut metrics, .. } => {
-                let snapshot = worker_pool.properties();
+                let snapshot = worker_pool.info();
                 let worker_samples = snapshot
                     .iter()
                     .find(|w| w.peer_id == peer_id)
@@ -496,16 +505,28 @@ where
                     .await
                     .map_err(BatchSchedulerError::from)?;
 
-                // NOTE: Track workers that have sent their update for the current round.
-                worker_pool.update_state(&peer_id, |s| s.sent_update = true);
-                let snapshot = worker_pool.properties(); // Refresh after update
+                // NOTE: Track workers that have sent their update for the current round on the parameter pool.
+                if let Some(ps) = primary_ps {
+                    parameter_pool.update_state(&ps, |state| {
+                        state.worker_updates.insert(peer_id);
+                    });
+                }
+                let snapshot = worker_pool.info(); // Refresh after update for logging
 
                 let mut state = round_state.lock().await;
                 if state.first_update_at.is_none() {
                     state.first_update_at = Some(Instant::now());
                 }
                 let total_workers = snapshot.len();
-                let sent = snapshot.iter().filter(|w| w.state.sent_update).count();
+                let sent = primary_ps
+                    .and_then(|ps| {
+                        parameter_pool
+                            .info()
+                            .into_iter()
+                            .find(|w| w.peer_id == ps)
+                            .map(|w| w.worker_updates.len())
+                    })
+                    .unwrap_or(0);
                 let elapsed_ms = state
                     .first_update_at
                     .map(|t| t.elapsed().as_millis() as u64)
@@ -544,7 +565,7 @@ where
                     })
                 } else {
                     // Find a worker waiting for model
-                    let snapshot = worker_pool.properties();
+                    let snapshot = worker_pool.info();
                     let waiting_worker = snapshot
                         .iter()
                         .find(|w| w.state.waiting_for_model)
@@ -575,7 +596,7 @@ where
             }
             TrainStatus::PushedToHub => {
                 let is_pusher = worker_pool
-                    .properties()
+                    .info()
                     .iter()
                     .find(|w| w.peer_id == peer_id)
                     .map(|w| w.state.is_pusher)
@@ -617,7 +638,7 @@ where
                 let training_complete = { round_state.lock().await.training_complete };
                 if training_complete {
                     let all_applied = worker_pool
-                        .properties()
+                        .info()
                         .iter()
                         .all(|w| w.state.applied_final_update);
 
@@ -640,7 +661,7 @@ where
                         timeout: short_idle,
                     })
                 } else {
-                    let snapshot = worker_pool.properties();
+                    let snapshot = worker_pool.info();
                     let workers: Vec<_> = snapshot
                         .iter()
                         .filter(|w| !w.state.waiting_for_model)
@@ -656,12 +677,15 @@ where
                         // or when a quorum (min workers) have sent updates and the
                         // grace period has elapsed since the first update in this round.
                         let mut state = round_state.lock().await;
-                        let all_sent = snapshot
-                            .iter()
-                            .filter(|w| !w.state.waiting_for_model)
-                            .all(|w| w.state.sent_update);
+                        let aggregate_snapshot = parameter_pool.info();
+                        let ps_state = aggregate_snapshot.iter().find(|ps| ps.peer_id == peer_id);
+                        let all_sent = ps_state
+                            .map(|entry| workers.iter().all(|w| entry.worker_updates.contains(w)))
+                            .unwrap_or(false);
 
-                        let sent_count = snapshot.iter().filter(|w| w.state.sent_update).count();
+                        let sent_count = ps_state
+                            .map(|entry| entry.worker_updates.len())
+                            .unwrap_or(0);
 
                         let effective_quorum = state.min_quorum.min(workers.len());
                         let quorum_met = sent_count >= effective_quorum;
@@ -698,11 +722,8 @@ where
                         timeout: ps_broadcast_idle,
                     })
                 } else {
-                    let workers: Vec<_> = worker_pool
-                        .properties()
-                        .into_iter()
-                        .map(|w| w.peer_id)
-                        .collect();
+                    let workers: Vec<_> =
+                        worker_pool.info().into_iter().map(|w| w.peer_id).collect();
 
                     if workers.is_empty() {
                         ExecutorAction::Aggregate(AggregateAction::Idle {
@@ -714,7 +735,7 @@ where
                             let mut state = round_state.lock().await;
                             state.aggregated_updates = true;
                             // reset applied updates in pool
-                            let snapshot = worker_pool.properties();
+                            let snapshot = worker_pool.info();
                             for w in snapshot {
                                 worker_pool.update_state(&w.peer_id, |s| s.applied_update = false);
                             }
@@ -772,12 +793,15 @@ where
                     tracing::info!(round = state.round, "Broadcast completed; advancing round");
 
                     // Reset per-round state in pool
-                    let snapshot = worker_pool.properties();
+                    let snapshot = worker_pool.info();
                     for w in snapshot {
                         worker_pool.update_state(&w.peer_id, |s| {
                             s.sent_update = false;
                             s.samples_processed = 0;
                         });
+                    }
+                    if let Some(ps) = primary_ps {
+                        parameter_pool.update_state(&ps, |state| state.worker_updates.clear());
                     }
 
                     state.first_update_at = None;
@@ -852,8 +876,8 @@ impl BatchScheduler {
     #[allow(clippy::too_many_arguments)]
     pub async fn run<T, S>(
         network: Network,
-        worker_pool: PoolWithWorkerPropertiesHandle<T>,
-        parameter_pool: PoolHandle,
+        worker_pool: PoolWithTrainInfoHandle<T>,
+        parameter_pool: PoolWithAggregateInfoHandle,
         id: Uuid,
         min_quorum: usize,
         grace: Duration,
@@ -967,7 +991,10 @@ mod batch_scheduler_tests {
     };
     use hypha_resources::Resources;
     use libp2p::PeerId;
-    use tokio::{sync::mpsc::Sender, time::Duration};
+    use tokio::{
+        sync::{mpsc::Sender, oneshot},
+        time::Duration,
+    };
     use tokio_util::sync::CancellationToken;
     use uuid::Uuid;
 
@@ -976,12 +1003,13 @@ mod batch_scheduler_tests {
         allocator::{Allocator, AllocatorError},
         metrics_bridge::Metrics,
         pool::{
-            Pool, PoolConfig, PoolHandle, PoolWithWorkerProperties, PoolWithWorkerPropertiesHandle,
+            Pool, PoolConfig, PoolWithAggregateInfo, PoolWithAggregateInfoHandle,
+            PoolWithTrainInfo, PoolWithTrainInfoHandle,
         },
         scheduler_config::{ModelDestiantion, PriceRange},
         simulation::BasicSimulation,
         statistics::{RunningMean, RuntimeStatistic},
-        worker::{TestWorkerBuilder, Worker},
+        worker::{TestWorkerBuilder, Worker, WorkerError},
     };
 
     struct NoopAllocator;
@@ -1068,9 +1096,9 @@ mod batch_scheduler_tests {
                 grace: Duration::from_secs(1),
             },
         );
-        let worker_pool = PoolWithWorkerProperties::<RunningMean>::new(pool);
+        let worker_pool = PoolWithTrainInfo::<RunningMean>::new(pool);
         let worker_handle = worker_pool.handle();
-        let ps_pool = Pool::new(
+        let ps_pool = PoolWithAggregateInfo::new(Pool::new(
             NoopAllocator,
             PoolConfig {
                 name: "ps".into(),
@@ -1083,7 +1111,7 @@ mod batch_scheduler_tests {
                 target: 0,
                 grace: Duration::from_secs(1),
             },
-        );
+        ));
         let parameter_pool = ps_pool.handle();
 
         let (tx, _rx) = tokio::sync::mpsc::channel::<(PeerId, Metrics)>(1);
@@ -1136,9 +1164,9 @@ mod batch_scheduler_tests {
                 grace: Duration::from_secs(1),
             },
         );
-        let worker_pool = PoolWithWorkerProperties::<RunningMean>::new(pool);
+        let worker_pool = PoolWithTrainInfo::<RunningMean>::new(pool);
         let worker_handle = worker_pool.handle();
-        let ps_pool = Pool::new(
+        let ps_pool = PoolWithAggregateInfo::new(Pool::new(
             NoopAllocator,
             PoolConfig {
                 name: "ps".into(),
@@ -1151,7 +1179,7 @@ mod batch_scheduler_tests {
                 target: 0,
                 grace: Duration::from_secs(1),
             },
-        );
+        ));
         let parameter_pool = ps_pool.handle();
 
         let (tx, _rx) = tokio::sync::mpsc::channel::<(PeerId, Metrics)>(1);
@@ -1204,9 +1232,9 @@ mod batch_scheduler_tests {
                 grace: Duration::from_secs(1),
             },
         );
-        let worker_pool = PoolWithWorkerProperties::<RunningMean>::new(pool);
+        let worker_pool = PoolWithTrainInfo::<RunningMean>::new(pool);
         let worker_handle = worker_pool.handle();
-        let ps_pool = Pool::new(
+        let ps_pool = PoolWithAggregateInfo::new(Pool::new(
             NoopAllocator,
             PoolConfig {
                 name: "ps".into(),
@@ -1219,7 +1247,7 @@ mod batch_scheduler_tests {
                 target: 0,
                 grace: Duration::from_secs(1),
             },
-        );
+        ));
         let parameter_pool = ps_pool.handle();
 
         let (tx, _rx) = tokio::sync::mpsc::channel::<(PeerId, Metrics)>(1);
@@ -1272,9 +1300,9 @@ mod batch_scheduler_tests {
                 grace: Duration::from_secs(1),
             },
         );
-        let worker_pool = PoolWithWorkerProperties::<RunningMean>::new(pool);
+        let worker_pool = PoolWithTrainInfo::<RunningMean>::new(pool);
         let worker_handle = worker_pool.handle();
-        let ps_pool = Pool::new(
+        let ps_pool = PoolWithAggregateInfo::new(Pool::new(
             NoopAllocator,
             PoolConfig {
                 name: "ps".into(),
@@ -1287,7 +1315,7 @@ mod batch_scheduler_tests {
                 target: 0,
                 grace: Duration::from_secs(1),
             },
-        );
+        ));
         let parameter_pool = ps_pool.handle();
 
         let (tx, _rx) = tokio::sync::mpsc::channel::<(PeerId, Metrics)>(1);
@@ -1338,7 +1366,7 @@ mod batch_scheduler_tests {
             TestWorkerBuilder::new().with_peer_id(w2_id).build(),
         ]]);
 
-        let mut worker_pool_stream = PoolWithWorkerProperties::<RunningMean>::new(Pool::new(
+        let mut worker_pool_stream = PoolWithTrainInfo::<RunningMean>::new(Pool::new(
             worker_allocator,
             PoolConfig {
                 name: "workers".into(),
@@ -1360,7 +1388,7 @@ mod batch_scheduler_tests {
                 .expect("worker pool populate timeout")
                 .expect("worker pool ended")
                 .expect("worker allocation failed");
-            if worker_pool_stream.properties().len() >= 2 {
+            if worker_pool_stream.info().len() >= 2 {
                 break;
             }
         }
@@ -1369,7 +1397,7 @@ mod batch_scheduler_tests {
             TestWorkerBuilder::new().with_peer_id(ps_id).build(),
         ]]);
 
-        let mut parameter_pool_stream = Pool::new(
+        let mut parameter_pool_stream = PoolWithAggregateInfo::new(Pool::new(
             parameter_allocator,
             PoolConfig {
                 name: "ps".into(),
@@ -1382,7 +1410,7 @@ mod batch_scheduler_tests {
                 target: 1,
                 grace: Duration::from_secs(1),
             },
-        );
+        ));
         let parameter_handle = parameter_pool_stream.handle();
         tokio::time::timeout(Duration::from_secs(1), parameter_pool_stream.next())
             .await
@@ -1420,8 +1448,8 @@ mod batch_scheduler_tests {
         async fn dispatch(
             peer: PeerId,
             status: ExecutorStatus,
-            worker_handle: PoolWithWorkerPropertiesHandle<RunningMean>,
-            parameter_handle: PoolHandle,
+            worker_handle: PoolWithTrainInfoHandle<RunningMean>,
+            parameter_handle: PoolWithAggregateInfoHandle,
             round_state: Arc<tokio::sync::Mutex<RoundState>>,
             training_state: Arc<tokio::sync::Mutex<TrainingState>>,
             batch_sizer: Arc<dyn Fn(&Resources) -> u32 + Send + Sync>,
@@ -1732,7 +1760,7 @@ mod batch_scheduler_tests {
             (step.check)(resp);
         }
 
-        let snapshot = worker_handle.properties();
+        let snapshot = worker_handle.info();
         assert_eq!(
             snapshot.iter().filter(|w| w.state.is_pusher).count(),
             1,
@@ -1760,7 +1788,7 @@ mod batch_scheduler_tests {
             TestWorkerBuilder::new().with_peer_id(w2_id).build(),
         ]]);
 
-        let mut worker_pool_stream = PoolWithWorkerProperties::<RunningMean>::new(Pool::new(
+        let mut worker_pool_stream = PoolWithTrainInfo::<RunningMean>::new(Pool::new(
             worker_allocator,
             PoolConfig {
                 name: "workers".into(),
@@ -1782,7 +1810,7 @@ mod batch_scheduler_tests {
                 .expect("worker pool populate timeout")
                 .expect("worker pool ended")
                 .expect("worker allocation failed");
-            if worker_pool_stream.properties().len() >= 2 {
+            if worker_pool_stream.info().len() >= 2 {
                 break;
             }
         }
@@ -1791,7 +1819,7 @@ mod batch_scheduler_tests {
             TestWorkerBuilder::new().with_peer_id(ps_id).build(),
         ]]);
 
-        let mut parameter_pool_stream = Pool::new(
+        let mut parameter_pool_stream = PoolWithAggregateInfo::new(Pool::new(
             parameter_allocator,
             PoolConfig {
                 name: "ps".into(),
@@ -1804,7 +1832,7 @@ mod batch_scheduler_tests {
                 target: 1,
                 grace: Duration::from_secs(1),
             },
-        );
+        ));
         let parameter_handle = parameter_pool_stream.handle();
         tokio::time::timeout(Duration::from_secs(1), parameter_pool_stream.next())
             .await
@@ -1839,8 +1867,8 @@ mod batch_scheduler_tests {
         async fn dispatch(
             peer: PeerId,
             status: ExecutorStatus,
-            worker_handle: PoolWithWorkerPropertiesHandle<RunningMean>,
-            parameter_handle: PoolHandle,
+            worker_handle: PoolWithTrainInfoHandle<RunningMean>,
+            parameter_handle: PoolWithAggregateInfoHandle,
             round_state: Arc<tokio::sync::Mutex<RoundState>>,
             training_state: Arc<tokio::sync::Mutex<TrainingState>>,
             batch_sizer: Arc<dyn Fn(&Resources) -> u32 + Send + Sync>,
@@ -2093,7 +2121,7 @@ mod batch_scheduler_tests {
             (step.check)(resp);
         }
 
-        let snapshot = worker_handle.properties();
+        let snapshot = worker_handle.info();
         let rejoined = snapshot
             .iter()
             .find(|w| w.peer_id == w2_id)
@@ -2106,6 +2134,348 @@ mod batch_scheduler_tests {
             rejoined.state.applied_update,
             "rejoined worker should have applied the current update"
         );
+    }
+
+    #[tokio::test]
+    async fn rejoining_parameter_server_resends_updates_before_broadcast() {
+        let w1_id = PeerId::random();
+        let w2_id = PeerId::random();
+        let ps_id = PeerId::random();
+        let (tx, _rx) = tokio::sync::mpsc::channel::<(PeerId, Metrics)>(8);
+        let (drop_tx, drop_rx) = oneshot::channel::<()>();
+
+        let worker_allocator = StaticAllocator::new(vec![vec![
+            TestWorkerBuilder::new().with_peer_id(w1_id).build(),
+            TestWorkerBuilder::new().with_peer_id(w2_id).build(),
+        ]]);
+
+        let mut worker_pool_stream = PoolWithTrainInfo::<RunningMean>::new(Pool::new(
+            worker_allocator,
+            PoolConfig {
+                name: "workers".into(),
+                spec: hypha_messages::WorkerSpec {
+                    resources: Resources::default(),
+                    executor: vec![],
+                },
+                price: PriceRange::default(),
+                min: 0,
+                target: 2,
+                grace: Duration::from_secs(1),
+            },
+        ));
+        let worker_handle = worker_pool_stream.handle();
+
+        for _ in 0..2 {
+            tokio::time::timeout(Duration::from_secs(1), worker_pool_stream.next())
+                .await
+                .expect("worker pool populate timeout")
+                .expect("worker pool ended")
+                .expect("worker allocation failed");
+            if worker_pool_stream.info().len() >= 2 {
+                break;
+            }
+        }
+
+        let initial_ps = TestWorkerBuilder::new()
+            .with_peer_id(ps_id)
+            .with_lease_handler(tokio::spawn(async move {
+                let _ = drop_rx.await;
+                Err(WorkerError::LeaseExpired)
+            }))
+            .build();
+        let rejoining_ps = TestWorkerBuilder::new().with_peer_id(ps_id).build();
+        let parameter_allocator = StaticAllocator::new(vec![vec![rejoining_ps], vec![initial_ps]]);
+
+        let mut parameter_pool_stream = PoolWithAggregateInfo::new(Pool::new(
+            parameter_allocator,
+            PoolConfig {
+                name: "ps".into(),
+                spec: hypha_messages::WorkerSpec {
+                    resources: Resources::default(),
+                    executor: vec![],
+                },
+                price: PriceRange::default(),
+                min: 0,
+                target: 1,
+                grace: Duration::from_secs(1),
+            },
+        ));
+        let parameter_handle = parameter_pool_stream.handle();
+        tokio::time::timeout(Duration::from_secs(1), parameter_pool_stream.next())
+            .await
+            .expect("parameter pool populate timeout")
+            .expect("parameter pool ended")
+            .expect("ps allocation failed");
+
+        let round_state = Arc::new(tokio::sync::Mutex::new(RoundState {
+            aggregated_updates: false,
+            first_update_at: None,
+            round_started_at: Instant::now(),
+            aggregate_started_at: None,
+            min_quorum: 1,
+            grace: Duration::from_millis(0),
+            round: 0,
+            update_rounds: 3,
+            training_complete: false,
+            push_done: false,
+        }));
+        let training_state = Arc::new(tokio::sync::Mutex::new(TrainingState::new(1)));
+        let batch_sizer = Arc::new(|_: &Resources| 1u32);
+        let push_destination = Arc::new(None);
+        let start = std::time::Instant::now();
+        let token = CancellationToken::new();
+
+        struct Step {
+            peer: PeerId,
+            status: ExecutorStatus,
+            check: Box<dyn Fn(ExecutorAction) + Send>,
+        }
+
+        async fn dispatch(
+            peer: PeerId,
+            status: ExecutorStatus,
+            worker_handle: PoolWithTrainInfoHandle<RunningMean>,
+            parameter_handle: PoolWithAggregateInfoHandle,
+            round_state: Arc<tokio::sync::Mutex<RoundState>>,
+            training_state: Arc<tokio::sync::Mutex<TrainingState>>,
+            batch_sizer: Arc<dyn Fn(&Resources) -> u32 + Send + Sync>,
+            push_destination: Arc<Option<ModelDestiantion>>,
+            start: Instant,
+            tx: Sender<(PeerId, Metrics)>,
+            token: CancellationToken,
+        ) -> ExecutorAction {
+            schedule::<RunningMean, BasicSimulation>(
+                tx,
+                worker_handle,
+                parameter_handle,
+                round_state,
+                training_state,
+                batch_sizer,
+                1,
+                push_destination,
+                start,
+                (
+                    peer,
+                    ActionRequest {
+                        job_id: Uuid::new_v4(),
+                        status,
+                    },
+                ),
+                token,
+            )
+            .await
+            .unwrap()
+            .next
+        }
+
+        let steps_before_drop: Vec<Step> = vec![
+            Step {
+                peer: w1_id,
+                status: ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 1 }),
+                check: Box::new(move |resp| match resp {
+                    ExecutorAction::Train(TrainAction::SendUpdate {
+                        target: Reference::Peers { peers, .. },
+                        ..
+                    }) => assert_eq!(peers, vec![ps_id]),
+                    other => panic!("expected SendUpdate, got {:?}", other),
+                }),
+            },
+            Step {
+                peer: w1_id,
+                status: ExecutorStatus::Train(TrainStatus::SentUpdate {
+                    round: 0,
+                    metrics: HashMap::new(),
+                }),
+                check: Box::new(|resp| {
+                    assert!(matches!(
+                        resp,
+                        ExecutorAction::Train(TrainAction::Idle { .. })
+                    ))
+                }),
+            },
+            Step {
+                peer: w2_id,
+                status: ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 1 }),
+                check: Box::new(move |resp| match resp {
+                    ExecutorAction::Train(TrainAction::SendUpdate {
+                        target: Reference::Peers { peers, .. },
+                        ..
+                    }) => assert_eq!(peers, vec![ps_id]),
+                    other => panic!("expected SendUpdate, got {:?}", other),
+                }),
+            },
+            Step {
+                peer: w2_id,
+                status: ExecutorStatus::Train(TrainStatus::SentUpdate {
+                    round: 0,
+                    metrics: HashMap::new(),
+                }),
+                check: Box::new(|resp| {
+                    assert!(matches!(
+                        resp,
+                        ExecutorAction::Train(TrainAction::Idle { .. })
+                    ))
+                }),
+            },
+            Step {
+                peer: ps_id,
+                status: ExecutorStatus::Aggregate(AggregateStatus::Idle),
+                check: Box::new(|resp| {
+                    assert!(matches!(
+                        resp,
+                        ExecutorAction::Aggregate(AggregateAction::AggregateUpdates { .. })
+                    ))
+                }),
+            },
+            Step {
+                peer: ps_id,
+                status: ExecutorStatus::Aggregate(AggregateStatus::AggregatedUpdates {
+                    metrics: None,
+                }),
+                check: Box::new(|resp| {
+                    assert!(matches!(
+                        resp,
+                        ExecutorAction::Aggregate(AggregateAction::BroadcastUpdate { .. })
+                    ))
+                }),
+            },
+        ];
+
+        for step in steps_before_drop {
+            let resp = dispatch(
+                step.peer,
+                step.status,
+                worker_handle.clone(),
+                parameter_handle.clone(),
+                round_state.clone(),
+                training_state.clone(),
+                batch_sizer.clone(),
+                push_destination.clone(),
+                start,
+                tx.clone(),
+                token.clone(),
+            )
+            .await;
+            (step.check)(resp);
+        }
+
+        let _ = drop_tx.send(());
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !parameter_handle.info().is_empty() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("parameter server removal timeout");
+
+        tokio::time::timeout(Duration::from_secs(1), parameter_pool_stream.next())
+            .await
+            .expect("parameter pool rejoin timeout")
+            .expect("parameter pool ended")
+            .expect("ps rejoin allocation failed");
+
+        let steps_after_rejoin: Vec<Step> = vec![
+            Step {
+                peer: w1_id,
+                status: ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 1 }),
+                check: Box::new(move |resp| match resp {
+                    ExecutorAction::Train(TrainAction::SendUpdate {
+                        target: Reference::Peers { peers, .. },
+                        ..
+                    }) => assert_eq!(peers, vec![ps_id]),
+                    other => panic!("expected SendUpdate after rejoin, got {:?}", other),
+                }),
+            },
+            Step {
+                peer: w1_id,
+                status: ExecutorStatus::Train(TrainStatus::SentUpdate {
+                    round: 0,
+                    metrics: HashMap::new(),
+                }),
+                check: Box::new(|resp| {
+                    assert!(matches!(
+                        resp,
+                        ExecutorAction::Train(TrainAction::Idle { .. })
+                    ))
+                }),
+            },
+            Step {
+                peer: w2_id,
+                status: ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 1 }),
+                check: Box::new(move |resp| match resp {
+                    ExecutorAction::Train(TrainAction::SendUpdate {
+                        target: Reference::Peers { peers, .. },
+                        ..
+                    }) => assert_eq!(peers, vec![ps_id]),
+                    other => panic!("expected SendUpdate after rejoin, got {:?}", other),
+                }),
+            },
+            Step {
+                peer: w2_id,
+                status: ExecutorStatus::Train(TrainStatus::SentUpdate {
+                    round: 0,
+                    metrics: HashMap::new(),
+                }),
+                check: Box::new(|resp| {
+                    assert!(matches!(
+                        resp,
+                        ExecutorAction::Train(TrainAction::Idle { .. })
+                    ))
+                }),
+            },
+            Step {
+                peer: ps_id,
+                status: ExecutorStatus::Aggregate(AggregateStatus::Idle),
+                check: Box::new(|resp| {
+                    assert!(matches!(
+                        resp,
+                        ExecutorAction::Aggregate(AggregateAction::AggregateUpdates { .. })
+                    ))
+                }),
+            },
+            Step {
+                peer: ps_id,
+                status: ExecutorStatus::Aggregate(AggregateStatus::AggregatedUpdates {
+                    metrics: None,
+                }),
+                check: Box::new(|resp| {
+                    assert!(matches!(
+                        resp,
+                        ExecutorAction::Aggregate(AggregateAction::BroadcastUpdate { .. })
+                    ))
+                }),
+            },
+            Step {
+                peer: ps_id,
+                status: ExecutorStatus::Aggregate(AggregateStatus::BroadcastedUpdate {
+                    metrics: None,
+                }),
+                check: Box::new(|resp| {
+                    assert!(matches!(
+                        resp,
+                        ExecutorAction::Aggregate(AggregateAction::Idle { .. })
+                    ))
+                }),
+            },
+        ];
+
+        for step in steps_after_rejoin {
+            let resp = dispatch(
+                step.peer,
+                step.status,
+                worker_handle.clone(),
+                parameter_handle.clone(),
+                round_state.clone(),
+                training_state.clone(),
+                batch_sizer.clone(),
+                push_destination.clone(),
+                start,
+                tx.clone(),
+                token.clone(),
+            )
+            .await;
+            (step.check)(resp);
+        }
     }
 
     #[tokio::test]
@@ -2153,7 +2523,7 @@ mod batch_scheduler_tests {
                 .build(),
         ]]);
 
-        let mut worker_pool_stream = PoolWithWorkerProperties::<TestStat>::new(Pool::new(
+        let mut worker_pool_stream = PoolWithTrainInfo::<TestStat>::new(Pool::new(
             worker_allocator,
             PoolConfig {
                 name: "workers".into(),
@@ -2173,7 +2543,7 @@ mod batch_scheduler_tests {
             TestWorkerBuilder::new().with_peer_id(ps_id).build(),
         ]]);
 
-        let mut parameter_pool_stream = Pool::new(
+        let mut parameter_pool_stream = PoolWithAggregateInfo::new(Pool::new(
             parameter_allocator,
             PoolConfig {
                 name: "ps".into(),
@@ -2186,7 +2556,7 @@ mod batch_scheduler_tests {
                 target: 1,
                 grace: Duration::from_secs(1),
             },
-        );
+        ));
         let parameter_handle = parameter_pool_stream.handle();
 
         for _ in 0..3 {
@@ -2195,7 +2565,7 @@ mod batch_scheduler_tests {
                 .expect("worker pool populate timeout")
                 .expect("worker pool ended")
                 .expect("worker allocation failed");
-            if worker_pool_stream.properties().len() >= 3 {
+            if worker_pool_stream.info().len() >= 3 {
                 break;
             }
         }
@@ -2479,7 +2849,7 @@ mod batch_scheduler_tests {
             let state = round_state.lock().await;
             assert_eq!(state.round, 1, "round advanced after broadcast");
 
-            let snapshot = worker_handle.properties();
+            let snapshot = worker_handle.info();
             assert!(
                 snapshot.iter().all(|w| !w.state.sent_update),
                 "sent updates cleared after broadcast"
