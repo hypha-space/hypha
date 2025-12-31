@@ -226,6 +226,10 @@ where
                                                     error = ?e,
                                                     "Failed to renew lease"
                                                 );
+
+                                                return api::Response::RenewLease(
+                                                    renew_lease::Response::Failed,
+                                                );
                                             }
                                         }
                                     } else {
@@ -234,6 +238,10 @@ where
                                             scheduler_id = %peer_id,
                                             owner_id = %lease.leasable.peer_id,
                                             "Rejecting renewal: peer does not own lease"
+                                        );
+
+                                        return api::Response::RenewLease(
+                                            renew_lease::Response::Forbidden,
                                         );
                                     }
                                 }
@@ -244,10 +252,15 @@ where
                                         error = ?e,
                                         "Rejecting renewal: lease not found"
                                     );
+
+                                    return api::Response::RenewLease(
+                                        renew_lease::Response::NotFound,
+                                    );
                                 }
                             }
                         }
-                        api::Response::RenewLease(renew_lease::Response::Failed)
+
+                        api::Response::RenewLease(renew_lease::Response::Forbidden)
                     }
                 })
                 .await
