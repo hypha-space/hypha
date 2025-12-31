@@ -424,7 +424,6 @@ impl WorkerDescriptorWithProperties {
 pub struct WorkerState {
     pub sent_update: bool,
     pub applied_update: bool,
-    pub applied_final_update: bool,
     pub samples_processed: u32,
     pub waiting_for_model: bool,
     pub receiving_from: Option<PeerId>,
@@ -811,13 +810,13 @@ mod tests {
 
         pool_with_stats.update_statistics(&peer_id, |stats, last_updated| {
             if *last_updated > 0 {
-                stats.update(10u64.saturating_sub(*last_updated));
+                stats.update(10u64.saturating_sub(*last_updated), 1);
             }
             *last_updated = 10;
         });
         pool_with_stats.update_statistics(&peer_id, |stats, last_updated| {
             if *last_updated > 0 {
-                stats.update(25u64.saturating_sub(*last_updated));
+                stats.update(25u64.saturating_sub(*last_updated), 1);
             }
             *last_updated = 25;
         });

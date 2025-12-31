@@ -98,12 +98,16 @@ pub mod action {
         Idle,
         BatchCompleted {
             batch_size: u32,
+            batches: u32,
         },
+        WaitedForParameterServer,
         SentUpdate {
             round: u32,
             metrics: HashMap<String, f32>,
         },
+        WaitedForUpdate,
         AppliedUpdate,
+        WaitedForNextRound,
         PushedToHub,
         SentModel,
         ReceivedModel,
@@ -167,12 +171,21 @@ pub mod action {
         ExecuteBatch {
             batches: u32,
         },
+        WaitForParameterServer {
+            timeout: SystemTime,
+        },
         SendUpdate {
             target: Reference,
             weight: f32,
         },
+        WaitForUpdate {
+            timeout: SystemTime,
+        },
         ApplyUpdate {
             source: Reference,
+            timeout: SystemTime,
+        },
+        WaitForNextRound {
             timeout: SystemTime,
         },
         /// DEPRECATED: Temporary path to push final weights to Hugging Face.

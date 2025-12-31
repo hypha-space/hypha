@@ -56,7 +56,7 @@ pub struct DiLoCo {
     #[serde(rename = "outer_optimizer")]
     pub outer_optimizer: Nesterov,
     pub resources: DiLoCoResources,
-    pub model_destination: Option<ModelDestiantion>,
+    pub model_destination: Option<ModelDestination>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, Copy)]
@@ -179,7 +179,7 @@ impl From<ModelSource> for Model {
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
-pub struct ModelDestiantion {
+pub struct ModelDestination {
     pub repository: String,
     pub token: String,
 }

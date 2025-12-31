@@ -167,7 +167,7 @@ impl JobExecutor for ParameterServerExecutor {
                                     Ok(n) => {
                                         let _ = f.sync_all().await;
                                         let _ = fs::set_permissions(&file_path, Permissions::from_mode(0o600)).await;
-                                        tracing::debug!(peer_id = %peer, size = n, file = %file_path.display(), "Received update");                                }
+                                        tracing::info!(peer_id = %peer, size = n, file = %file_path.display(), "Received update");                                }
                                     Err(err) => {
                                         tracing::error!(error = %err, file = %file_path.display(), "Failed to write received update");
                                     }

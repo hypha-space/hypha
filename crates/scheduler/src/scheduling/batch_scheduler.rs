@@ -28,7 +28,7 @@ use crate::{
     metrics_bridge::Metrics,
     network::Network,
     pool::{PoolHandle, PoolWithWorkerPropertiesHandle, WorkerDescriptorWithProperties},
-    scheduler_config::ModelDestiantion,
+    scheduler_config::ModelDestination,
     simulation::Simulation,
     statistics::RuntimeStatistic,
 };
@@ -46,6 +46,7 @@ struct RoundState {
     update_rounds: u32,
     training_complete: bool,
     push_done: bool,
+    projected_taret: u32,
 }
 
 impl Default for RoundState {
@@ -61,6 +62,7 @@ impl Default for RoundState {
             update_rounds: 0,
             training_complete: false,
             push_done: false,
+            projected_taret: 0,
         }
     }
 }
@@ -112,10 +114,36 @@ pub enum BatchSchedulerError {
     SendMetricsError(#[from] SendError<(PeerId, Metrics)>),
 }
 
+async fn handle_send_update(
+    parameter_servers: Vec<PeerId>,
+    round_state: Arc<Mutex<RoundState>>,
+    peer_contribution: u32,
+    short_idle: SystemTime,
+) -> Result<ExecutorAction, BatchSchedulerError> {
+    if parameter_servers.is_empty() {
+        // NOTE: If we need to send an update but there are no parameter servers,
+        // we must wait until one becomes available.
+        Ok(ExecutorAction::Train(TrainAction::WaitForParameterServer {
+            timeout: short_idle,
+        }))
+    } else {
+        Ok(ExecutorAction::Train(TrainAction::SendUpdate {
+            target: Reference::Peers {
+                // Selecting a single PS to avoid that workers send updates to multiple PS
+                peers: vec![parameter_servers[0]],
+                strategy: SelectionStrategy::One,
+                resource: None,
+            },
+            weight: peer_contribution as f32 / round_state.lock().await.projected_taret as f32,
+        }))
+    }
+}
+
 /// Handle common transitions in Idle and BatchCompleted
 #[allow(clippy::too_many_arguments)]
-async fn handle_common_transition<S>(
+async fn execute_or_update<S>(
     training_state: Arc<Mutex<TrainingState>>,
+    round_state: Arc<Mutex<RoundState>>,
     batch_sizer: BatchSizer,
     multi_batch_size: u32,
     snapshot: Vec<WorkerDescriptorWithProperties>,
@@ -153,12 +181,9 @@ where
         .map(|w| (batch_sizer)(&w.resources))
         .collect();
 
-    let (should_update, projected_target, batches) = if update_target <= count {
-        (true, count, 0)
-    } else if !snapshot.is_empty()
-        && batch_sizes.iter().all(|&b| b > 0)
-        && stats.iter().all(|&s| s > 0 && s < u64::MAX)
-    {
+    let (should_update, batches) = if update_target <= count {
+        (true, 0)
+    } else if batch_sizes.iter().all(|&b| b > 0) && stats.iter().all(|&s| s > 0 && s < u64::MAX) {
         let (time, cnt, projection, capped) = S::project(
             &progress,
             &batch_sizes,
@@ -167,7 +192,7 @@ where
             multi_batch_size,
         );
 
-        tracing::debug!(
+        tracing::info!(
             time = %time,
             count = %cnt,
             peer = %peer_id,
@@ -176,35 +201,77 @@ where
             projection,
             update_target.saturating_sub(count)
         );
+
+        {
+            let projected_target = count.saturating_add(cnt.unsigned_abs());
+            let mut state = round_state.lock().await;
+            if state.projected_taret != projected_target {
+                state.projected_taret = projected_target;
+            }
+        };
+
         (
-            cnt <= 0
-                && !capped
-                && peer_position < projection.len()
-                && projection[peer_position] == 0,
-            count.saturating_add(cnt.unsigned_abs()),
+            cnt <= 0 && !capped && projection[peer_position] == 0,
             projection[peer_position],
         )
     } else {
-        (false, count, multi_batch_size)
+        {
+            let mut state = round_state.lock().await;
+            if state.projected_taret != update_target {
+                state.projected_taret = update_target;
+            }
+        };
+        (false, multi_batch_size)
     };
 
     if !should_update {
         Ok(ExecutorAction::Train(TrainAction::ExecuteBatch { batches }))
-    } else if parameter_servers.is_empty() {
-        // NOTE: If we need to send an update but there are no parameter servers,
-        // we must wait (idle) until one becomes available.
+    } else {
+        handle_send_update(
+            parameter_servers,
+            round_state,
+            peer_contribution,
+            short_idle,
+        )
+        .await
+    }
+}
+
+// Handle training finilaization transitions
+#[allow(clippy::too_many_arguments)]
+async fn finalize_training<T: RuntimeStatistic>(
+    round_state: Arc<Mutex<RoundState>>,
+    peer_id: PeerId,
+    cancel: CancellationToken,
+    short_idle: SystemTime,
+    worker_pool: PoolWithWorkerPropertiesHandle<T>,
+    push_destination: Arc<Option<ModelDestination>>,
+) -> Result<ExecutorAction, BatchSchedulerError> {
+    let mut state = round_state.lock().await;
+    let push_assigned = worker_pool.properties().iter().any(|w| w.state.is_pusher);
+
+    // Model allready pushed -> Terminate
+    if state.push_done {
+        cancel.cancel();
+        Ok(ExecutorAction::Train(TrainAction::Terminate))
+    } else if !push_assigned {
+        // Assign self as pusher
+        worker_pool.update_state(&peer_id, |s| s.is_pusher = true);
+
+        if let Some(destination) = push_destination.as_ref().as_ref() {
+            Ok(ExecutorAction::Train(TrainAction::PushToHub {
+                repository: destination.repository.clone(),
+                token: destination.token.clone(),
+            }))
+        } else {
+            // Model should not be pushed
+            state.push_done = true;
+            Ok(ExecutorAction::Train(TrainAction::Terminate))
+        }
+    } else {
+        // Wait until model is pushed.
         Ok(ExecutorAction::Train(TrainAction::Idle {
             timeout: short_idle,
-        }))
-    } else {
-        Ok(ExecutorAction::Train(TrainAction::SendUpdate {
-            target: Reference::Peers {
-                // Selecting a single PS to avoid that workers send updates to multiple PS
-                peers: vec![parameter_servers[0]],
-                strategy: SelectionStrategy::One,
-                resource: None,
-            },
-            weight: peer_contribution as f32 / projected_target as f32,
         }))
     }
 }
@@ -219,7 +286,7 @@ async fn schedule<T, S>(
     training_state: Arc<Mutex<TrainingState>>,
     batch_sizer: BatchSizer,
     multi_batch_size: u32,
-    push_destination: Arc<Option<ModelDestiantion>>,
+    push_destination: Arc<Option<ModelDestination>>,
     start: std::time::Instant,
     request: (PeerId, action::ActionRequest),
     cancel: CancellationToken,
@@ -233,11 +300,12 @@ where
     tracing::debug!(%peer_id, ?status, %job_id, "Received action request");
 
     let now = SystemTime::now();
-    // Rimeouts sized for ~100ms RTT with generous margins.
+    // Timeouts sized for ~100ms RTT with generous margins.
     let short_idle = now + Duration::from_millis(500);
     let wait_model = now + Duration::from_secs(1);
-    let long_io = now + Duration::from_secs(60);
     let ps_broadcast_idle = now + Duration::from_secs(5);
+    let short_io = now + Duration::from_secs(10);
+    let long_io = now + Duration::from_secs(60);
 
     let since_start = start.elapsed().as_millis() as u64;
     // NOTE: We rely on Pool::members() being oldest-first ordered by join time.
@@ -247,11 +315,18 @@ where
     let next_action = match status {
         ExecutorStatus::Train(train) => match train {
             TrainStatus::Joined => {
-                let state = round_state.lock().await;
-                if state.round == 0 {
-                    ExecutorAction::Train(TrainAction::Idle {
-                        timeout: short_idle,
-                    })
+                if round_state.lock().await.round == 0 {
+                    execute_or_update::<S>(
+                        training_state,
+                        round_state,
+                        batch_sizer,
+                        multi_batch_size,
+                        worker_pool.properties(),
+                        peer_id,
+                        parameter_servers,
+                        short_idle,
+                    )
+                    .await?
                 } else {
                     worker_pool.update_state(&peer_id, |s| s.waiting_for_model = true);
                     ExecutorAction::Train(TrainAction::WaitForModel {
@@ -283,150 +358,109 @@ where
                 }
             }
             TrainStatus::ReceivedModel => {
-                // Lazy transition to other state
-                ExecutorAction::Train(TrainAction::Idle { timeout: now })
+                // Participate in training
+                execute_or_update::<S>(
+                    training_state,
+                    round_state,
+                    batch_sizer,
+                    multi_batch_size,
+                    worker_pool.properties(),
+                    peer_id,
+                    parameter_servers,
+                    short_idle,
+                )
+                .await?
             }
             TrainStatus::SentModel => {
-                // Lazy transition to other state
-                ExecutorAction::Train(TrainAction::Idle { timeout: now })
+                // Participate in training
+                execute_or_update::<S>(
+                    training_state,
+                    round_state,
+                    batch_sizer,
+                    multi_batch_size,
+                    worker_pool.properties(),
+                    peer_id,
+                    parameter_servers,
+                    short_idle,
+                )
+                .await?
             }
             TrainStatus::Idle => {
-                let mut state = round_state.lock().await;
-                if !state.training_complete {
-                    let snapshot = worker_pool.properties();
-
-                    // Check if peer has applied update or sent update
-                    let (has_applied_update, has_sent_update, _applied_final_update) = snapshot
-                        .iter()
-                        .find(|w| w.peer_id == peer_id)
-                        .map(|w| {
-                            (
-                                w.state.applied_update,
-                                w.state.sent_update,
-                                w.state.applied_final_update,
-                            )
-                        })
-                        .unwrap_or((false, false, false));
-
-                    if state.aggregated_updates && !has_applied_update {
-                        ExecutorAction::Train(TrainAction::ApplyUpdate {
-                            source: Reference::Peers {
-                                peers: parameter_servers,
-                                strategy: SelectionStrategy::All,
-                                resource: None,
-                            },
-                            timeout: now + Duration::from_secs(10),
-                        })
-                    } else if has_sent_update {
-                        ExecutorAction::Train(TrainAction::Idle {
-                            timeout: short_idle,
-                        })
-                    } else {
-                        handle_common_transition::<S>(
-                            training_state,
-                            batch_sizer,
-                            multi_batch_size,
-                            snapshot,
-                            peer_id,
-                            parameter_servers,
-                            short_idle,
-                        )
-                        .await?
-                    }
-                } else if state.push_done {
-                    cancel.cancel();
-                    ExecutorAction::Train(TrainAction::Terminate)
-                } else {
-                    let snapshot = worker_pool.properties();
-                    let has_push_assignment = snapshot.iter().any(|w| w.state.is_pusher);
-                    let (applied_final_update, _am_pusher, has_applied_update) = snapshot
-                        .iter()
-                        .find(|w| w.peer_id == peer_id)
-                        .map(|w| {
-                            (
-                                w.state.applied_final_update,
-                                w.state.is_pusher,
-                                w.state.applied_update,
-                            )
-                        })
-                        .unwrap_or((false, false, false));
-
-                    if state.aggregated_updates && !has_applied_update {
-                        ExecutorAction::Train(TrainAction::ApplyUpdate {
-                            source: Reference::Peers {
-                                peers: parameter_servers,
-                                strategy: SelectionStrategy::All,
-                                resource: None,
-                            },
-                            timeout: now + Duration::from_secs(10),
-                        })
-                    } else if !has_push_assignment && applied_final_update {
-                        // Assign self as pusher
-                        worker_pool.update_state(&peer_id, |s| s.is_pusher = true);
-
-                        if let Some(destination) = push_destination.as_ref().as_ref() {
-                            ExecutorAction::Train(TrainAction::PushToHub {
-                                repository: destination.repository.clone(),
-                                token: destination.token.clone(),
-                            })
-                        } else {
-                            // Should not occur due to guard above.
-                            state.push_done = true;
-                            ExecutorAction::Train(TrainAction::Terminate)
-                        }
-                    } else {
-                        ExecutorAction::Train(TrainAction::Idle {
-                            timeout: short_idle,
-                        })
-                    }
-                }
-            }
-            TrainStatus::BatchCompleted { batch_size } => {
-                worker_pool.update_statistics(&peer_id, |stats, last_updated| {
-                    if *last_updated > 0 {
-                        stats.update(since_start.saturating_sub(*last_updated));
-                    }
-                    *last_updated = since_start;
-                });
-
-                let snapshot = worker_pool.properties();
-
-                {
-                    let mut training = training_state.lock().await;
-                    training.record_batch(batch_size);
-                };
-
-                // Update per-worker samples
-                worker_pool.update_state(&peer_id, |s| {
-                    s.samples_processed = s.samples_processed.saturating_add(batch_size);
-                });
-
-                let (training_complete, sent_update) = {
-                    let state = round_state.lock().await;
-                    let sent = snapshot
-                        .iter()
-                        .find(|w| w.peer_id == peer_id)
-                        .map(|w| w.state.sent_update)
-                        .unwrap_or(false);
-                    (state.training_complete, sent)
-                };
-
-                if training_complete || sent_update {
-                    ExecutorAction::Train(TrainAction::Idle {
-                        timeout: short_idle,
-                    })
-                } else {
-                    handle_common_transition::<S>(
+                // Training in progress?
+                if !round_state.lock().await.training_complete {
+                    execute_or_update::<S>(
                         training_state,
+                        round_state,
                         batch_sizer,
                         multi_batch_size,
-                        snapshot,
+                        worker_pool.properties(),
                         peer_id,
                         parameter_servers,
                         short_idle,
                     )
                     .await?
+                } else {
+                    finalize_training(
+                        round_state,
+                        peer_id,
+                        cancel.clone(),
+                        short_idle,
+                        worker_pool,
+                        push_destination,
+                    )
+                    .await?
                 }
+            }
+            TrainStatus::BatchCompleted {
+                batch_size,
+                batches,
+            } => {
+                // START: Update statistics and state
+                worker_pool.update_statistics(&peer_id, |stats, last_updated| {
+                    if *last_updated > 0 {
+                        stats.update(since_start.saturating_sub(*last_updated), batches as u64);
+                    }
+                    *last_updated = since_start;
+                });
+
+                {
+                    let mut training = training_state.lock().await;
+                    training.record_batch(batch_size * batches);
+                };
+
+                worker_pool.update_state(&peer_id, |s| {
+                    s.samples_processed = s.samples_processed.saturating_add(batch_size * batches);
+                });
+                // END: Update statistics and state
+
+                execute_or_update::<S>(
+                    training_state,
+                    round_state,
+                    batch_sizer,
+                    multi_batch_size,
+                    worker_pool.properties(),
+                    peer_id,
+                    parameter_servers,
+                    short_idle,
+                )
+                .await?
+            }
+            TrainStatus::WaitedForParameterServer => {
+                // Get peer contribution from pool
+                let peer_contribution = worker_pool
+                    .properties()
+                    .iter()
+                    .find(|w| w.peer_id == peer_id)
+                    .map(|w| w.state.samples_processed)
+                    .unwrap_or(0);
+
+                handle_send_update(
+                    parameter_servers,
+                    round_state,
+                    peer_contribution,
+                    short_idle,
+                )
+                .await?
             }
             TrainStatus::SentUpdate { mut metrics, .. } => {
                 let snapshot = worker_pool.properties();
@@ -482,56 +516,90 @@ where
                     "Worker reported SentUpdate; recorded for round"
                 );
 
-                ExecutorAction::Train(TrainAction::Idle {
+                ExecutorAction::Train(TrainAction::WaitForUpdate {
                     timeout: short_idle,
                 })
             }
-            TrainStatus::AppliedUpdate => {
-                let training_complete = {
-                    worker_pool.update_state(&peer_id, |s| s.applied_update = true);
-
-                    let state = round_state.lock().await;
-                    if state.training_complete {
-                        worker_pool.update_state(&peer_id, |s| s.applied_final_update = true);
-                        true
-                    } else {
-                        false
-                    }
-                };
-
-                if training_complete {
-                    ExecutorAction::Train(TrainAction::Idle {
-                        timeout: now + Duration::from_millis(500),
+            TrainStatus::WaitedForUpdate => {
+                if round_state.lock().await.aggregated_updates {
+                    ExecutorAction::Train(TrainAction::ApplyUpdate {
+                        source: Reference::Peers {
+                            peers: parameter_servers,
+                            strategy: SelectionStrategy::All,
+                            resource: None,
+                        },
+                        timeout: short_io,
                     })
                 } else {
-                    // Find a worker waiting for model
-                    let snapshot = worker_pool.properties();
-                    let waiting_worker = snapshot
-                        .iter()
-                        .find(|w| w.state.waiting_for_model)
-                        .map(|w| w.peer_id);
+                    ExecutorAction::Train(TrainAction::WaitForUpdate {
+                        timeout: short_idle,
+                    })
+                }
+            }
+            TrainStatus::AppliedUpdate => {
+                worker_pool.update_state(&peer_id, |s| s.applied_update = true);
 
-                    if let Some(update_worker) = waiting_worker {
-                        // Mark them as not waiting and set receiving from
-                        worker_pool.update_state(&update_worker, |s| {
-                            s.waiting_for_model = false;
-                            s.receiving_from = Some(peer_id);
-                        });
+                // Find a worker waiting for model
+                let snapshot = worker_pool.properties();
+                let waiting_worker = snapshot
+                    .iter()
+                    .find(|w| w.state.waiting_for_model)
+                    .map(|w| w.peer_id);
 
-                        ExecutorAction::Train(TrainAction::SendModel {
-                            target: Reference::Peers {
-                                peers: vec![update_worker],
-                                strategy: SelectionStrategy::One,
-                                resource: None,
-                            },
-                        })
-                    } else {
-                        // We can either move through idle or expect that the parameters are tuned
-                        // s.t., its okay to execute a multi batch in the first round.
-                        ExecutorAction::Train(TrainAction::ExecuteBatch {
-                            batches: multi_batch_size,
-                        })
-                    }
+                if round_state.lock().await.training_complete {
+                    finalize_training(
+                        round_state,
+                        peer_id,
+                        cancel,
+                        short_idle,
+                        worker_pool,
+                        push_destination,
+                    )
+                    .await?
+                } else if let Some(update_worker) = waiting_worker {
+                    // Mark them as not waiting and set receiving from
+                    worker_pool.update_state(&update_worker, |s| {
+                        s.waiting_for_model = false;
+                        s.receiving_from = Some(peer_id);
+                    });
+
+                    ExecutorAction::Train(TrainAction::SendModel {
+                        target: Reference::Peers {
+                            peers: vec![update_worker],
+                            strategy: SelectionStrategy::One,
+                            resource: None,
+                        },
+                    })
+                } else {
+                    ExecutorAction::Train(TrainAction::WaitForNextRound {
+                        timeout: short_idle,
+                    })
+                }
+            }
+            TrainStatus::WaitedForNextRound => {
+                // We are in the next round if sent_update is reset
+                if worker_pool
+                    .properties()
+                    .iter()
+                    .find(|w| w.peer_id == peer_id)
+                    .map(|w| w.state.sent_update)
+                    .unwrap_or(true)
+                {
+                    ExecutorAction::Train(TrainAction::WaitForNextRound {
+                        timeout: short_idle,
+                    })
+                } else {
+                    execute_or_update::<S>(
+                        training_state,
+                        round_state,
+                        batch_sizer,
+                        multi_batch_size,
+                        worker_pool.properties(),
+                        peer_id,
+                        parameter_servers,
+                        short_idle,
+                    )
+                    .await?
                 }
             }
             TrainStatus::PushedToHub => {
@@ -580,7 +648,7 @@ where
                     let all_applied = worker_pool
                         .properties()
                         .iter()
-                        .all(|w| w.state.applied_final_update);
+                        .all(|w| w.state.applied_update);
 
                     if all_applied {
                         ExecutorAction::Aggregate(AggregateAction::Terminate)
@@ -820,7 +888,7 @@ impl BatchScheduler {
         grace: Duration,
         samples_between_updates: u32,
         update_rounds: u32,
-        push_destination: Option<ModelDestiantion>,
+        push_destination: Option<ModelDestination>,
         batch_sizer: BatchSizer,
         multi_batch_size: u32,
         cancel: CancellationToken,
@@ -850,6 +918,7 @@ impl BatchScheduler {
                 training_complete: false,
                 push_done: false,
                 aggregated_updates: false,
+                projected_taret: 0,
             }));
             let training_state = Arc::new(Mutex::new(TrainingState::new(samples_between_updates)));
             network
@@ -939,7 +1008,7 @@ mod batch_scheduler_tests {
         pool::{
             Pool, PoolConfig, PoolHandle, PoolWithWorkerProperties, PoolWithWorkerPropertiesHandle,
         },
-        scheduler_config::{ModelDestiantion, PriceRange},
+        scheduler_config::{ModelDestination, PriceRange},
         simulation::BasicSimulation,
         statistics::{RunningMean, RuntimeStatistic},
         worker::{TestWorkerBuilder, Worker},
@@ -966,7 +1035,7 @@ mod batch_scheduler_tests {
     }
 
     impl RuntimeStatistic for TestStat {
-        fn update(&mut self, time: u64) {
+        fn update(&mut self, time: u64, _count: u64) {
             let delta = time.saturating_sub(self.last_updated);
             self.last_updated = time;
             self.value = delta.max(1);
@@ -1135,7 +1204,10 @@ mod batch_scheduler_tests {
                 PeerId::random(),
                 ActionRequest {
                     job_id: Uuid::new_v4(),
-                    status: ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 4 }),
+                    status: ExecutorStatus::Train(TrainStatus::BatchCompleted {
+                        batch_size: 4,
+                        batches: 1,
+                    }),
                 },
             ),
             token.clone(),
@@ -1203,7 +1275,10 @@ mod batch_scheduler_tests {
                 PeerId::random(),
                 ActionRequest {
                     job_id: Uuid::new_v4(),
-                    status: ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 10 }),
+                    status: ExecutorStatus::Train(TrainStatus::BatchCompleted {
+                        batch_size: 10,
+                        batches: 1,
+                    }),
                 },
             ),
             token.clone(),
@@ -1362,10 +1437,11 @@ mod batch_scheduler_tests {
             update_rounds: 2,
             training_complete: false,
             push_done: false,
+            projected_taret: 0,
         }));
         let training_state = Arc::new(tokio::sync::Mutex::new(TrainingState::new(1)));
         let batch_sizer = Arc::new(|_: &Resources| 1u32);
-        let push_destination = Arc::new(Some(ModelDestiantion {
+        let push_destination = Arc::new(Some(ModelDestination {
             repository: "hf/repo".to_string(),
             token: "token".to_string(),
         }));
@@ -1386,7 +1462,7 @@ mod batch_scheduler_tests {
             round_state: Arc<tokio::sync::Mutex<RoundState>>,
             training_state: Arc<tokio::sync::Mutex<TrainingState>>,
             batch_sizer: Arc<dyn Fn(&Resources) -> u32 + Send + Sync>,
-            push_destination: Arc<Option<ModelDestiantion>>,
+            push_destination: Arc<Option<ModelDestination>>,
             start: Instant,
             tx: Sender<(PeerId, Metrics)>,
             token: CancellationToken,
@@ -1419,7 +1495,10 @@ mod batch_scheduler_tests {
             // Round 0
             Step {
                 peer: w2_id,
-                status: ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 1 }),
+                status: ExecutorStatus::Train(TrainStatus::BatchCompleted {
+                    batch_size: 1,
+                    batches: 1,
+                }),
                 check: Box::new(|resp| match resp {
                     ExecutorAction::Train(TrainAction::ExecuteBatch { batches: 1 })
                     | ExecutorAction::Train(TrainAction::SendUpdate { .. }) => {}
@@ -1428,7 +1507,10 @@ mod batch_scheduler_tests {
             },
             Step {
                 peer: w2_id,
-                status: ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 1 }),
+                status: ExecutorStatus::Train(TrainStatus::BatchCompleted {
+                    batch_size: 1,
+                    batches: 1,
+                }),
                 check: Box::new(move |resp| match resp {
                     ExecutorAction::Train(TrainAction::SendUpdate {
                         target: Reference::Peers { peers, .. },
@@ -1452,7 +1534,10 @@ mod batch_scheduler_tests {
             },
             Step {
                 peer: w1_id,
-                status: ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 1 }),
+                status: ExecutorStatus::Train(TrainStatus::BatchCompleted {
+                    batch_size: 1,
+                    batches: 1,
+                }),
                 check: Box::new(move |resp| match resp {
                     ExecutorAction::Train(TrainAction::SendUpdate {
                         target: Reference::Peers { peers, .. },
@@ -1511,7 +1596,10 @@ mod batch_scheduler_tests {
             // Round 1
             Step {
                 peer: w1_id,
-                status: ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 1 }),
+                status: ExecutorStatus::Train(TrainStatus::BatchCompleted {
+                    batch_size: 1,
+                    batches: 1,
+                }),
                 check: Box::new(|resp| match resp {
                     ExecutorAction::Train(TrainAction::ExecuteBatch { batches: 1 })
                     | ExecutorAction::Train(TrainAction::SendUpdate { .. }) => {}
@@ -1520,7 +1608,10 @@ mod batch_scheduler_tests {
             },
             Step {
                 peer: w1_id,
-                status: ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 1 }),
+                status: ExecutorStatus::Train(TrainStatus::BatchCompleted {
+                    batch_size: 1,
+                    batches: 1,
+                }),
                 check: Box::new(move |resp| match resp {
                     ExecutorAction::Train(TrainAction::SendUpdate {
                         target: Reference::Peers { peers, .. },
@@ -1544,7 +1635,10 @@ mod batch_scheduler_tests {
             },
             Step {
                 peer: w2_id,
-                status: ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 1 }),
+                status: ExecutorStatus::Train(TrainStatus::BatchCompleted {
+                    batch_size: 1,
+                    batches: 1,
+                }),
                 check: Box::new(move |resp| match resp {
                     ExecutorAction::Train(TrainAction::SendUpdate {
                         target: Reference::Peers { peers, .. },
@@ -1700,7 +1794,7 @@ mod batch_scheduler_tests {
             "only one worker should push the final model"
         );
         assert!(
-            snapshot.iter().all(|w| w.state.applied_final_update),
+            snapshot.iter().all(|w| w.state.applied_update),
             "both workers should have applied the final update"
         );
         let state = round_state.lock().await;
@@ -1784,6 +1878,7 @@ mod batch_scheduler_tests {
             update_rounds: 3,
             training_complete: false,
             push_done: false,
+            projected_taret: 0,
         }));
         let training_state = Arc::new(tokio::sync::Mutex::new(TrainingState::new(1)));
         let batch_sizer = Arc::new(|_: &Resources| 1u32);
@@ -1805,7 +1900,7 @@ mod batch_scheduler_tests {
             round_state: Arc<tokio::sync::Mutex<RoundState>>,
             training_state: Arc<tokio::sync::Mutex<TrainingState>>,
             batch_sizer: Arc<dyn Fn(&Resources) -> u32 + Send + Sync>,
-            push_destination: Arc<Option<ModelDestiantion>>,
+            push_destination: Arc<Option<ModelDestination>>,
             start: Instant,
             tx: Sender<(PeerId, Metrics)>,
             token: CancellationToken,
@@ -1838,7 +1933,10 @@ mod batch_scheduler_tests {
             // Round 0
             Step {
                 peer: w1_id,
-                status: ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 1 }),
+                status: ExecutorStatus::Train(TrainStatus::BatchCompleted {
+                    batch_size: 1,
+                    batches: 1,
+                }),
                 check: Box::new(move |resp| match resp {
                     ExecutorAction::Train(TrainAction::SendUpdate {
                         target: Reference::Peers { peers, .. },
@@ -1908,7 +2006,10 @@ mod batch_scheduler_tests {
             // Round 1 with w1 producing the update
             Step {
                 peer: w1_id,
-                status: ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 1 }),
+                status: ExecutorStatus::Train(TrainStatus::BatchCompleted {
+                    batch_size: 1,
+                    batches: 1,
+                }),
                 check: Box::new(move |resp| match resp {
                     ExecutorAction::Train(TrainAction::SendUpdate {
                         target: Reference::Peers { peers, .. },
@@ -2179,6 +2280,7 @@ mod batch_scheduler_tests {
             training_complete: false,
             push_done: false,
             aggregated_updates: false,
+            projected_taret: 0,
         }));
         let training_state = std::sync::Arc::new(tokio::sync::Mutex::new(TrainingState::new(800)));
         let batch_sizer = std::sync::Arc::new(|resources: &Resources| resources.gpu() as u32);
@@ -2204,7 +2306,10 @@ mod batch_scheduler_tests {
         let steps = vec![
             Step::new(
                 w3_id,
-                ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 50 }),
+                ExecutorStatus::Train(TrainStatus::BatchCompleted {
+                    batch_size: 50,
+                    batches: 1,
+                }),
                 hypha_messages::action::ExecutorAction::Train(TrainAction::ExecuteBatch {
                     batches: 1,
                 }),
@@ -2212,7 +2317,10 @@ mod batch_scheduler_tests {
             ),
             Step::new(
                 w2_id,
-                ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 100 }),
+                ExecutorStatus::Train(TrainStatus::BatchCompleted {
+                    batch_size: 100,
+                    batches: 1,
+                }),
                 hypha_messages::action::ExecutorAction::Train(TrainAction::ExecuteBatch {
                     batches: 1,
                 }),
@@ -2220,7 +2328,10 @@ mod batch_scheduler_tests {
             ),
             Step::new(
                 w1_id,
-                ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 150 }),
+                ExecutorStatus::Train(TrainStatus::BatchCompleted {
+                    batch_size: 150,
+                    batches: 1,
+                }),
                 hypha_messages::action::ExecutorAction::Train(TrainAction::ExecuteBatch {
                     batches: 1,
                 }),
@@ -2228,7 +2339,10 @@ mod batch_scheduler_tests {
             ),
             Step::new(
                 w3_id,
-                ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 50 }),
+                ExecutorStatus::Train(TrainStatus::BatchCompleted {
+                    batch_size: 50,
+                    batches: 1,
+                }),
                 hypha_messages::action::ExecutorAction::Train(TrainAction::ExecuteBatch {
                     batches: 1,
                 }),
@@ -2236,7 +2350,10 @@ mod batch_scheduler_tests {
             ),
             Step::new(
                 w3_id,
-                ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 50 }),
+                ExecutorStatus::Train(TrainStatus::BatchCompleted {
+                    batch_size: 50,
+                    batches: 1,
+                }),
                 hypha_messages::action::ExecutorAction::Train(TrainAction::ExecuteBatch {
                     batches: 1,
                 }),
@@ -2244,7 +2361,10 @@ mod batch_scheduler_tests {
             ),
             Step::new(
                 w2_id,
-                ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 100 }),
+                ExecutorStatus::Train(TrainStatus::BatchCompleted {
+                    batch_size: 100,
+                    batches: 1,
+                }),
                 hypha_messages::action::ExecutorAction::Train(TrainAction::ExecuteBatch {
                     batches: 1,
                 }),
@@ -2252,7 +2372,10 @@ mod batch_scheduler_tests {
             ),
             Step::new(
                 w1_id,
-                ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 150 }),
+                ExecutorStatus::Train(TrainStatus::BatchCompleted {
+                    batch_size: 150,
+                    batches: 1,
+                }),
                 hypha_messages::action::ExecutorAction::Train(TrainAction::ExecuteBatch {
                     batches: 1,
                 }),
@@ -2260,7 +2383,10 @@ mod batch_scheduler_tests {
             ),
             Step::new(
                 w3_id,
-                ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 50 }),
+                ExecutorStatus::Train(TrainStatus::BatchCompleted {
+                    batch_size: 50,
+                    batches: 1,
+                }),
                 hypha_messages::action::ExecutorAction::Train(TrainAction::SendUpdate {
                     target: Reference::Peers {
                         peers: vec![ps_id],
@@ -2273,7 +2399,10 @@ mod batch_scheduler_tests {
             ),
             Step::new(
                 w2_id,
-                ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 100 }),
+                ExecutorStatus::Train(TrainStatus::BatchCompleted {
+                    batch_size: 100,
+                    batches: 1,
+                }),
                 hypha_messages::action::ExecutorAction::Train(TrainAction::SendUpdate {
                     target: Reference::Peers {
                         peers: vec![ps_id],
