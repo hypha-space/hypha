@@ -217,8 +217,6 @@ if __name__ == "__main__":  # noqa: PLR0915, PLR0912
                 last_gradient = file_name
 
                 last_metrics = {"loss": float(np.mean(loss_list))} if loss_list else {}
-                # Reset Losses
-                loss_list = []
 
                 if last_gradient is None:
                     current_status = {
@@ -250,6 +248,10 @@ if __name__ == "__main__":  # noqa: PLR0915, PLR0912
                             "message": str(exc),
                         },
                     }
+                    continue
+
+                # Reset Losses only if we succesfully send updates.
+                loss_list = []
             elif kind == "apply-update":
                 source = action.get("source")
                 if source is None:
