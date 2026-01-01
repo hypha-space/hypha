@@ -553,6 +553,13 @@ where
                 let training_complete = {
                     worker_pool.update_state(&peer_id, |s| s.applied_update = true);
 
+                    // Reset the `last_update` counter to factor out the update time.
+                    // Otherwise it will bias the runtim statistics, e.g. the update time
+                    // will introduce a larger bias for single batches than for mulit-batches
+                    worker_pool.update_statistics(&peer_id, |_, last_updated| {
+                        *last_updated = since_start;
+                    });
+
                     let state = round_state.lock().await;
                     if state.training_complete {
                         worker_pool.update_state(&peer_id, |s| s.applied_final_update = true);
