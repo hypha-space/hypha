@@ -145,11 +145,30 @@ impl JobManager {
                 let jobs = self.jobs.clone();
                 let monitor = tokio::spawn(async move {
                     let status = match execution.wait().await {
-                        Ok(s) => s,
-                        Err(e) => Status::Failed(e.to_string()),
-                    };
+                        Ok(s) => {
+                            match s {
+                                Status::Success { .. } => {
+                                    tracing::info!(job_id=%spec.job_id, status=?s, "Task completed");
+                                }
+                                Status::Failed { .. } => {
+                                    tracing::error!(job_id=%spec.job_id, status=?s, "Task failed");
+                                }
+                                Status::Cancelled { .. } => {
+                                    tracing::warn!(job_id=%spec.job_id, status=?s, "Task cancelled");
+                                }
+                                _ => {
+                                    tracing::error!(job_id=%spec.job_id, status=?s, "Unexpected task status");
+                                }
+                            }
 
-                    tracing::info!(job_id=%spec.job_id, status=?status, "Job completed");
+                            s
+                        }
+                        Err(e) => {
+                            tracing::error!(job_id=%spec.job_id, error=%e, "Task failed");
+
+                            Status::failed(Some(e.to_string()))
+                        }
+                    };
 
                     let mut guard = jobs.lock().await;
                     if let Some(job) = guard.get_mut(&id) {
@@ -194,11 +213,30 @@ impl JobManager {
                 let jobs = self.jobs.clone();
                 let monitor = tokio::spawn(async move {
                     let status = match execution.wait().await {
-                        Ok(s) => s,
-                        Err(e) => Status::Failed(e.to_string()),
-                    };
+                        Ok(s) => {
+                            match s {
+                                Status::Success { .. } => {
+                                    tracing::info!(job_id=%spec.job_id, status=?s, "Task completed");
+                                }
+                                Status::Failed { .. } => {
+                                    tracing::error!(job_id=%spec.job_id, status=?s, "Task failed");
+                                }
+                                Status::Cancelled { .. } => {
+                                    tracing::warn!(job_id=%spec.job_id, status=?s, "Task cancelled");
+                                }
+                                _ => {
+                                    tracing::error!(job_id=%spec.job_id, status=?s, "Unexpected task status");
+                                }
+                            }
 
-                    tracing::info!(job_id=%spec.job_id, status=?status, "Job completed");
+                            s
+                        }
+                        Err(e) => {
+                            tracing::error!(job_id=%spec.job_id, error=%e, "Task failed");
+
+                            Status::failed(Some(e.to_string()))
+                        }
+                    };
 
                     let mut guard = jobs.lock().await;
                     if let Some(job) = guard.get_mut(&id) {

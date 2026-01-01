@@ -10,10 +10,10 @@ use nix::{
 };
 use tokio::{
     fs,
-    io::{AsyncBufReadExt, BufReader},
+    io::{AsyncBufReadExt, AsyncReadExt, BufReader},
     process::Command,
     sync::{Mutex, oneshot},
-    time::sleep,
+    time::timeout,
 };
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -164,7 +164,8 @@ impl JobExecutor for ProcessExecutor {
             .env("SOCKET_PATH", &runtime.socket_path)
             .env("WORK_DIR", &runtime.work_dir)
             .env("JOB_JSON", &runtime.job_json)
-            .stdout(Stdio::piped());
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
 
         if let Some(endpoint) = self.config.telemetry_endpoint() {
             process.env("OTEL_EXPORTER_OTLP_ENDPOINT", endpoint.to_string());
@@ -207,72 +208,127 @@ impl JobExecutor for ProcessExecutor {
 
         tokio::spawn(async move {
             let stdout = process.stdout.take().expect("stdout is available");
-            let mut lines = BufReader::new(stdout).lines();
+            let stderr = process.stderr.take().expect("stderr is available");
+            const OUT_LIMIT: usize = 2 * 1024;
+            const ERR_LIMIT: usize = 8 * 1024;
 
-            loop {
-                tokio::select! {
-                    _ = shutdown.cancelled() => {
-                        tracing::trace!("Received shutdown signal. Stopping executor process");
-                        if let Some(pid) = process.id()
-                            && let Err(e) = signal::kill(Pid::from_raw(pid as pid_t), Signal::SIGTERM)
-                        {
-                            tracing::warn!(error = ?e, "Failed to send SIGTERM to executor process");
-                        }
-                        break;
-                    }
-                    line = lines.next_line() => {
-                        match line {
-                            Ok(Some(line)) => println!("{line}"),
-                            Ok(None) => {
-                                tracing::debug!("Executor stdout stream exhausted");
-                                break;
-                            }
-                            Err(e) => {
-                                tracing::warn!(error = ?e, "Failed to read executor stdout");
-                                break;
-                            }
-                        }
-                    }
-                    _ = process.wait() => {
-                        tracing::debug!("Executor process task terminated");
-                        break;
+            let stdout_handle = tokio::spawn(async move {
+                let mut lines = BufReader::new(stdout).lines();
+                let mut buf = String::new();
+
+                while let Ok(Some(line)) = lines.next_line().await {
+                    println!("{line}");
+
+                    buf.push_str(&line);
+                    buf.push('\n');
+
+                    if buf.len() > OUT_LIMIT {
+                        let excess = buf.len() - OUT_LIMIT;
+                        buf.drain(..excess);
                     }
                 }
-            }
+
+                buf
+            });
+
+            let stderr_handle = tokio::spawn(async move {
+                let mut reader = BufReader::new(stderr);
+                let mut buf = Vec::with_capacity(OUT_LIMIT);
+                let mut chunk = [0u8; 1024];
+
+                loop {
+                    match reader.read(&mut chunk).await {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            buf.extend_from_slice(&chunk[..n]);
+
+                            if buf.len() > ERR_LIMIT {
+                                let excess = buf.len() - ERR_LIMIT;
+                                buf.drain(..excess);
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = ?e, "Failed to read process executor stderr");
+
+                            break;
+                        }
+                    }
+                }
+
+                String::from_utf8_lossy(&buf).to_string()
+            });
 
             let exec_status = tokio::select! {
                 status = process.wait() => {
-                    tracing::trace!(status = ?status, "Executor task exited");
-
                     match status {
                         Ok(s) => {
-                            if shutdown.is_cancelled() {
-                                Status::Cancelled
-                            } else if s.success() {
-                                Status::Success
+                            if s.success() {
+                                Status::success(None)
                             } else {
-                                Status::Failed(format!("Process exited with status: {}", s))
+                                Status::failed(Some(format!("Process exited with {}", s)))
                             }
                         }
-                        Err(e) => Status::Failed(format!("Wait failed: {}", e)),
+                        Err(e) => Status::failed(Some(format!("Process wait failed with {}", e))),
                     }
                 }
+                _ = shutdown.cancelled() => {
+                    tracing::debug!("Process executor cancellation received, sending SIGTERM");
 
-                _ = sleep(Duration::from_secs(5)) => {
-                    tracing::trace!("Executor didn't exit in time, sending SIGKILL");
+                    if let Some(pid) = process.id()
+                        && let Err(e) = signal::kill(Pid::from_raw(pid as pid_t), Signal::SIGTERM)
+                    {
+                        tracing::warn!(error = ?e, "Failed to send SIGTERM to process executor");
+                    }
 
-                    match process.kill().await {
-                        Ok(_) => Status::Cancelled, // Force killed
-                        Err(e) => {
-                            tracing::warn!(error = ?e, "Failed to send SIGKILL to executor");
+                    match timeout(Duration::from_secs(5), process.wait()).await {
+                        Ok(Ok(status)) => {
+                            Status::cancelled(Some(format!("Process cancelled and exited with {}", status)))
+                        },
+                        Ok(Err(e)) => {
+                            Status::failed(Some(format!("Process exited with error {}", e)))
+                        },
+                        Err(_) => {
+                            tracing::warn!("Process executor didn't exit in time, sending SIGKILL");
 
-                            Status::Failed(format!("Force kill failed: {}", e))
+                            match process.kill().await {
+                                Ok(_) => Status::cancelled(Some("Process force killed".into())),
+                                Err(e) => Status::failed(Some(
+                                    format!("Process force kill failed with {}", e)
+                                ))
+                            }
                         }
                     }
                 }
             };
 
-            let _ = status_tx.send(exec_status);
+            // NOTE: Wait for the process to exit before reading its output and error streams,
+            // then add them to the status output if not empty to improve error reporting.
+            let out = stdout_handle.await.unwrap_or_default();
+            let err = stderr_handle.await.unwrap_or_default();
+
+            let _ = status_tx.send({
+                let out_val = (!out.is_empty()).then_some(out);
+                let err_val = (!err.is_empty()).then_some(err);
+
+                match exec_status {
+                    Status::Success { description, .. } => Status::Success {
+                        description,
+                        out: out_val,
+                        err: err_val,
+                    },
+                    Status::Failed { description, .. } => Status::Failed {
+                        description,
+                        out: out_val,
+                        err: err_val,
+                    },
+                    Status::Cancelled { description, .. } => Status::Cancelled {
+                        description,
+                        out: out_val,
+                        err: err_val,
+                    },
+                    Status::Running => Status::Running,
+                }
+            });
 
             shutdown.cancel();
             let _ = bridge.wait().await;
