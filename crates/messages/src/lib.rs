@@ -98,6 +98,7 @@ pub mod action {
         Idle,
         BatchCompleted {
             batch_size: u32,
+            batches: u32,
         },
         SentUpdate {
             round: u32,

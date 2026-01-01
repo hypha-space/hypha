@@ -227,12 +227,9 @@ where
                         .map(|w| (batch_sizer)(&w.resources))
                         .collect();
 
-                    let (should_update, projected_target) = if update_target <= count {
-                        (true, count)
-                    } else if !snapshot.is_empty()
-                        && batch_sizes.iter().all(|&b| b > 0)
-                        && stats.iter().all(|&s| s > 0 && s < u64::MAX)
-                    {
+                    let (should_update, projected_target, batches) = if update_target <= count {
+                        (true, count, 0)
+                    } else if !snapshot.is_empty() && stats.iter().all(|&s| s > 0 && s < u64::MAX) {
                         let (time, cnt, projection, capped) = S::project(
                             &progress,
                             &batch_sizes,
@@ -255,9 +252,10 @@ where
                                 && peer_position < projection.len()
                                 && projection[peer_position] == 0,
                             count.saturating_add(cnt.unsigned_abs()),
+                            projection[peer_position],
                         )
                     } else {
-                        (false, count)
+                        (false, count, 1)
                     };
 
                     // Check if peer has applied update or sent update
@@ -290,9 +288,7 @@ where
                             timeout: short_idle,
                         })
                     } else if !should_update {
-                        ExecutorAction::Train(TrainAction::ExecuteBatch {
-                            batches: multi_batch_size,
-                        })
+                        ExecutorAction::Train(TrainAction::ExecuteBatch { batches })
                     } else if parameter_servers.is_empty() {
                         // NOTE: If we need to send an update but there are no parameter servers,
                         // we must wait (idle) until one becomes available.
@@ -358,10 +354,13 @@ where
                     }
                 }
             }
-            TrainStatus::BatchCompleted { batch_size } => {
+            TrainStatus::BatchCompleted {
+                batch_size,
+                batches,
+            } => {
                 worker_pool.update_statistics(&peer_id, |stats, last_updated| {
                     if *last_updated > 0 {
-                        stats.update(since_start.saturating_sub(*last_updated));
+                        stats.update(since_start.saturating_sub(*last_updated), batches.into());
                     }
                     *last_updated = since_start;
                 });
@@ -374,13 +373,13 @@ where
 
                 let (count, update_target) = {
                     let mut training = training_state.lock().await;
-                    training.record_batch(batch_size);
+                    training.record_batch(batch_size * batches);
                     (training.get_count(), training.get_update_target())
                 };
 
                 // Update per-worker samples
                 worker_pool.update_state(&peer_id, |s| {
-                    s.samples_processed = s.samples_processed.saturating_add(batch_size);
+                    s.samples_processed = s.samples_processed.saturating_add(batch_size * batches);
                 });
 
                 // Get fresh snapshot for peer contribution after update
@@ -422,10 +421,7 @@ where
 
                     let (should_update, projected_target, batches) = if update_target <= count {
                         (true, count, 0)
-                    } else if !snapshot.is_empty()
-                        && batch_sizes.iter().all(|&b| b > 0)
-                        && stats.iter().all(|&s| s > 0 && s < u64::MAX)
-                    {
+                    } else if !snapshot.is_empty() && stats.iter().all(|&s| s > 0 && s < u64::MAX) {
                         let (time, cnt, projection, capped) = S::project(
                             &progress,
                             &batch_sizes,
@@ -452,7 +448,7 @@ where
                             projection[peer_position],
                         )
                     } else {
-                        (false, count, multi_batch_size)
+                        (false, count, 1)
                     };
 
                     if !should_update {
@@ -550,6 +546,13 @@ where
                 let training_complete = {
                     worker_pool.update_state(&peer_id, |s| s.applied_update = true);
 
+                    // Reset the `last_update` counter to factor out the update time.
+                    // Otherwise it will bias the runtim statistics, e.g. the update time
+                    // will introduce a larger bias for single batches than for mulit-batches
+                    worker_pool.update_statistics(&peer_id, |_, last_updated| {
+                        *last_updated = since_start;
+                    });
+
                     let state = round_state.lock().await;
                     if state.training_complete {
                         worker_pool.update_state(&peer_id, |s| s.applied_final_update = true);
@@ -586,11 +589,7 @@ where
                             },
                         })
                     } else {
-                        // We can either move through idle or expect that the parameters are tuned
-                        // s.t., its okay to execute a multi batch in the first round.
-                        ExecutorAction::Train(TrainAction::ExecuteBatch {
-                            batches: multi_batch_size,
-                        })
+                        ExecutorAction::Train(TrainAction::ExecuteBatch { batches: 1 })
                     }
                 }
             }
@@ -1033,7 +1032,7 @@ mod batch_scheduler_tests {
     }
 
     impl RuntimeStatistic for TestStat {
-        fn update(&mut self, time: u64) {
+        fn update(&mut self, time: u64, _: u64) {
             let delta = time.saturating_sub(self.last_updated);
             self.last_updated = time;
             self.value = delta.max(1);
@@ -1143,7 +1142,7 @@ mod batch_scheduler_tests {
         .unwrap();
 
         match resp.next {
-            ExecutorAction::Train(TrainAction::ExecuteBatch { batches: 3 }) => {}
+            ExecutorAction::Train(TrainAction::ExecuteBatch { batches: 1 }) => {}
             other => panic!("Unexpected response: {:?}", other),
         }
     }
@@ -1202,7 +1201,10 @@ mod batch_scheduler_tests {
                 PeerId::random(),
                 ActionRequest {
                     job_id: Uuid::new_v4(),
-                    status: ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 4 }),
+                    status: ExecutorStatus::Train(TrainStatus::BatchCompleted {
+                        batch_size: 4,
+                        batches: 3,
+                    }),
                 },
             ),
             token.clone(),
@@ -1211,7 +1213,7 @@ mod batch_scheduler_tests {
         .unwrap();
 
         match resp.next {
-            ExecutorAction::Train(TrainAction::ExecuteBatch { batches: 3 }) => {}
+            ExecutorAction::Train(TrainAction::ExecuteBatch { batches: 1 }) => {}
             other => panic!("Unexpected response: {:?}", other),
         }
     }
@@ -1270,7 +1272,10 @@ mod batch_scheduler_tests {
                 PeerId::random(),
                 ActionRequest {
                     job_id: Uuid::new_v4(),
-                    status: ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 10 }),
+                    status: ExecutorStatus::Train(TrainStatus::BatchCompleted {
+                        batch_size: 10,
+                        batches: 1,
+                    }),
                 },
             ),
             token.clone(),
@@ -1486,7 +1491,10 @@ mod batch_scheduler_tests {
             // Round 0
             Step {
                 peer: w2_id,
-                status: ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 1 }),
+                status: ExecutorStatus::Train(TrainStatus::BatchCompleted {
+                    batch_size: 1,
+                    batches: 1,
+                }),
                 check: Box::new(|resp| match resp {
                     ExecutorAction::Train(TrainAction::ExecuteBatch { batches: 1 })
                     | ExecutorAction::Train(TrainAction::SendUpdate { .. }) => {}
@@ -1495,7 +1503,10 @@ mod batch_scheduler_tests {
             },
             Step {
                 peer: w2_id,
-                status: ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 1 }),
+                status: ExecutorStatus::Train(TrainStatus::BatchCompleted {
+                    batch_size: 1,
+                    batches: 1,
+                }),
                 check: Box::new(move |resp| match resp {
                     ExecutorAction::Train(TrainAction::SendUpdate {
                         target: Reference::Peers { peers, .. },
@@ -1519,7 +1530,10 @@ mod batch_scheduler_tests {
             },
             Step {
                 peer: w1_id,
-                status: ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 1 }),
+                status: ExecutorStatus::Train(TrainStatus::BatchCompleted {
+                    batch_size: 1,
+                    batches: 1,
+                }),
                 check: Box::new(move |resp| match resp {
                     ExecutorAction::Train(TrainAction::SendUpdate {
                         target: Reference::Peers { peers, .. },
@@ -1578,7 +1592,10 @@ mod batch_scheduler_tests {
             // Round 1
             Step {
                 peer: w1_id,
-                status: ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 1 }),
+                status: ExecutorStatus::Train(TrainStatus::BatchCompleted {
+                    batch_size: 1,
+                    batches: 1,
+                }),
                 check: Box::new(|resp| match resp {
                     ExecutorAction::Train(TrainAction::ExecuteBatch { batches: 1 })
                     | ExecutorAction::Train(TrainAction::SendUpdate { .. }) => {}
@@ -1587,7 +1604,10 @@ mod batch_scheduler_tests {
             },
             Step {
                 peer: w1_id,
-                status: ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 1 }),
+                status: ExecutorStatus::Train(TrainStatus::BatchCompleted {
+                    batch_size: 1,
+                    batches: 1,
+                }),
                 check: Box::new(move |resp| match resp {
                     ExecutorAction::Train(TrainAction::SendUpdate {
                         target: Reference::Peers { peers, .. },
@@ -1611,7 +1631,10 @@ mod batch_scheduler_tests {
             },
             Step {
                 peer: w2_id,
-                status: ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 1 }),
+                status: ExecutorStatus::Train(TrainStatus::BatchCompleted {
+                    batch_size: 1,
+                    batches: 1,
+                }),
                 check: Box::new(move |resp| match resp {
                     ExecutorAction::Train(TrainAction::SendUpdate {
                         target: Reference::Peers { peers, .. },
@@ -1905,7 +1928,10 @@ mod batch_scheduler_tests {
             // Round 0
             Step {
                 peer: w1_id,
-                status: ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 1 }),
+                status: ExecutorStatus::Train(TrainStatus::BatchCompleted {
+                    batch_size: 1,
+                    batches: 1,
+                }),
                 check: Box::new(move |resp| match resp {
                     ExecutorAction::Train(TrainAction::SendUpdate {
                         target: Reference::Peers { peers, .. },
@@ -1975,7 +2001,10 @@ mod batch_scheduler_tests {
             // Round 1 with w1 producing the update
             Step {
                 peer: w1_id,
-                status: ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 1 }),
+                status: ExecutorStatus::Train(TrainStatus::BatchCompleted {
+                    batch_size: 1,
+                    batches: 1,
+                }),
                 check: Box::new(move |resp| match resp {
                     ExecutorAction::Train(TrainAction::SendUpdate {
                         target: Reference::Peers { peers, .. },
@@ -2271,7 +2300,10 @@ mod batch_scheduler_tests {
         let steps_before_drop: Vec<Step> = vec![
             Step {
                 peer: w1_id,
-                status: ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 1 }),
+                status: ExecutorStatus::Train(TrainStatus::BatchCompleted {
+                    batch_size: 1,
+                    batches: 1,
+                }),
                 check: Box::new(move |resp| match resp {
                     ExecutorAction::Train(TrainAction::SendUpdate {
                         target: Reference::Peers { peers, .. },
@@ -2295,7 +2327,10 @@ mod batch_scheduler_tests {
             },
             Step {
                 peer: w2_id,
-                status: ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 1 }),
+                status: ExecutorStatus::Train(TrainStatus::BatchCompleted {
+                    batch_size: 1,
+                    batches: 1,
+                }),
                 check: Box::new(move |resp| match resp {
                     ExecutorAction::Train(TrainAction::SendUpdate {
                         target: Reference::Peers { peers, .. },
@@ -2377,7 +2412,10 @@ mod batch_scheduler_tests {
         let steps_after_rejoin: Vec<Step> = vec![
             Step {
                 peer: w1_id,
-                status: ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 1 }),
+                status: ExecutorStatus::Train(TrainStatus::BatchCompleted {
+                    batch_size: 1,
+                    batches: 1,
+                }),
                 check: Box::new(move |resp| match resp {
                     ExecutorAction::Train(TrainAction::SendUpdate {
                         target: Reference::Peers { peers, .. },
@@ -2401,7 +2439,10 @@ mod batch_scheduler_tests {
             },
             Step {
                 peer: w2_id,
-                status: ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 1 }),
+                status: ExecutorStatus::Train(TrainStatus::BatchCompleted {
+                    batch_size: 1,
+                    batches: 1,
+                }),
                 check: Box::new(move |resp| match resp {
                     ExecutorAction::Train(TrainAction::SendUpdate {
                         target: Reference::Peers { peers, .. },
@@ -2613,7 +2654,10 @@ mod batch_scheduler_tests {
         let steps = vec![
             Step::new(
                 w3_id,
-                ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 50 }),
+                ExecutorStatus::Train(TrainStatus::BatchCompleted {
+                    batch_size: 50,
+                    batches: 1,
+                }),
                 hypha_messages::action::ExecutorAction::Train(TrainAction::ExecuteBatch {
                     batches: 1,
                 }),
@@ -2621,7 +2665,10 @@ mod batch_scheduler_tests {
             ),
             Step::new(
                 w2_id,
-                ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 100 }),
+                ExecutorStatus::Train(TrainStatus::BatchCompleted {
+                    batch_size: 100,
+                    batches: 1,
+                }),
                 hypha_messages::action::ExecutorAction::Train(TrainAction::ExecuteBatch {
                     batches: 1,
                 }),
@@ -2629,7 +2676,10 @@ mod batch_scheduler_tests {
             ),
             Step::new(
                 w1_id,
-                ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 150 }),
+                ExecutorStatus::Train(TrainStatus::BatchCompleted {
+                    batch_size: 150,
+                    batches: 1,
+                }),
                 hypha_messages::action::ExecutorAction::Train(TrainAction::ExecuteBatch {
                     batches: 1,
                 }),
@@ -2637,7 +2687,10 @@ mod batch_scheduler_tests {
             ),
             Step::new(
                 w3_id,
-                ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 50 }),
+                ExecutorStatus::Train(TrainStatus::BatchCompleted {
+                    batch_size: 50,
+                    batches: 1,
+                }),
                 hypha_messages::action::ExecutorAction::Train(TrainAction::ExecuteBatch {
                     batches: 1,
                 }),
@@ -2645,7 +2698,10 @@ mod batch_scheduler_tests {
             ),
             Step::new(
                 w3_id,
-                ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 50 }),
+                ExecutorStatus::Train(TrainStatus::BatchCompleted {
+                    batch_size: 50,
+                    batches: 1,
+                }),
                 hypha_messages::action::ExecutorAction::Train(TrainAction::ExecuteBatch {
                     batches: 1,
                 }),
@@ -2653,7 +2709,10 @@ mod batch_scheduler_tests {
             ),
             Step::new(
                 w2_id,
-                ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 100 }),
+                ExecutorStatus::Train(TrainStatus::BatchCompleted {
+                    batch_size: 100,
+                    batches: 1,
+                }),
                 hypha_messages::action::ExecutorAction::Train(TrainAction::ExecuteBatch {
                     batches: 1,
                 }),
@@ -2661,7 +2720,10 @@ mod batch_scheduler_tests {
             ),
             Step::new(
                 w1_id,
-                ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 150 }),
+                ExecutorStatus::Train(TrainStatus::BatchCompleted {
+                    batch_size: 150,
+                    batches: 1,
+                }),
                 hypha_messages::action::ExecutorAction::Train(TrainAction::ExecuteBatch {
                     batches: 1,
                 }),
@@ -2669,7 +2731,10 @@ mod batch_scheduler_tests {
             ),
             Step::new(
                 w3_id,
-                ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 50 }),
+                ExecutorStatus::Train(TrainStatus::BatchCompleted {
+                    batch_size: 50,
+                    batches: 1,
+                }),
                 hypha_messages::action::ExecutorAction::Train(TrainAction::SendUpdate {
                     target: Reference::Peers {
                         peers: vec![ps_id],
@@ -2682,7 +2747,10 @@ mod batch_scheduler_tests {
             ),
             Step::new(
                 w2_id,
-                ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 100 }),
+                ExecutorStatus::Train(TrainStatus::BatchCompleted {
+                    batch_size: 100,
+                    batches: 1,
+                }),
                 hypha_messages::action::ExecutorAction::Train(TrainAction::SendUpdate {
                     target: Reference::Peers {
                         peers: vec![ps_id],
