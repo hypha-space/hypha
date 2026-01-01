@@ -353,7 +353,7 @@ where
                                 let network = network.clone();
                                 async move {
                                     let retry_strategy =
-                                        FixedInterval::from_millis(200).map(jitter).take(6);
+                                        FixedInterval::from_millis(200).map(jitter).take(15);
 
                                     async fn attempt_push<T>(
                                         network: T,
