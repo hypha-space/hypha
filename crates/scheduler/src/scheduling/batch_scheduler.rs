@@ -1,5 +1,4 @@
 use std::{
-    collections::{HashMap, HashSet, hash_map::Entry},
     sync::Arc,
     time::{Duration, Instant, SystemTime},
 };
@@ -28,7 +27,7 @@ use uuid::Uuid;
 use crate::{
     metrics_bridge::Metrics,
     network::Network,
-    pool::{PoolHandle, PoolStatisticsHandle},
+    pool::{PoolWithAggregateInfoHandle, PoolWithTrainInfoHandle},
     scheduler_config::ModelDestiantion,
     simulation::Simulation,
     statistics::RuntimeStatistic,
@@ -38,7 +37,6 @@ use crate::{
 // decide when to instruct the parameter server to aggregate.
 struct RoundState {
     aggregated_updates: bool,
-    sent_updates: HashSet<PeerId>,
     first_update_at: Option<Instant>,
     round_started_at: Instant,
     aggregate_started_at: Option<Instant>,
@@ -46,19 +44,14 @@ struct RoundState {
     grace: Duration,
     round: u32,
     update_rounds: u32,
-    push_assigned: Option<PeerId>,
     training_complete: bool,
-    applied_final_update: HashSet<PeerId>,
     push_done: bool,
-    // NOTE: Tracks workers that have applied the update for the current round.
-    applied_updates: HashSet<PeerId>,
 }
 
 impl Default for RoundState {
     fn default() -> Self {
         Self {
             aggregated_updates: false,
-            sent_updates: HashSet::new(),
             first_update_at: None,
             round_started_at: Instant::now(),
             aggregate_started_at: None,
@@ -66,11 +59,8 @@ impl Default for RoundState {
             grace: Duration::from_millis(0),
             round: 0,
             update_rounds: 0,
-            push_assigned: None,
             training_complete: false,
-            applied_final_update: HashSet::new(),
             push_done: false,
-            applied_updates: HashSet::new(),
         }
     }
 }
@@ -79,9 +69,6 @@ impl Default for RoundState {
 struct TrainingState {
     update_target: u32,
     counter: u32,
-    peer_updates: HashMap<PeerId, u32>,
-    worker_without_model: Vec<PeerId>,
-    receive_from: HashMap<PeerId, PeerId>,
 }
 
 impl TrainingState {
@@ -89,23 +76,11 @@ impl TrainingState {
         Self {
             update_target,
             counter: 0,
-            peer_updates: HashMap::new(),
-            worker_without_model: vec![],
-            receive_from: HashMap::new(),
         }
     }
 
-    fn record_batch(&mut self, batch_size: u32, peer_id: PeerId) {
+    fn record_batch(&mut self, batch_size: u32) {
         self.counter = self.counter.saturating_add(batch_size);
-        match self.peer_updates.entry(peer_id) {
-            Entry::Occupied(mut entry) => {
-                let processed = entry.get();
-                entry.insert(processed.saturating_add(batch_size));
-            }
-            Entry::Vacant(entry) => {
-                entry.insert(batch_size);
-            }
-        }
     }
 
     fn get_count(&self) -> u32 {
@@ -118,31 +93,6 @@ impl TrainingState {
 
     fn reset_round(&mut self) {
         self.counter = 0;
-        self.peer_updates = HashMap::new();
-    }
-
-    fn get_peer_updates(&self, peer_id: &PeerId) -> u32 {
-        *self.peer_updates.get(peer_id).unwrap_or(&0u32)
-    }
-
-    fn pop_worker_without_model(&mut self) -> Option<PeerId> {
-        self.worker_without_model.pop()
-    }
-
-    fn push_worker_without_model(&mut self, peer_id: PeerId) {
-        self.worker_without_model.push(peer_id);
-    }
-
-    fn remove_receive_from(&mut self, peer_id: &PeerId) -> Option<PeerId> {
-        self.receive_from.remove(peer_id)
-    }
-
-    fn insert_receive_from(&mut self, source: PeerId, destination: PeerId) {
-        self.receive_from.insert(destination, source);
-    }
-
-    fn get_waiting_workers(&self) -> &[PeerId] {
-        &self.worker_without_model[..]
     }
 }
 
@@ -166,8 +116,8 @@ pub enum BatchSchedulerError {
 #[allow(clippy::too_many_arguments)]
 async fn schedule<T, S>(
     tx: Sender<(PeerId, Metrics)>,
-    worker_pool: PoolStatisticsHandle<T>,
-    parameter_pool: PoolHandle,
+    worker_pool: PoolWithTrainInfoHandle<T>,
+    parameter_pool: PoolWithAggregateInfoHandle,
     round_state: Arc<Mutex<RoundState>>,
     training_state: Arc<Mutex<TrainingState>>,
     batch_sizer: BatchSizer,
@@ -193,8 +143,10 @@ where
     let ps_broadcast_idle = now + Duration::from_secs(5);
 
     let since_start = start.elapsed().as_millis() as u64;
+    // NOTE: Keep aggregate info aligned with active parameter servers.
+    parameter_pool.info();
     // NOTE: We rely on Pool::members() being oldest-first ordered by join time.
-    let parameter_servers: Vec<PeerId> = parameter_pool.iter().map(|w| w.peer_id).collect();
+    let parameter_servers: Vec<PeerId> = parameter_pool.info().iter().map(|w| w.peer_id).collect();
     let primary_ps = parameter_servers.first().copied();
 
     let next_action = match status {
@@ -206,19 +158,21 @@ where
                         timeout: short_idle,
                     })
                 } else {
-                    training_state
-                        .lock()
-                        .await
-                        .push_worker_without_model(peer_id);
+                    worker_pool.update_state(&peer_id, |s| s.waiting_for_model = true);
                     ExecutorAction::Train(TrainAction::WaitForModel {
                         timeout: wait_model,
                     })
                 }
             }
             TrainStatus::WaitedForModel => {
-                if let Some(sending_peer) =
-                    training_state.lock().await.remove_receive_from(&peer_id)
-                {
+                let sending_peer = {
+                    let snapshot = worker_pool.info();
+                    let worker = snapshot.iter().find(|w| w.peer_id == peer_id);
+                    worker.and_then(|w| w.state.receiving_from)
+                };
+
+                if let Some(sending_peer) = sending_peer {
+                    worker_pool.update_state(&peer_id, |s| s.receiving_from = None);
                     ExecutorAction::Train(TrainAction::ReceiveModel {
                         source: Reference::Peers {
                             peers: vec![sending_peer],
@@ -244,19 +198,22 @@ where
             TrainStatus::Idle => {
                 let mut state = round_state.lock().await;
                 if !state.training_complete {
-                    let snapshot = worker_pool.statistics();
+                    let snapshot = worker_pool.info();
                     let peer_position = snapshot
                         .iter()
                         .position(|w| w.peer_id == peer_id)
                         .unwrap_or(0);
 
-                    let (count, update_target, peer_contribution) = {
+                    // Get peer contribution from pool
+                    let peer_contribution = snapshot
+                        .iter()
+                        .find(|w| w.peer_id == peer_id)
+                        .map(|w| w.state.samples_processed)
+                        .unwrap_or(0);
+
+                    let (count, update_target) = {
                         let training = training_state.lock().await;
-                        (
-                            training.get_count(),
-                            training.get_update_target(),
-                            training.get_peer_updates(&peer_id),
-                        )
+                        (training.get_count(), training.get_update_target())
                     };
 
                     let stats: Vec<u64> =
@@ -270,8 +227,8 @@ where
                         .map(|w| (batch_sizer)(&w.resources))
                         .collect();
 
-                    let (should_update, projected_target, batches) = if update_target <= count {
-                        (true, count, 0)
+                    let (should_update, projected_target) = if update_target <= count {
+                        (true, count)
                     } else if !snapshot.is_empty()
                         && batch_sizes.iter().all(|&b| b > 0)
                         && stats.iter().all(|&s| s > 0 && s < u64::MAX)
@@ -288,7 +245,6 @@ where
                             time = %time,
                             count = %cnt,
                             peer = %peer_id,
-                            capped,
                             "Simulation with projection {:?} and {:?}",
                             projection,
                             update_target.saturating_sub(count)
@@ -299,13 +255,28 @@ where
                                 && peer_position < projection.len()
                                 && projection[peer_position] == 0,
                             count.saturating_add(cnt.unsigned_abs()),
-                            projection[peer_position],
                         )
                     } else {
-                        (false, count, multi_batch_size)
+                        (false, count)
                     };
 
-                    if state.aggregated_updates && !state.applied_updates.contains(&peer_id) {
+                    // Check if peer has applied update or sent update
+                    let (has_applied_update, _applied_final_update) = snapshot
+                        .iter()
+                        .find(|w| w.peer_id == peer_id)
+                        .map(|w| (w.state.applied_update, w.state.applied_final_update))
+                        .unwrap_or((false, false));
+                    let has_sent_update = primary_ps
+                        .and_then(|ps| {
+                            parameter_pool
+                                .info()
+                                .into_iter()
+                                .find(|w| w.peer_id == ps)
+                                .map(|w| w.worker_updates.contains(&peer_id))
+                        })
+                        .unwrap_or(false);
+
+                    if state.aggregated_updates && !has_applied_update {
                         ExecutorAction::Train(TrainAction::ApplyUpdate {
                             source: Reference::Peers {
                                 peers: parameter_servers,
@@ -314,12 +285,14 @@ where
                             },
                             timeout: now + Duration::from_secs(10),
                         })
-                    } else if state.sent_updates.contains(&peer_id) {
+                    } else if has_sent_update {
                         ExecutorAction::Train(TrainAction::Idle {
                             timeout: short_idle,
                         })
                     } else if !should_update {
-                        ExecutorAction::Train(TrainAction::ExecuteBatch { batches })
+                        ExecutorAction::Train(TrainAction::ExecuteBatch {
+                            batches: multi_batch_size,
+                        })
                     } else if parameter_servers.is_empty() {
                         // NOTE: If we need to send an update but there are no parameter servers,
                         // we must wait (idle) until one becomes available.
@@ -340,51 +313,95 @@ where
                 } else if state.push_done {
                     cancel.cancel();
                     ExecutorAction::Train(TrainAction::Terminate)
-                } else if state.push_assigned.is_none()
-                    && state.applied_final_update.contains(&peer_id)
-                {
-                    state.push_assigned = Some(peer_id);
-                    if let Some(destination) = push_destination.as_ref().as_ref() {
-                        ExecutorAction::Train(TrainAction::PushToHub {
-                            repository: destination.repository.clone(),
-                            token: destination.token.clone(),
-                        })
-                    } else {
-                        // Should not occur due to guard above.
-                        state.push_done = true;
-                        ExecutorAction::Train(TrainAction::Terminate)
-                    }
                 } else {
-                    ExecutorAction::Train(TrainAction::Idle {
-                        timeout: short_idle,
-                    })
+                    let snapshot = worker_pool.info();
+                    let has_push_assignment = snapshot.iter().any(|w| w.state.is_pusher);
+                    let (applied_final_update, _am_pusher, has_applied_update) = snapshot
+                        .iter()
+                        .find(|w| w.peer_id == peer_id)
+                        .map(|w| {
+                            (
+                                w.state.applied_final_update,
+                                w.state.is_pusher,
+                                w.state.applied_update,
+                            )
+                        })
+                        .unwrap_or((false, false, false));
+
+                    if state.aggregated_updates && !has_applied_update {
+                        ExecutorAction::Train(TrainAction::ApplyUpdate {
+                            source: Reference::Peers {
+                                peers: parameter_servers,
+                                strategy: SelectionStrategy::All,
+                                resource: None,
+                            },
+                            timeout: now + Duration::from_secs(10),
+                        })
+                    } else if !has_push_assignment && applied_final_update {
+                        // Assign self as pusher
+                        worker_pool.update_state(&peer_id, |s| s.is_pusher = true);
+
+                        if let Some(destination) = push_destination.as_ref().as_ref() {
+                            ExecutorAction::Train(TrainAction::PushToHub {
+                                repository: destination.repository.clone(),
+                                token: destination.token.clone(),
+                            })
+                        } else {
+                            // Should not occur due to guard above.
+                            state.push_done = true;
+                            ExecutorAction::Train(TrainAction::Terminate)
+                        }
+                    } else {
+                        ExecutorAction::Train(TrainAction::Idle {
+                            timeout: short_idle,
+                        })
+                    }
                 }
             }
             TrainStatus::BatchCompleted { batch_size } => {
-                worker_pool.update(&peer_id, since_start);
+                worker_pool.update_statistics(&peer_id, |stats, last_updated| {
+                    if *last_updated > 0 {
+                        stats.update(since_start.saturating_sub(*last_updated));
+                    }
+                    *last_updated = since_start;
+                });
 
-                let snapshot = worker_pool.statistics();
+                let snapshot = worker_pool.info();
                 let peer_position = snapshot
                     .iter()
                     .position(|w| w.peer_id == peer_id)
                     .unwrap_or(0);
 
-                let (count, update_target, peer_contribution) = {
+                let (count, update_target) = {
                     let mut training = training_state.lock().await;
-                    training.record_batch(batch_size, peer_id);
-                    (
-                        training.get_count(),
-                        training.get_update_target(),
-                        training.get_peer_updates(&peer_id),
-                    )
+                    training.record_batch(batch_size);
+                    (training.get_count(), training.get_update_target())
                 };
+
+                // Update per-worker samples
+                worker_pool.update_state(&peer_id, |s| {
+                    s.samples_processed = s.samples_processed.saturating_add(batch_size);
+                });
+
+                // Get fresh snapshot for peer contribution after update
+                let peer_contribution = snapshot
+                    .iter()
+                    .find(|w| w.peer_id == peer_id)
+                    .map(|w| w.state.samples_processed.saturating_add(batch_size))
+                    .unwrap_or(batch_size);
 
                 let (training_complete, sent_update) = {
                     let state = round_state.lock().await;
-                    (
-                        state.training_complete,
-                        state.sent_updates.contains(&peer_id),
-                    )
+                    let sent = primary_ps
+                        .and_then(|ps| {
+                            parameter_pool
+                                .info()
+                                .into_iter()
+                                .find(|w| w.peer_id == ps)
+                                .map(|w| w.worker_updates.contains(&peer_id))
+                        })
+                        .unwrap_or(false);
+                    (state.training_complete, sent)
                 };
 
                 if training_complete || sent_update {
@@ -460,10 +477,12 @@ where
                 }
             }
             TrainStatus::SentUpdate { mut metrics, .. } => {
-                let worker_samples = {
-                    let training = training_state.lock().await;
-                    training.get_peer_updates(&peer_id) as f32
-                };
+                let snapshot = worker_pool.info();
+                let worker_samples = snapshot
+                    .iter()
+                    .find(|w| w.peer_id == peer_id)
+                    .map(|w| w.state.samples_processed)
+                    .unwrap_or(0) as f32;
 
                 let (round, round_started_at) = {
                     let state = round_state.lock().await;
@@ -485,14 +504,29 @@ where
                 tx.send((peer_id, Metrics { round, metrics }))
                     .await
                     .map_err(BatchSchedulerError::from)?;
-                // NOTE: Track workers that have sent their update for the current round.
+
+                // NOTE: Track workers that have sent their update for the current round on the parameter pool.
+                if let Some(ps) = primary_ps {
+                    parameter_pool.update_state(&ps, |state| {
+                        state.worker_updates.insert(peer_id);
+                    });
+                }
+                let snapshot = worker_pool.info(); // Refresh after update for logging
+
                 let mut state = round_state.lock().await;
-                state.sent_updates.insert(peer_id);
                 if state.first_update_at.is_none() {
                     state.first_update_at = Some(Instant::now());
                 }
-                let total_workers = worker_pool.statistics().len();
-                let sent = state.sent_updates.len();
+                let total_workers = snapshot.len();
+                let sent = primary_ps
+                    .and_then(|ps| {
+                        parameter_pool
+                            .info()
+                            .into_iter()
+                            .find(|w| w.peer_id == ps)
+                            .map(|w| w.worker_updates.len())
+                    })
+                    .unwrap_or(0);
                 let elapsed_ms = state
                     .first_update_at
                     .map(|t| t.elapsed().as_millis() as u64)
@@ -514,11 +548,11 @@ where
             }
             TrainStatus::AppliedUpdate => {
                 let training_complete = {
-                    let mut state = round_state.lock().await;
-                    state.applied_updates.insert(peer_id);
+                    worker_pool.update_state(&peer_id, |s| s.applied_update = true);
 
+                    let state = round_state.lock().await;
                     if state.training_complete {
-                        state.applied_final_update.insert(peer_id);
+                        worker_pool.update_state(&peer_id, |s| s.applied_final_update = true);
                         true
                     } else {
                         false
@@ -530,9 +564,20 @@ where
                         timeout: now + Duration::from_millis(500),
                     })
                 } else {
-                    let mut training = training_state.lock().await;
-                    if let Some(update_worker) = training.pop_worker_without_model() {
-                        training.insert_receive_from(peer_id, update_worker);
+                    // Find a worker waiting for model
+                    let snapshot = worker_pool.info();
+                    let waiting_worker = snapshot
+                        .iter()
+                        .find(|w| w.state.waiting_for_model)
+                        .map(|w| w.peer_id);
+
+                    if let Some(update_worker) = waiting_worker {
+                        // Mark them as not waiting and set receiving from
+                        worker_pool.update_state(&update_worker, |s| {
+                            s.waiting_for_model = false;
+                            s.receiving_from = Some(peer_id);
+                        });
+
                         ExecutorAction::Train(TrainAction::SendModel {
                             target: Reference::Peers {
                                 peers: vec![update_worker],
@@ -550,8 +595,15 @@ where
                 }
             }
             TrainStatus::PushedToHub => {
-                let mut state = round_state.lock().await;
-                if state.push_assigned == Some(peer_id) {
+                let is_pusher = worker_pool
+                    .info()
+                    .iter()
+                    .find(|w| w.peer_id == peer_id)
+                    .map(|w| w.state.is_pusher)
+                    .unwrap_or(false);
+
+                if is_pusher {
+                    let mut state = round_state.lock().await;
                     state.push_done = true;
                 }
 
@@ -559,24 +611,24 @@ where
             }
             TrainStatus::Error(TrainError::Connection { message }) => {
                 tracing::warn!(%peer_id, message = %message, "Worker reported connection error");
-                {
-                    let mut state = round_state.lock().await;
-                    if state.push_assigned == Some(peer_id) {
-                        state.push_assigned = None;
+
+                worker_pool.update_state(&peer_id, |s| {
+                    if s.is_pusher {
+                        s.is_pusher = false;
                     }
-                }
+                });
+
                 ExecutorAction::Train(TrainAction::Idle {
                     timeout: short_idle,
                 })
             }
             TrainStatus::Error(TrainError::Other { message }) => {
                 tracing::warn!(%peer_id, message = %message, "Worker reported error");
-                {
-                    let mut state = round_state.lock().await;
-                    if state.push_assigned == Some(peer_id) {
-                        state.push_assigned = None;
+                worker_pool.update_state(&peer_id, |s| {
+                    if s.is_pusher {
+                        s.is_pusher = false;
                     }
-                }
+                });
                 ExecutorAction::Train(TrainAction::Terminate)
             }
             TrainStatus::Terminated => ExecutorAction::Train(TrainAction::Terminate),
@@ -585,7 +637,18 @@ where
             AggregateStatus::Idle => {
                 let training_complete = { round_state.lock().await.training_complete };
                 if training_complete {
-                    ExecutorAction::Aggregate(AggregateAction::Terminate)
+                    let all_applied = worker_pool
+                        .info()
+                        .iter()
+                        .all(|w| w.state.applied_final_update);
+
+                    if all_applied {
+                        ExecutorAction::Aggregate(AggregateAction::Terminate)
+                    } else {
+                        ExecutorAction::Aggregate(AggregateAction::Idle {
+                            timeout: short_idle,
+                        })
+                    }
                 } else if Some(peer_id) != primary_ps {
                     if let Some(primary) = primary_ps {
                         tracing::debug!(
@@ -598,16 +661,12 @@ where
                         timeout: short_idle,
                     })
                 } else {
-                    let workers: Vec<_> = {
-                        let training = training_state.lock().await;
-                        let non_participating_worker = training.get_waiting_workers();
-                        worker_pool
-                            .statistics()
-                            .into_iter()
-                            .map(|w| w.peer_id)
-                            .filter(|w| !non_participating_worker.contains(w))
-                            .collect()
-                    };
+                    let snapshot = worker_pool.info();
+                    let workers: Vec<_> = snapshot
+                        .iter()
+                        .filter(|w| !w.state.waiting_for_model)
+                        .map(|w| w.peer_id)
+                        .collect();
 
                     if workers.is_empty() {
                         ExecutorAction::Aggregate(AggregateAction::Idle {
@@ -618,9 +677,18 @@ where
                         // or when a quorum (min workers) have sent updates and the
                         // grace period has elapsed since the first update in this round.
                         let mut state = round_state.lock().await;
-                        let all_sent = workers.iter().all(|w| state.sent_updates.contains(w));
+                        let aggregate_snapshot = parameter_pool.info();
+                        let ps_state = aggregate_snapshot.iter().find(|ps| ps.peer_id == peer_id);
+                        let all_sent = ps_state
+                            .map(|entry| workers.iter().all(|w| entry.worker_updates.contains(w)))
+                            .unwrap_or(false);
+
+                        let sent_count = ps_state
+                            .map(|entry| entry.worker_updates.len())
+                            .unwrap_or(0);
+
                         let effective_quorum = state.min_quorum.min(workers.len());
-                        let quorum_met = state.sent_updates.len() >= effective_quorum;
+                        let quorum_met = sent_count >= effective_quorum;
                         let timebox_elapsed = state
                             .first_update_at
                             .map(|t| t.elapsed() >= state.grace)
@@ -654,11 +722,8 @@ where
                         timeout: ps_broadcast_idle,
                     })
                 } else {
-                    let workers: Vec<_> = worker_pool
-                        .statistics()
-                        .into_iter()
-                        .map(|w| w.peer_id)
-                        .collect();
+                    let workers: Vec<_> =
+                        worker_pool.info().into_iter().map(|w| w.peer_id).collect();
 
                     if workers.is_empty() {
                         ExecutorAction::Aggregate(AggregateAction::Idle {
@@ -669,7 +734,11 @@ where
                         let round = {
                             let mut state = round_state.lock().await;
                             state.aggregated_updates = true;
-                            state.applied_updates.clear();
+                            // reset applied updates in pool
+                            let snapshot = worker_pool.info();
+                            for w in snapshot {
+                                worker_pool.update_state(&w.peer_id, |s| s.applied_update = false);
+                            }
                             state.round
                         };
                         tracing::info!(round = %round, "Trigger BroadcastUpdate");
@@ -723,7 +792,18 @@ where
 
                     tracing::info!(round = state.round, "Broadcast completed; advancing round");
 
-                    state.sent_updates.clear();
+                    // Reset per-round state in pool
+                    let snapshot = worker_pool.info();
+                    for w in snapshot {
+                        worker_pool.update_state(&w.peer_id, |s| {
+                            s.sent_update = false;
+                            s.samples_processed = 0;
+                        });
+                    }
+                    if let Some(ps) = primary_ps {
+                        parameter_pool.update_state(&ps, |state| state.worker_updates.clear());
+                    }
+
                     state.first_update_at = None;
                     state.aggregate_started_at = None;
                     state.round_started_at = Instant::now();
@@ -748,18 +828,15 @@ where
                     "Next round started; training state reset"
                 );
 
-                let training_complete = {
+                {
                     let mut state = round_state.lock().await;
-                    state.aggregated_updates = false;
-                    state.training_complete
-                };
-                if training_complete {
-                    ExecutorAction::Aggregate(AggregateAction::Terminate)
-                } else {
-                    ExecutorAction::Aggregate(AggregateAction::Idle {
-                        timeout: short_idle,
-                    })
+                    if !state.training_complete {
+                        state.aggregated_updates = false;
+                    }
                 }
+                ExecutorAction::Aggregate(AggregateAction::Idle {
+                    timeout: short_idle,
+                })
             }
             AggregateStatus::Error(AggregateError::Connection { message }) => {
                 tracing::warn!(%peer_id, message = %message, "Aggregator reported connection error");
@@ -799,8 +876,8 @@ impl BatchScheduler {
     #[allow(clippy::too_many_arguments)]
     pub async fn run<T, S>(
         network: Network,
-        worker_pool: PoolStatisticsHandle<T>,
-        parameter_pool: PoolHandle,
+        worker_pool: PoolWithTrainInfoHandle<T>,
+        parameter_pool: PoolWithAggregateInfoHandle,
         id: Uuid,
         min_quorum: usize,
         grace: Duration,
@@ -826,7 +903,6 @@ impl BatchScheduler {
             let push_destination = push_destination.clone();
             // NOTE: Track per-round SentUpdate signals to decide when to trigger aggregation.
             let round_state = Arc::new(Mutex::new(RoundState {
-                sent_updates: HashSet::new(),
                 first_update_at: None,
                 round_started_at: start,
                 aggregate_started_at: None,
@@ -834,12 +910,9 @@ impl BatchScheduler {
                 grace,
                 round: 0,
                 update_rounds,
-                push_assigned: None,
                 training_complete: false,
-                applied_final_update: HashSet::new(),
                 push_done: false,
                 aggregated_updates: false,
-                applied_updates: HashSet::new(),
             }));
             let training_state = Arc::new(Mutex::new(TrainingState::new(samples_between_updates)));
             network
@@ -903,7 +976,8 @@ impl BatchScheduler {
 #[cfg(test)]
 mod batch_scheduler_tests {
     use std::{
-        collections::{HashMap, HashSet},
+        collections::HashMap,
+        sync::Arc,
         time::{Instant, SystemTime},
     };
 
@@ -911,13 +985,16 @@ mod batch_scheduler_tests {
     use hypha_messages::{
         Reference, SelectionStrategy,
         action::{
-            ActionRequest, AggregateStatus, ExecutorAction, ExecutorStatus, TrainAction,
-            TrainStatus,
+            ActionRequest, AggregateAction, AggregateStatus, ExecutorAction, ExecutorStatus,
+            TrainAction, TrainStatus,
         },
     };
     use hypha_resources::Resources;
     use libp2p::PeerId;
-    use tokio::time::Duration;
+    use tokio::{
+        sync::{mpsc::Sender, oneshot},
+        time::Duration,
+    };
     use tokio_util::sync::CancellationToken;
     use uuid::Uuid;
 
@@ -925,11 +1002,14 @@ mod batch_scheduler_tests {
     use crate::{
         allocator::{Allocator, AllocatorError},
         metrics_bridge::Metrics,
-        pool::{Pool, PoolConfig, PoolWithStatistics},
-        scheduler_config::PriceRange,
+        pool::{
+            Pool, PoolConfig, PoolWithAggregateInfo, PoolWithAggregateInfoHandle,
+            PoolWithTrainInfo, PoolWithTrainInfoHandle,
+        },
+        scheduler_config::{ModelDestiantion, PriceRange},
         simulation::BasicSimulation,
         statistics::{RunningMean, RuntimeStatistic},
-        worker::{TestWorkerBuilder, Worker},
+        worker::{TestWorkerBuilder, Worker, WorkerError},
     };
 
     struct NoopAllocator;
@@ -1016,9 +1096,9 @@ mod batch_scheduler_tests {
                 grace: Duration::from_secs(1),
             },
         );
-        let worker_pool = PoolWithStatistics::<RunningMean>::new(pool);
+        let worker_pool = PoolWithTrainInfo::<RunningMean>::new(pool);
         let worker_handle = worker_pool.handle();
-        let ps_pool = Pool::new(
+        let ps_pool = PoolWithAggregateInfo::new(Pool::new(
             NoopAllocator,
             PoolConfig {
                 name: "ps".into(),
@@ -1031,14 +1111,14 @@ mod batch_scheduler_tests {
                 target: 0,
                 grace: Duration::from_secs(1),
             },
-        );
+        ));
         let parameter_pool = ps_pool.handle();
 
         let (tx, _rx) = tokio::sync::mpsc::channel::<(PeerId, Metrics)>(1);
-        let round = std::sync::Arc::new(tokio::sync::Mutex::new(RoundState::default()));
-        let training_state = std::sync::Arc::new(tokio::sync::Mutex::new(TrainingState::new(10)));
-        let batch_sizer = std::sync::Arc::new(|_: &Resources| 1u32);
-        let push_destination = std::sync::Arc::new(None);
+        let round = Arc::new(tokio::sync::Mutex::new(RoundState::default()));
+        let training_state = Arc::new(tokio::sync::Mutex::new(TrainingState::new(10)));
+        let batch_sizer = Arc::new(|_: &Resources| 1u32);
+        let push_destination = Arc::new(None);
         let token = CancellationToken::new();
         let resp = schedule::<RunningMean, BasicSimulation>(
             tx,
@@ -1063,9 +1143,7 @@ mod batch_scheduler_tests {
         .unwrap();
 
         match resp.next {
-            hypha_messages::action::ExecutorAction::Train(TrainAction::ExecuteBatch {
-                batches: 3,
-            }) => {}
+            ExecutorAction::Train(TrainAction::ExecuteBatch { batches: 3 }) => {}
             other => panic!("Unexpected response: {:?}", other),
         }
     }
@@ -1086,9 +1164,9 @@ mod batch_scheduler_tests {
                 grace: Duration::from_secs(1),
             },
         );
-        let worker_pool = PoolWithStatistics::<RunningMean>::new(pool);
+        let worker_pool = PoolWithTrainInfo::<RunningMean>::new(pool);
         let worker_handle = worker_pool.handle();
-        let ps_pool = Pool::new(
+        let ps_pool = PoolWithAggregateInfo::new(Pool::new(
             NoopAllocator,
             PoolConfig {
                 name: "ps".into(),
@@ -1101,14 +1179,14 @@ mod batch_scheduler_tests {
                 target: 0,
                 grace: Duration::from_secs(1),
             },
-        );
+        ));
         let parameter_pool = ps_pool.handle();
 
         let (tx, _rx) = tokio::sync::mpsc::channel::<(PeerId, Metrics)>(1);
-        let round = std::sync::Arc::new(tokio::sync::Mutex::new(RoundState::default()));
-        let training_state = std::sync::Arc::new(tokio::sync::Mutex::new(TrainingState::new(100)));
-        let batch_sizer = std::sync::Arc::new(|_: &Resources| 1u32);
-        let push_destination = std::sync::Arc::new(None);
+        let round = Arc::new(tokio::sync::Mutex::new(RoundState::default()));
+        let training_state = Arc::new(tokio::sync::Mutex::new(TrainingState::new(100)));
+        let batch_sizer = Arc::new(|_: &Resources| 1u32);
+        let push_destination = Arc::new(None);
         let token = CancellationToken::new();
         let resp = schedule::<RunningMean, BasicSimulation>(
             tx,
@@ -1133,9 +1211,7 @@ mod batch_scheduler_tests {
         .unwrap();
 
         match resp.next {
-            hypha_messages::action::ExecutorAction::Train(TrainAction::ExecuteBatch {
-                batches: 3,
-            }) => {}
+            ExecutorAction::Train(TrainAction::ExecuteBatch { batches: 3 }) => {}
             other => panic!("Unexpected response: {:?}", other),
         }
     }
@@ -1156,9 +1232,9 @@ mod batch_scheduler_tests {
                 grace: Duration::from_secs(1),
             },
         );
-        let worker_pool = PoolWithStatistics::<RunningMean>::new(pool);
+        let worker_pool = PoolWithTrainInfo::<RunningMean>::new(pool);
         let worker_handle = worker_pool.handle();
-        let ps_pool = Pool::new(
+        let ps_pool = PoolWithAggregateInfo::new(Pool::new(
             NoopAllocator,
             PoolConfig {
                 name: "ps".into(),
@@ -1171,14 +1247,14 @@ mod batch_scheduler_tests {
                 target: 0,
                 grace: Duration::from_secs(1),
             },
-        );
+        ));
         let parameter_pool = ps_pool.handle();
 
         let (tx, _rx) = tokio::sync::mpsc::channel::<(PeerId, Metrics)>(1);
-        let round = std::sync::Arc::new(tokio::sync::Mutex::new(RoundState::default()));
-        let training_state = std::sync::Arc::new(tokio::sync::Mutex::new(TrainingState::new(10)));
-        let batch_sizer = std::sync::Arc::new(|_: &Resources| 1u32);
-        let push_destination = std::sync::Arc::new(None);
+        let round = Arc::new(tokio::sync::Mutex::new(RoundState::default()));
+        let training_state = Arc::new(tokio::sync::Mutex::new(TrainingState::new(10)));
+        let batch_sizer = Arc::new(|_: &Resources| 1u32);
+        let push_destination = Arc::new(None);
         let token = CancellationToken::new();
         let resp = schedule::<RunningMean, BasicSimulation>(
             tx,
@@ -1203,7 +1279,7 @@ mod batch_scheduler_tests {
         .unwrap();
 
         match resp.next {
-            hypha_messages::action::ExecutorAction::Train(TrainAction::Idle { .. }) => {}
+            ExecutorAction::Train(TrainAction::Idle { .. }) => {}
             other => panic!("Unexpected response: {:?}", other),
         }
     }
@@ -1224,9 +1300,9 @@ mod batch_scheduler_tests {
                 grace: Duration::from_secs(1),
             },
         );
-        let worker_pool = PoolWithStatistics::<RunningMean>::new(pool);
+        let worker_pool = PoolWithTrainInfo::<RunningMean>::new(pool);
         let worker_handle = worker_pool.handle();
-        let ps_pool = Pool::new(
+        let ps_pool = PoolWithAggregateInfo::new(Pool::new(
             NoopAllocator,
             PoolConfig {
                 name: "ps".into(),
@@ -1239,15 +1315,15 @@ mod batch_scheduler_tests {
                 target: 0,
                 grace: Duration::from_secs(1),
             },
-        );
+        ));
         let parameter_pool = ps_pool.handle();
 
         let (tx, _rx) = tokio::sync::mpsc::channel::<(PeerId, Metrics)>(1);
-        let round = std::sync::Arc::new(tokio::sync::Mutex::new(RoundState::default()));
+        let round = Arc::new(tokio::sync::Mutex::new(RoundState::default()));
         // Initialize with 0 samples remaining to simulate end of round
-        let training_state = std::sync::Arc::new(tokio::sync::Mutex::new(TrainingState::new(0)));
-        let batch_sizer = std::sync::Arc::new(|_: &Resources| 1u32);
-        let push_destination = std::sync::Arc::new(None);
+        let training_state = Arc::new(tokio::sync::Mutex::new(TrainingState::new(0)));
+        let batch_sizer = Arc::new(|_: &Resources| 1u32);
+        let push_destination = Arc::new(None);
         let token = CancellationToken::new();
         let resp = schedule::<RunningMean, BasicSimulation>(
             tx,
@@ -1273,8 +1349,1132 @@ mod batch_scheduler_tests {
 
         match resp.next {
             // Should be Idle because samples == 0 and no PS, not ExecuteBatch
-            hypha_messages::action::ExecutorAction::Train(TrainAction::Idle { .. }) => {}
+            ExecutorAction::Train(TrainAction::Idle { .. }) => {}
             other => panic!("Expected Idle when samples=0 and no PS, got: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn final_round_applies_once_and_pushes_model() {
+        let w1_id = PeerId::random();
+        let w2_id = PeerId::random();
+        let ps_id = PeerId::random();
+        let (tx, _rx) = tokio::sync::mpsc::channel::<(PeerId, Metrics)>(8);
+
+        let worker_allocator = StaticAllocator::new(vec![vec![
+            TestWorkerBuilder::new().with_peer_id(w1_id).build(),
+            TestWorkerBuilder::new().with_peer_id(w2_id).build(),
+        ]]);
+
+        let mut worker_pool_stream = PoolWithTrainInfo::<RunningMean>::new(Pool::new(
+            worker_allocator,
+            PoolConfig {
+                name: "workers".into(),
+                spec: hypha_messages::WorkerSpec {
+                    resources: Resources::default(),
+                    executor: vec![],
+                },
+                price: PriceRange::default(),
+                min: 0,
+                target: 2,
+                grace: Duration::from_secs(1),
+            },
+        ));
+        let worker_handle = worker_pool_stream.handle();
+
+        for _ in 0..2 {
+            tokio::time::timeout(Duration::from_secs(1), worker_pool_stream.next())
+                .await
+                .expect("worker pool populate timeout")
+                .expect("worker pool ended")
+                .expect("worker allocation failed");
+            if worker_pool_stream.info().len() >= 2 {
+                break;
+            }
+        }
+
+        let parameter_allocator = StaticAllocator::new(vec![vec![
+            TestWorkerBuilder::new().with_peer_id(ps_id).build(),
+        ]]);
+
+        let mut parameter_pool_stream = PoolWithAggregateInfo::new(Pool::new(
+            parameter_allocator,
+            PoolConfig {
+                name: "ps".into(),
+                spec: hypha_messages::WorkerSpec {
+                    resources: Resources::default(),
+                    executor: vec![],
+                },
+                price: PriceRange::default(),
+                min: 0,
+                target: 1,
+                grace: Duration::from_secs(1),
+            },
+        ));
+        let parameter_handle = parameter_pool_stream.handle();
+        tokio::time::timeout(Duration::from_secs(1), parameter_pool_stream.next())
+            .await
+            .expect("parameter pool populate timeout")
+            .expect("parameter pool ended")
+            .expect("ps allocation failed");
+
+        let round_state = Arc::new(tokio::sync::Mutex::new(RoundState {
+            aggregated_updates: false,
+            first_update_at: None,
+            round_started_at: Instant::now(),
+            aggregate_started_at: None,
+            min_quorum: 2,
+            grace: Duration::from_millis(0),
+            round: 0,
+            update_rounds: 2,
+            training_complete: false,
+            push_done: false,
+        }));
+        let training_state = Arc::new(tokio::sync::Mutex::new(TrainingState::new(1)));
+        let batch_sizer = Arc::new(|_: &Resources| 1u32);
+        let push_destination = Arc::new(Some(ModelDestiantion {
+            repository: "hf/repo".to_string(),
+            token: "token".to_string(),
+        }));
+        let start = std::time::Instant::now();
+        let token = CancellationToken::new();
+
+        struct Step {
+            peer: PeerId,
+            status: ExecutorStatus,
+            check: Box<dyn Fn(ExecutorAction) + Send>,
+        }
+
+        async fn dispatch(
+            peer: PeerId,
+            status: ExecutorStatus,
+            worker_handle: PoolWithTrainInfoHandle<RunningMean>,
+            parameter_handle: PoolWithAggregateInfoHandle,
+            round_state: Arc<tokio::sync::Mutex<RoundState>>,
+            training_state: Arc<tokio::sync::Mutex<TrainingState>>,
+            batch_sizer: Arc<dyn Fn(&Resources) -> u32 + Send + Sync>,
+            push_destination: Arc<Option<ModelDestiantion>>,
+            start: Instant,
+            tx: Sender<(PeerId, Metrics)>,
+            token: CancellationToken,
+        ) -> ExecutorAction {
+            schedule::<RunningMean, BasicSimulation>(
+                tx,
+                worker_handle,
+                parameter_handle,
+                round_state,
+                training_state,
+                batch_sizer,
+                1,
+                push_destination,
+                start,
+                (
+                    peer,
+                    ActionRequest {
+                        job_id: Uuid::new_v4(),
+                        status,
+                    },
+                ),
+                token,
+            )
+            .await
+            .unwrap()
+            .next
+        }
+
+        let steps: Vec<Step> = vec![
+            // Round 0
+            Step {
+                peer: w2_id,
+                status: ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 1 }),
+                check: Box::new(|resp| match resp {
+                    ExecutorAction::Train(TrainAction::ExecuteBatch { batches: 1 })
+                    | ExecutorAction::Train(TrainAction::SendUpdate { .. }) => {}
+                    other => panic!("expected ExecuteBatch or SendUpdate, got {:?}", other),
+                }),
+            },
+            Step {
+                peer: w2_id,
+                status: ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 1 }),
+                check: Box::new(move |resp| match resp {
+                    ExecutorAction::Train(TrainAction::SendUpdate {
+                        target: Reference::Peers { peers, .. },
+                        ..
+                    }) => assert_eq!(peers, vec![ps_id]),
+                    other => panic!("expected SendUpdate, got {:?}", other),
+                }),
+            },
+            Step {
+                peer: w2_id,
+                status: ExecutorStatus::Train(TrainStatus::SentUpdate {
+                    round: 0,
+                    metrics: HashMap::new(),
+                }),
+                check: Box::new(|resp| {
+                    assert!(matches!(
+                        resp,
+                        ExecutorAction::Train(TrainAction::Idle { .. })
+                    ))
+                }),
+            },
+            Step {
+                peer: w1_id,
+                status: ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 1 }),
+                check: Box::new(move |resp| match resp {
+                    ExecutorAction::Train(TrainAction::SendUpdate {
+                        target: Reference::Peers { peers, .. },
+                        ..
+                    }) => assert_eq!(peers, vec![ps_id]),
+                    other => panic!("expected SendUpdate, got {:?}", other),
+                }),
+            },
+            Step {
+                peer: w1_id,
+                status: ExecutorStatus::Train(TrainStatus::SentUpdate {
+                    round: 0,
+                    metrics: HashMap::new(),
+                }),
+                check: Box::new(|resp| {
+                    assert!(matches!(
+                        resp,
+                        ExecutorAction::Train(TrainAction::Idle { .. })
+                    ))
+                }),
+            },
+            Step {
+                peer: ps_id,
+                status: ExecutorStatus::Aggregate(AggregateStatus::Idle),
+                check: Box::new(move |resp| match resp {
+                    ExecutorAction::Aggregate(AggregateAction::AggregateUpdates {
+                        source: Reference::Peers { peers, .. },
+                    }) => assert_eq!(peers, vec![w1_id, w2_id]),
+                    other => panic!("expected AggregateUpdates, got {:?}", other),
+                }),
+            },
+            Step {
+                peer: ps_id,
+                status: ExecutorStatus::Aggregate(AggregateStatus::AggregatedUpdates {
+                    metrics: None,
+                }),
+                check: Box::new(move |resp| match resp {
+                    ExecutorAction::Aggregate(AggregateAction::BroadcastUpdate {
+                        target: Reference::Peers { peers, .. },
+                    }) => assert_eq!(peers, vec![w1_id, w2_id]),
+                    other => panic!("expected BroadcastUpdate, got {:?}", other),
+                }),
+            },
+            Step {
+                peer: ps_id,
+                status: ExecutorStatus::Aggregate(AggregateStatus::BroadcastedUpdate {
+                    metrics: None,
+                }),
+                check: Box::new(|resp| {
+                    assert!(matches!(
+                        resp,
+                        ExecutorAction::Aggregate(AggregateAction::Idle { .. })
+                    ))
+                }),
+            },
+            // Round 1
+            Step {
+                peer: w1_id,
+                status: ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 1 }),
+                check: Box::new(|resp| match resp {
+                    ExecutorAction::Train(TrainAction::ExecuteBatch { batches: 1 })
+                    | ExecutorAction::Train(TrainAction::SendUpdate { .. }) => {}
+                    other => panic!("expected ExecuteBatch or SendUpdate, got {:?}", other),
+                }),
+            },
+            Step {
+                peer: w1_id,
+                status: ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 1 }),
+                check: Box::new(move |resp| match resp {
+                    ExecutorAction::Train(TrainAction::SendUpdate {
+                        target: Reference::Peers { peers, .. },
+                        ..
+                    }) => assert_eq!(peers, vec![ps_id]),
+                    other => panic!("expected SendUpdate, got {:?}", other),
+                }),
+            },
+            Step {
+                peer: w1_id,
+                status: ExecutorStatus::Train(TrainStatus::SentUpdate {
+                    round: 1,
+                    metrics: HashMap::new(),
+                }),
+                check: Box::new(|resp| {
+                    assert!(matches!(
+                        resp,
+                        ExecutorAction::Train(TrainAction::Idle { .. })
+                    ))
+                }),
+            },
+            Step {
+                peer: w2_id,
+                status: ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 1 }),
+                check: Box::new(move |resp| match resp {
+                    ExecutorAction::Train(TrainAction::SendUpdate {
+                        target: Reference::Peers { peers, .. },
+                        ..
+                    }) => assert_eq!(peers, vec![ps_id]),
+                    other => panic!("expected SendUpdate, got {:?}", other),
+                }),
+            },
+            Step {
+                peer: w2_id,
+                status: ExecutorStatus::Train(TrainStatus::SentUpdate {
+                    round: 1,
+                    metrics: HashMap::new(),
+                }),
+                check: Box::new(|resp| {
+                    assert!(matches!(
+                        resp,
+                        ExecutorAction::Train(TrainAction::Idle { .. })
+                    ))
+                }),
+            },
+            Step {
+                peer: ps_id,
+                status: ExecutorStatus::Aggregate(AggregateStatus::Idle),
+                check: Box::new(move |resp| match resp {
+                    ExecutorAction::Aggregate(AggregateAction::AggregateUpdates {
+                        source: Reference::Peers { peers, .. },
+                    }) => assert_eq!(peers, vec![w1_id, w2_id]),
+                    other => panic!("expected AggregateUpdates, got {:?}", other),
+                }),
+            },
+            Step {
+                peer: ps_id,
+                status: ExecutorStatus::Aggregate(AggregateStatus::AggregatedUpdates {
+                    metrics: None,
+                }),
+                check: Box::new(|resp| {
+                    assert!(matches!(
+                        resp,
+                        ExecutorAction::Aggregate(AggregateAction::BroadcastUpdate { .. })
+                    ))
+                }),
+            },
+            Step {
+                peer: ps_id,
+                status: ExecutorStatus::Aggregate(AggregateStatus::BroadcastedUpdate {
+                    metrics: None,
+                }),
+                check: Box::new(|resp| {
+                    assert!(matches!(
+                        resp,
+                        ExecutorAction::Aggregate(AggregateAction::Idle { .. })
+                    ))
+                }),
+            },
+            // Completion
+            Step {
+                peer: w1_id,
+                status: ExecutorStatus::Train(TrainStatus::Idle),
+                check: Box::new(|resp| match resp {
+                    ExecutorAction::Train(TrainAction::ApplyUpdate { .. })
+                    | ExecutorAction::Train(TrainAction::Idle { .. }) => {}
+                    other => panic!("expected to apply update when aggregated, got {:?}", other),
+                }),
+            },
+            Step {
+                peer: w1_id,
+                status: ExecutorStatus::Train(TrainStatus::AppliedUpdate),
+                check: Box::new(|resp| {
+                    assert!(matches!(
+                        resp,
+                        ExecutorAction::Train(TrainAction::Idle { .. })
+                    ))
+                }),
+            },
+            Step {
+                peer: w1_id,
+                status: ExecutorStatus::Train(TrainStatus::Idle),
+                check: Box::new(move |resp| match resp {
+                    ExecutorAction::Train(TrainAction::PushToHub { repository, .. }) => {
+                        assert_eq!(repository, "hf/repo");
+                    }
+                    other => panic!("expected PushToHub, got {:?}", other),
+                }),
+            },
+            Step {
+                peer: w1_id,
+                status: ExecutorStatus::Train(TrainStatus::PushedToHub),
+                check: Box::new(|resp| {
+                    assert!(matches!(
+                        resp,
+                        ExecutorAction::Train(TrainAction::Terminate)
+                    ))
+                }),
+            },
+            Step {
+                peer: w2_id,
+                status: ExecutorStatus::Train(TrainStatus::Idle),
+                check: Box::new(|resp| match resp {
+                    ExecutorAction::Train(TrainAction::ApplyUpdate { .. })
+                    | ExecutorAction::Train(TrainAction::ExecuteBatch { batches: 1 })
+                    | ExecutorAction::Train(TrainAction::Terminate) => {}
+                    other => panic!(
+                        "rejoined worker should be ready to apply or execute, got {:?}",
+                        other
+                    ),
+                }),
+            },
+            Step {
+                peer: w2_id,
+                status: ExecutorStatus::Train(TrainStatus::AppliedUpdate),
+                check: Box::new(|resp| {
+                    assert!(matches!(
+                        resp,
+                        ExecutorAction::Train(TrainAction::Idle { .. })
+                    ))
+                }),
+            },
+            Step {
+                peer: w2_id,
+                status: ExecutorStatus::Train(TrainStatus::Idle),
+                check: Box::new(|resp| {
+                    assert!(matches!(
+                        resp,
+                        ExecutorAction::Train(TrainAction::Terminate)
+                    ))
+                }),
+            },
+        ];
+
+        for step in steps {
+            let resp = dispatch(
+                step.peer,
+                step.status,
+                worker_handle.clone(),
+                parameter_handle.clone(),
+                round_state.clone(),
+                training_state.clone(),
+                batch_sizer.clone(),
+                push_destination.clone(),
+                start,
+                tx.clone(),
+                token.clone(),
+            )
+            .await;
+            (step.check)(resp);
+        }
+
+        let snapshot = worker_handle.info();
+        assert_eq!(
+            snapshot.iter().filter(|w| w.state.is_pusher).count(),
+            1,
+            "only one worker should push the final model"
+        );
+        assert!(
+            snapshot.iter().all(|w| w.state.applied_final_update),
+            "both workers should have applied the final update"
+        );
+        let state = round_state.lock().await;
+        assert_eq!(state.round, 2, "should complete both rounds");
+        assert!(state.training_complete, "training should be complete");
+        assert!(state.push_done, "push should be marked done");
+    }
+
+    #[tokio::test]
+    async fn rejoining_worker_receives_model_before_participating() {
+        let w1_id = PeerId::random();
+        let w2_id = PeerId::random();
+        let ps_id = PeerId::random();
+        let (tx, _rx) = tokio::sync::mpsc::channel::<(PeerId, Metrics)>(8);
+
+        let worker_allocator = StaticAllocator::new(vec![vec![
+            TestWorkerBuilder::new().with_peer_id(w1_id).build(),
+            TestWorkerBuilder::new().with_peer_id(w2_id).build(),
+        ]]);
+
+        let mut worker_pool_stream = PoolWithTrainInfo::<RunningMean>::new(Pool::new(
+            worker_allocator,
+            PoolConfig {
+                name: "workers".into(),
+                spec: hypha_messages::WorkerSpec {
+                    resources: Resources::default(),
+                    executor: vec![],
+                },
+                price: PriceRange::default(),
+                min: 0,
+                target: 2,
+                grace: Duration::from_secs(1),
+            },
+        ));
+        let worker_handle = worker_pool_stream.handle();
+
+        for _ in 0..2 {
+            tokio::time::timeout(Duration::from_secs(1), worker_pool_stream.next())
+                .await
+                .expect("worker pool populate timeout")
+                .expect("worker pool ended")
+                .expect("worker allocation failed");
+            if worker_pool_stream.info().len() >= 2 {
+                break;
+            }
+        }
+
+        let parameter_allocator = StaticAllocator::new(vec![vec![
+            TestWorkerBuilder::new().with_peer_id(ps_id).build(),
+        ]]);
+
+        let mut parameter_pool_stream = PoolWithAggregateInfo::new(Pool::new(
+            parameter_allocator,
+            PoolConfig {
+                name: "ps".into(),
+                spec: hypha_messages::WorkerSpec {
+                    resources: Resources::default(),
+                    executor: vec![],
+                },
+                price: PriceRange::default(),
+                min: 0,
+                target: 1,
+                grace: Duration::from_secs(1),
+            },
+        ));
+        let parameter_handle = parameter_pool_stream.handle();
+        tokio::time::timeout(Duration::from_secs(1), parameter_pool_stream.next())
+            .await
+            .expect("parameter pool populate timeout")
+            .expect("parameter pool ended")
+            .expect("ps allocation failed");
+
+        let round_state = Arc::new(tokio::sync::Mutex::new(RoundState {
+            aggregated_updates: false,
+            first_update_at: None,
+            round_started_at: Instant::now(),
+            aggregate_started_at: None,
+            min_quorum: 1,
+            grace: Duration::from_millis(0),
+            round: 0,
+            update_rounds: 3,
+            training_complete: false,
+            push_done: false,
+        }));
+        let training_state = Arc::new(tokio::sync::Mutex::new(TrainingState::new(1)));
+        let batch_sizer = Arc::new(|_: &Resources| 1u32);
+        let push_destination = Arc::new(None);
+        let start = std::time::Instant::now();
+        let token = CancellationToken::new();
+
+        struct Step {
+            peer: PeerId,
+            status: ExecutorStatus,
+            check: Box<dyn Fn(ExecutorAction) + Send>,
+        }
+
+        async fn dispatch(
+            peer: PeerId,
+            status: ExecutorStatus,
+            worker_handle: PoolWithTrainInfoHandle<RunningMean>,
+            parameter_handle: PoolWithAggregateInfoHandle,
+            round_state: Arc<tokio::sync::Mutex<RoundState>>,
+            training_state: Arc<tokio::sync::Mutex<TrainingState>>,
+            batch_sizer: Arc<dyn Fn(&Resources) -> u32 + Send + Sync>,
+            push_destination: Arc<Option<ModelDestiantion>>,
+            start: Instant,
+            tx: Sender<(PeerId, Metrics)>,
+            token: CancellationToken,
+        ) -> ExecutorAction {
+            schedule::<RunningMean, BasicSimulation>(
+                tx,
+                worker_handle,
+                parameter_handle,
+                round_state,
+                training_state,
+                batch_sizer,
+                1,
+                push_destination,
+                start,
+                (
+                    peer,
+                    ActionRequest {
+                        job_id: Uuid::new_v4(),
+                        status,
+                    },
+                ),
+                token,
+            )
+            .await
+            .unwrap()
+            .next
+        }
+
+        let steps: Vec<Step> = vec![
+            // Round 0
+            Step {
+                peer: w1_id,
+                status: ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 1 }),
+                check: Box::new(move |resp| match resp {
+                    ExecutorAction::Train(TrainAction::SendUpdate {
+                        target: Reference::Peers { peers, .. },
+                        ..
+                    }) => assert_eq!(peers, vec![ps_id]),
+                    other => panic!("expected SendUpdate, got {:?}", other),
+                }),
+            },
+            Step {
+                peer: w1_id,
+                status: ExecutorStatus::Train(TrainStatus::SentUpdate {
+                    round: 0,
+                    metrics: HashMap::new(),
+                }),
+                check: Box::new(|resp| {
+                    assert!(matches!(
+                        resp,
+                        ExecutorAction::Train(TrainAction::Idle { .. })
+                    ))
+                }),
+            },
+            Step {
+                peer: ps_id,
+                status: ExecutorStatus::Aggregate(AggregateStatus::Idle),
+                check: Box::new(|resp| {
+                    assert!(matches!(
+                        resp,
+                        ExecutorAction::Aggregate(AggregateAction::AggregateUpdates { .. })
+                    ))
+                }),
+            },
+            Step {
+                peer: ps_id,
+                status: ExecutorStatus::Aggregate(AggregateStatus::AggregatedUpdates {
+                    metrics: None,
+                }),
+                check: Box::new(|resp| {
+                    assert!(matches!(
+                        resp,
+                        ExecutorAction::Aggregate(AggregateAction::BroadcastUpdate { .. })
+                    ))
+                }),
+            },
+            Step {
+                peer: ps_id,
+                status: ExecutorStatus::Aggregate(AggregateStatus::BroadcastedUpdate {
+                    metrics: None,
+                }),
+                check: Box::new(|resp| {
+                    assert!(matches!(
+                        resp,
+                        ExecutorAction::Aggregate(AggregateAction::Idle { .. })
+                    ))
+                }),
+            },
+            // w2 joins late
+            Step {
+                peer: w2_id,
+                status: ExecutorStatus::Train(TrainStatus::Joined),
+                check: Box::new(|resp| {
+                    assert!(matches!(
+                        resp,
+                        ExecutorAction::Train(TrainAction::WaitForModel { .. })
+                    ))
+                }),
+            },
+            // Round 1 with w1 producing the update
+            Step {
+                peer: w1_id,
+                status: ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 1 }),
+                check: Box::new(move |resp| match resp {
+                    ExecutorAction::Train(TrainAction::SendUpdate {
+                        target: Reference::Peers { peers, .. },
+                        ..
+                    }) => assert_eq!(peers, vec![ps_id]),
+                    other => panic!("expected SendUpdate, got {:?}", other),
+                }),
+            },
+            Step {
+                peer: w1_id,
+                status: ExecutorStatus::Train(TrainStatus::SentUpdate {
+                    round: 1,
+                    metrics: HashMap::new(),
+                }),
+                check: Box::new(|resp| {
+                    assert!(matches!(
+                        resp,
+                        ExecutorAction::Train(TrainAction::Idle { .. })
+                    ))
+                }),
+            },
+            Step {
+                peer: ps_id,
+                status: ExecutorStatus::Aggregate(AggregateStatus::Idle),
+                check: Box::new(|resp| {
+                    assert!(matches!(
+                        resp,
+                        ExecutorAction::Aggregate(AggregateAction::AggregateUpdates { .. })
+                    ))
+                }),
+            },
+            Step {
+                peer: ps_id,
+                status: ExecutorStatus::Aggregate(AggregateStatus::AggregatedUpdates {
+                    metrics: None,
+                }),
+                check: Box::new(|resp| {
+                    assert!(matches!(
+                        resp,
+                        ExecutorAction::Aggregate(AggregateAction::BroadcastUpdate { .. })
+                    ))
+                }),
+            },
+            Step {
+                peer: ps_id,
+                status: ExecutorStatus::Aggregate(AggregateStatus::BroadcastedUpdate {
+                    metrics: None,
+                }),
+                check: Box::new(|resp| {
+                    assert!(matches!(
+                        resp,
+                        ExecutorAction::Aggregate(AggregateAction::Idle { .. })
+                    ))
+                }),
+            },
+            // w1 applies and transfers model to w2
+            Step {
+                peer: w1_id,
+                status: ExecutorStatus::Train(TrainStatus::Idle),
+                check: Box::new(|resp| match resp {
+                    ExecutorAction::Train(TrainAction::ApplyUpdate { .. })
+                    | ExecutorAction::Train(TrainAction::Idle { .. })
+                    | ExecutorAction::Train(TrainAction::ExecuteBatch { batches: 1 }) => {}
+                    other => panic!(
+                        "expected to apply/idle/execute before sending model, got {:?}",
+                        other
+                    ),
+                }),
+            },
+            Step {
+                peer: w1_id,
+                status: ExecutorStatus::Train(TrainStatus::AppliedUpdate),
+                check: Box::new(move |resp| match resp {
+                    ExecutorAction::Train(TrainAction::SendModel {
+                        target: Reference::Peers { peers, .. },
+                    }) => assert_eq!(peers, vec![w2_id]),
+                    other => panic!(
+                        "worker with update should send model to waiting peer, got {:?}",
+                        other
+                    ),
+                }),
+            },
+            Step {
+                peer: w2_id,
+                status: ExecutorStatus::Train(TrainStatus::WaitedForModel),
+                check: Box::new(move |resp| match resp {
+                    ExecutorAction::Train(TrainAction::ReceiveModel {
+                        source: Reference::Peers { peers, .. },
+                        ..
+                    }) => assert_eq!(peers, vec![w1_id]),
+                    other => panic!("waiting worker should receive model, got {:?}", other),
+                }),
+            },
+            Step {
+                peer: w2_id,
+                status: ExecutorStatus::Train(TrainStatus::ReceivedModel),
+                check: Box::new(|resp| {
+                    assert!(matches!(
+                        resp,
+                        ExecutorAction::Train(TrainAction::Idle { .. })
+                    ))
+                }),
+            },
+            Step {
+                peer: w2_id,
+                status: ExecutorStatus::Train(TrainStatus::Idle),
+                check: Box::new(|resp| match resp {
+                    ExecutorAction::Train(TrainAction::ApplyUpdate { .. })
+                    | ExecutorAction::Train(TrainAction::ExecuteBatch { batches: 1 }) => {}
+                    other => panic!("rejoined worker should apply or execute, got {:?}", other),
+                }),
+            },
+            Step {
+                peer: w2_id,
+                status: ExecutorStatus::Train(TrainStatus::AppliedUpdate),
+                check: Box::new(|resp| match resp {
+                    ExecutorAction::Train(TrainAction::ExecuteBatch { batches }) => {
+                        assert_eq!(batches, 1);
+                    }
+                    other => panic!(
+                        "rejoined worker should execute batches after applying, got {:?}",
+                        other
+                    ),
+                }),
+            },
+        ];
+
+        for step in steps {
+            let resp = dispatch(
+                step.peer,
+                step.status,
+                worker_handle.clone(),
+                parameter_handle.clone(),
+                round_state.clone(),
+                training_state.clone(),
+                batch_sizer.clone(),
+                push_destination.clone(),
+                start,
+                tx.clone(),
+                token.clone(),
+            )
+            .await;
+            (step.check)(resp);
+        }
+
+        let snapshot = worker_handle.info();
+        let rejoined = snapshot
+            .iter()
+            .find(|w| w.peer_id == w2_id)
+            .expect("rejoined worker present");
+        assert!(
+            !rejoined.state.waiting_for_model,
+            "waiting flag should be cleared after receiving model"
+        );
+        assert!(
+            rejoined.state.applied_update,
+            "rejoined worker should have applied the current update"
+        );
+    }
+
+    #[tokio::test]
+    async fn rejoining_parameter_server_resends_updates_before_broadcast() {
+        let w1_id = PeerId::random();
+        let w2_id = PeerId::random();
+        let ps_id = PeerId::random();
+        let (tx, _rx) = tokio::sync::mpsc::channel::<(PeerId, Metrics)>(8);
+        let (drop_tx, drop_rx) = oneshot::channel::<()>();
+
+        let worker_allocator = StaticAllocator::new(vec![vec![
+            TestWorkerBuilder::new().with_peer_id(w1_id).build(),
+            TestWorkerBuilder::new().with_peer_id(w2_id).build(),
+        ]]);
+
+        let mut worker_pool_stream = PoolWithTrainInfo::<RunningMean>::new(Pool::new(
+            worker_allocator,
+            PoolConfig {
+                name: "workers".into(),
+                spec: hypha_messages::WorkerSpec {
+                    resources: Resources::default(),
+                    executor: vec![],
+                },
+                price: PriceRange::default(),
+                min: 0,
+                target: 2,
+                grace: Duration::from_secs(1),
+            },
+        ));
+        let worker_handle = worker_pool_stream.handle();
+
+        for _ in 0..2 {
+            tokio::time::timeout(Duration::from_secs(1), worker_pool_stream.next())
+                .await
+                .expect("worker pool populate timeout")
+                .expect("worker pool ended")
+                .expect("worker allocation failed");
+            if worker_pool_stream.info().len() >= 2 {
+                break;
+            }
+        }
+
+        let initial_ps = TestWorkerBuilder::new()
+            .with_peer_id(ps_id)
+            .with_lease_handler(tokio::spawn(async move {
+                let _ = drop_rx.await;
+                Err(WorkerError::LeaseExpired)
+            }))
+            .build();
+        let rejoining_ps = TestWorkerBuilder::new().with_peer_id(ps_id).build();
+        let parameter_allocator = StaticAllocator::new(vec![vec![rejoining_ps], vec![initial_ps]]);
+
+        let mut parameter_pool_stream = PoolWithAggregateInfo::new(Pool::new(
+            parameter_allocator,
+            PoolConfig {
+                name: "ps".into(),
+                spec: hypha_messages::WorkerSpec {
+                    resources: Resources::default(),
+                    executor: vec![],
+                },
+                price: PriceRange::default(),
+                min: 0,
+                target: 1,
+                grace: Duration::from_secs(1),
+            },
+        ));
+        let parameter_handle = parameter_pool_stream.handle();
+        tokio::time::timeout(Duration::from_secs(1), parameter_pool_stream.next())
+            .await
+            .expect("parameter pool populate timeout")
+            .expect("parameter pool ended")
+            .expect("ps allocation failed");
+
+        let round_state = Arc::new(tokio::sync::Mutex::new(RoundState {
+            aggregated_updates: false,
+            first_update_at: None,
+            round_started_at: Instant::now(),
+            aggregate_started_at: None,
+            min_quorum: 1,
+            grace: Duration::from_millis(0),
+            round: 0,
+            update_rounds: 3,
+            training_complete: false,
+            push_done: false,
+        }));
+        let training_state = Arc::new(tokio::sync::Mutex::new(TrainingState::new(1)));
+        let batch_sizer = Arc::new(|_: &Resources| 1u32);
+        let push_destination = Arc::new(None);
+        let start = std::time::Instant::now();
+        let token = CancellationToken::new();
+
+        struct Step {
+            peer: PeerId,
+            status: ExecutorStatus,
+            check: Box<dyn Fn(ExecutorAction) + Send>,
+        }
+
+        async fn dispatch(
+            peer: PeerId,
+            status: ExecutorStatus,
+            worker_handle: PoolWithTrainInfoHandle<RunningMean>,
+            parameter_handle: PoolWithAggregateInfoHandle,
+            round_state: Arc<tokio::sync::Mutex<RoundState>>,
+            training_state: Arc<tokio::sync::Mutex<TrainingState>>,
+            batch_sizer: Arc<dyn Fn(&Resources) -> u32 + Send + Sync>,
+            push_destination: Arc<Option<ModelDestiantion>>,
+            start: Instant,
+            tx: Sender<(PeerId, Metrics)>,
+            token: CancellationToken,
+        ) -> ExecutorAction {
+            schedule::<RunningMean, BasicSimulation>(
+                tx,
+                worker_handle,
+                parameter_handle,
+                round_state,
+                training_state,
+                batch_sizer,
+                1,
+                push_destination,
+                start,
+                (
+                    peer,
+                    ActionRequest {
+                        job_id: Uuid::new_v4(),
+                        status,
+                    },
+                ),
+                token,
+            )
+            .await
+            .unwrap()
+            .next
+        }
+
+        let steps_before_drop: Vec<Step> = vec![
+            Step {
+                peer: w1_id,
+                status: ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 1 }),
+                check: Box::new(move |resp| match resp {
+                    ExecutorAction::Train(TrainAction::SendUpdate {
+                        target: Reference::Peers { peers, .. },
+                        ..
+                    }) => assert_eq!(peers, vec![ps_id]),
+                    other => panic!("expected SendUpdate, got {:?}", other),
+                }),
+            },
+            Step {
+                peer: w1_id,
+                status: ExecutorStatus::Train(TrainStatus::SentUpdate {
+                    round: 0,
+                    metrics: HashMap::new(),
+                }),
+                check: Box::new(|resp| {
+                    assert!(matches!(
+                        resp,
+                        ExecutorAction::Train(TrainAction::Idle { .. })
+                    ))
+                }),
+            },
+            Step {
+                peer: w2_id,
+                status: ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 1 }),
+                check: Box::new(move |resp| match resp {
+                    ExecutorAction::Train(TrainAction::SendUpdate {
+                        target: Reference::Peers { peers, .. },
+                        ..
+                    }) => assert_eq!(peers, vec![ps_id]),
+                    other => panic!("expected SendUpdate, got {:?}", other),
+                }),
+            },
+            Step {
+                peer: w2_id,
+                status: ExecutorStatus::Train(TrainStatus::SentUpdate {
+                    round: 0,
+                    metrics: HashMap::new(),
+                }),
+                check: Box::new(|resp| {
+                    assert!(matches!(
+                        resp,
+                        ExecutorAction::Train(TrainAction::Idle { .. })
+                    ))
+                }),
+            },
+            Step {
+                peer: ps_id,
+                status: ExecutorStatus::Aggregate(AggregateStatus::Idle),
+                check: Box::new(|resp| {
+                    assert!(matches!(
+                        resp,
+                        ExecutorAction::Aggregate(AggregateAction::AggregateUpdates { .. })
+                    ))
+                }),
+            },
+            Step {
+                peer: ps_id,
+                status: ExecutorStatus::Aggregate(AggregateStatus::AggregatedUpdates {
+                    metrics: None,
+                }),
+                check: Box::new(|resp| {
+                    assert!(matches!(
+                        resp,
+                        ExecutorAction::Aggregate(AggregateAction::BroadcastUpdate { .. })
+                    ))
+                }),
+            },
+        ];
+
+        for step in steps_before_drop {
+            let resp = dispatch(
+                step.peer,
+                step.status,
+                worker_handle.clone(),
+                parameter_handle.clone(),
+                round_state.clone(),
+                training_state.clone(),
+                batch_sizer.clone(),
+                push_destination.clone(),
+                start,
+                tx.clone(),
+                token.clone(),
+            )
+            .await;
+            (step.check)(resp);
+        }
+
+        let _ = drop_tx.send(());
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !parameter_handle.info().is_empty() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("parameter server removal timeout");
+
+        tokio::time::timeout(Duration::from_secs(1), parameter_pool_stream.next())
+            .await
+            .expect("parameter pool rejoin timeout")
+            .expect("parameter pool ended")
+            .expect("ps rejoin allocation failed");
+
+        let steps_after_rejoin: Vec<Step> = vec![
+            Step {
+                peer: w1_id,
+                status: ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 1 }),
+                check: Box::new(move |resp| match resp {
+                    ExecutorAction::Train(TrainAction::SendUpdate {
+                        target: Reference::Peers { peers, .. },
+                        ..
+                    }) => assert_eq!(peers, vec![ps_id]),
+                    other => panic!("expected SendUpdate after rejoin, got {:?}", other),
+                }),
+            },
+            Step {
+                peer: w1_id,
+                status: ExecutorStatus::Train(TrainStatus::SentUpdate {
+                    round: 0,
+                    metrics: HashMap::new(),
+                }),
+                check: Box::new(|resp| {
+                    assert!(matches!(
+                        resp,
+                        ExecutorAction::Train(TrainAction::Idle { .. })
+                    ))
+                }),
+            },
+            Step {
+                peer: w2_id,
+                status: ExecutorStatus::Train(TrainStatus::BatchCompleted { batch_size: 1 }),
+                check: Box::new(move |resp| match resp {
+                    ExecutorAction::Train(TrainAction::SendUpdate {
+                        target: Reference::Peers { peers, .. },
+                        ..
+                    }) => assert_eq!(peers, vec![ps_id]),
+                    other => panic!("expected SendUpdate after rejoin, got {:?}", other),
+                }),
+            },
+            Step {
+                peer: w2_id,
+                status: ExecutorStatus::Train(TrainStatus::SentUpdate {
+                    round: 0,
+                    metrics: HashMap::new(),
+                }),
+                check: Box::new(|resp| {
+                    assert!(matches!(
+                        resp,
+                        ExecutorAction::Train(TrainAction::Idle { .. })
+                    ))
+                }),
+            },
+            Step {
+                peer: ps_id,
+                status: ExecutorStatus::Aggregate(AggregateStatus::Idle),
+                check: Box::new(|resp| {
+                    assert!(matches!(
+                        resp,
+                        ExecutorAction::Aggregate(AggregateAction::AggregateUpdates { .. })
+                    ))
+                }),
+            },
+            Step {
+                peer: ps_id,
+                status: ExecutorStatus::Aggregate(AggregateStatus::AggregatedUpdates {
+                    metrics: None,
+                }),
+                check: Box::new(|resp| {
+                    assert!(matches!(
+                        resp,
+                        ExecutorAction::Aggregate(AggregateAction::BroadcastUpdate { .. })
+                    ))
+                }),
+            },
+            Step {
+                peer: ps_id,
+                status: ExecutorStatus::Aggregate(AggregateStatus::BroadcastedUpdate {
+                    metrics: None,
+                }),
+                check: Box::new(|resp| {
+                    assert!(matches!(
+                        resp,
+                        ExecutorAction::Aggregate(AggregateAction::Idle { .. })
+                    ))
+                }),
+            },
+        ];
+
+        for step in steps_after_rejoin {
+            let resp = dispatch(
+                step.peer,
+                step.status,
+                worker_handle.clone(),
+                parameter_handle.clone(),
+                round_state.clone(),
+                training_state.clone(),
+                batch_sizer.clone(),
+                push_destination.clone(),
+                start,
+                tx.clone(),
+                token.clone(),
+            )
+            .await;
+            (step.check)(resp);
         }
     }
 
@@ -1323,7 +2523,7 @@ mod batch_scheduler_tests {
                 .build(),
         ]]);
 
-        let mut worker_pool_stream = PoolWithStatistics::<TestStat>::new(Pool::new(
+        let mut worker_pool_stream = PoolWithTrainInfo::<TestStat>::new(Pool::new(
             worker_allocator,
             PoolConfig {
                 name: "workers".into(),
@@ -1343,7 +2543,7 @@ mod batch_scheduler_tests {
             TestWorkerBuilder::new().with_peer_id(ps_id).build(),
         ]]);
 
-        let mut parameter_pool_stream = Pool::new(
+        let mut parameter_pool_stream = PoolWithAggregateInfo::new(Pool::new(
             parameter_allocator,
             PoolConfig {
                 name: "ps".into(),
@@ -1356,7 +2556,7 @@ mod batch_scheduler_tests {
                 target: 1,
                 grace: Duration::from_secs(1),
             },
-        );
+        ));
         let parameter_handle = parameter_pool_stream.handle();
 
         for _ in 0..3 {
@@ -1365,7 +2565,7 @@ mod batch_scheduler_tests {
                 .expect("worker pool populate timeout")
                 .expect("worker pool ended")
                 .expect("worker allocation failed");
-            if worker_pool_stream.statistics().len() >= 3 {
+            if worker_pool_stream.info().len() >= 3 {
                 break;
             }
         }
@@ -1378,7 +2578,6 @@ mod batch_scheduler_tests {
 
         let (tx, _rx) = tokio::sync::mpsc::channel::<(PeerId, Metrics)>(8);
         let round_state = std::sync::Arc::new(tokio::sync::Mutex::new(RoundState {
-            sent_updates: Default::default(),
             first_update_at: None,
             round_started_at: Instant::now(),
             aggregate_started_at: None,
@@ -1386,12 +2585,9 @@ mod batch_scheduler_tests {
             grace: Duration::from_millis(0),
             round: 0,
             update_rounds: 10,
-            push_assigned: None,
             training_complete: false,
-            applied_final_update: Default::default(),
             push_done: false,
             aggregated_updates: false,
-            applied_updates: HashSet::default(),
         }));
         let training_state = std::sync::Arc::new(tokio::sync::Mutex::new(TrainingState::new(800)));
         let batch_sizer = std::sync::Arc::new(|resources: &Resources| resources.gpu() as u32);
@@ -1652,8 +2848,10 @@ mod batch_scheduler_tests {
         {
             let state = round_state.lock().await;
             assert_eq!(state.round, 1, "round advanced after broadcast");
+
+            let snapshot = worker_handle.info();
             assert!(
-                state.sent_updates.is_empty(),
+                snapshot.iter().all(|w| !w.state.sent_update),
                 "sent updates cleared after broadcast"
             );
         }

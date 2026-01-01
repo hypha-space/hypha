@@ -104,7 +104,7 @@ impl Network {
         exclude_cidrs: Vec<IpNet>,
         network_config: &NetworkConfig,
     ) -> Result<(Self, NetworkDriver), SwarmError> {
-        let (action_sender, action_receiver) = mpsc::channel(64);
+        let (action_sender, action_receiver) = mpsc::channel(512);
         let meter = metrics::global::meter();
         let request_timeout =
             (Duration::from_millis(network_config.rtt_ms()) * 10).max(Duration::from_secs(10));
