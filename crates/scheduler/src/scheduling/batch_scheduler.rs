@@ -227,12 +227,9 @@ where
                         .map(|w| (batch_sizer)(&w.resources))
                         .collect();
 
-                    let (should_update, projected_target) = if update_target <= count {
-                        (true, count)
-                    } else if !snapshot.is_empty()
-                        && batch_sizes.iter().all(|&b| b > 0)
-                        && stats.iter().all(|&s| s > 0 && s < u64::MAX)
-                    {
+                    let (should_update, projected_target, batches) = if update_target <= count {
+                        (true, count, 0)
+                    } else if !snapshot.is_empty() && stats.iter().all(|&s| s > 0 && s < u64::MAX) {
                         let (time, cnt, projection, capped) = S::project(
                             &progress,
                             &batch_sizes,
@@ -255,9 +252,10 @@ where
                                 && peer_position < projection.len()
                                 && projection[peer_position] == 0,
                             count.saturating_add(cnt.unsigned_abs()),
+                            projection[peer_position],
                         )
                     } else {
-                        (false, count)
+                        (false, count, 1)
                     };
 
                     // Check if peer has applied update or sent update
@@ -290,9 +288,7 @@ where
                             timeout: short_idle,
                         })
                     } else if !should_update {
-                        ExecutorAction::Train(TrainAction::ExecuteBatch {
-                            batches: multi_batch_size,
-                        })
+                        ExecutorAction::Train(TrainAction::ExecuteBatch { batches })
                     } else if parameter_servers.is_empty() {
                         // NOTE: If we need to send an update but there are no parameter servers,
                         // we must wait (idle) until one becomes available.
@@ -425,10 +421,7 @@ where
 
                     let (should_update, projected_target, batches) = if update_target <= count {
                         (true, count, 0)
-                    } else if !snapshot.is_empty()
-                        && batch_sizes.iter().all(|&b| b > 0)
-                        && stats.iter().all(|&s| s > 0 && s < u64::MAX)
-                    {
+                    } else if !snapshot.is_empty() && stats.iter().all(|&s| s > 0 && s < u64::MAX) {
                         let (time, cnt, projection, capped) = S::project(
                             &progress,
                             &batch_sizes,
@@ -455,7 +448,7 @@ where
                             projection[peer_position],
                         )
                     } else {
-                        (false, count, multi_batch_size)
+                        (false, count, 1)
                     };
 
                     if !should_update {
@@ -596,11 +589,7 @@ where
                             },
                         })
                     } else {
-                        // We can either move through idle or expect that the parameters are tuned
-                        // s.t., its okay to execute a multi batch in the first round.
-                        ExecutorAction::Train(TrainAction::ExecuteBatch {
-                            batches: multi_batch_size,
-                        })
+                        ExecutorAction::Train(TrainAction::ExecuteBatch { batches: 1 })
                     }
                 }
             }
@@ -1153,7 +1142,7 @@ mod batch_scheduler_tests {
         .unwrap();
 
         match resp.next {
-            ExecutorAction::Train(TrainAction::ExecuteBatch { batches: 3 }) => {}
+            ExecutorAction::Train(TrainAction::ExecuteBatch { batches: 1 }) => {}
             other => panic!("Unexpected response: {:?}", other),
         }
     }
@@ -1224,7 +1213,7 @@ mod batch_scheduler_tests {
         .unwrap();
 
         match resp.next {
-            ExecutorAction::Train(TrainAction::ExecuteBatch { batches: 3 }) => {}
+            ExecutorAction::Train(TrainAction::ExecuteBatch { batches: 1 }) => {}
             other => panic!("Unexpected response: {:?}", other),
         }
     }
