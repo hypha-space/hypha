@@ -102,9 +102,9 @@ hypha-scheduler init -n scheduler -o scheduler-config.toml --exclude-cidr 192.0.
 Configuration written to: "scheduler-config.toml"
 ```
 
-##### Send metrics to AIM
+##### Store metrics
 
-If you want the Scheduler to send metrics to AIM, you can download and set up our AIM Driver Connector from our [releases page](https://github.com/hypha-space/hypha/releases). Please follow its instructions to set up the connector and scheduler.
+If you want the Scheduler to store the metrics, you can follow the instructions in [Monitoring](@scheduler.md##monitoring).
 
 #### Worker Nodes
 

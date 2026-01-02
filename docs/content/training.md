@@ -125,7 +125,7 @@ def save_vision_slice(images, labels, output_path):
     tensors = {
         "images": torch.stack(images),  # [N, C, H, W]
         "labels": torch.tensor(labels),  # [N]
-    }        
+    }
     with open(output_path, 'wb') as out_file:
         out_file.write(compress(save(tensors)))
 
@@ -193,7 +193,7 @@ The parameter server can be colocated with training workers or run separately.
 
 ## Scheduler
 
-The scheduler orchestrates the entire training workflow and manages resource allocation. It publishes job requirements via pub/sub and evaluates worker offers based on a pricing strategy such as greedy selection or lowest price. Once workers are selected, the scheduler establishes leases to reserve resources and prevent double-booking. Throughout training, it continuously tracks worker performance metrics including batch processing times and throughput, using this data to determine optimal synchronization timing through simulation. The scheduler also manages data slice assignment and epoch progression while forwarding metrics to monitoring systems like AIM and OpenTelemetry.
+The scheduler orchestrates the entire training workflow and manages resource allocation. It publishes job requirements via pub/sub and evaluates worker offers based on a pricing strategy such as greedy selection or lowest price. Once workers are selected, the scheduler establishes leases to reserve resources and prevent double-booking. Throughout training, it continuously tracks worker performance metrics including batch processing times and throughput, using this data to determine optimal synchronization timing through simulation. The scheduler also manages data slice assignment and epoch progression while forwarding metrics to monitoring systems like OpenTelemetry.
 
 ### Performance-Aware Scheduling
 
@@ -255,23 +255,7 @@ See [docs/scheduler.md](@/scheduler.md) for complete configuration reference.
 
 ## Monitoring and Metrics
 
-### AIM Integration
-
-If you want the Scheduler to send metrics to AIM, you can download and set up our AIM Driver Connector from our [releases page](https://github.com/hypha-space/hypha/releases). Please follow its instructions to set up the connector and scheduler.
-
-After that, configure the scheduler to expose metrics for AIM:
-
-```toml
-[scheduler]
-status_bridge = "127.0.0.1:61000"
-```
-
-Once set up and running, **access dashboard** at `http://localhost:43800` (default) to view:
-
-- Loss curves over time
-- Throughput (samples/second)
-- Synchronization frequency
-- Worker utilization
+If you want the Scheduler to collect metrics and use moitoring, follow the instructions in [Monitoring](@/scheduler.md)
 
 ## Algorithm Details
 

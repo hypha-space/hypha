@@ -62,7 +62,7 @@ Schedulers orchestrate distributed training jobs. Their responsibilities include
 
 **Data Distribution**: Assigning dataset slices to workers and tracking which data has been processed. Slices transition through states (AVAILABLE → ASSIGNED → USED) to ensure complete dataset coverage. See the [Data Nodes RFC](https://github.com/hypha-space/hypha/blob/alpha/rfc/2025-10-07_data_nodes.md) for details on the data serving architecture.
 
-**Metrics Collection**: Aggregating training metrics and optionally forwarding them to e.g. AIM for visualization.
+**Metrics Collection**: Aggregating training metrics and optionally forwarding them to e.g. Grafana for visualization.
 
 Schedulers maintain state for active jobs.
 

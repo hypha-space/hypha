@@ -22,7 +22,7 @@ use hypha_resources::{Resources, WeightedResourceEvaluator};
 use hypha_scheduler::{
     allocator::GreedyWorkerAllocator,
     config::Config,
-    metrics_bridge::{AimConnector, CsvConnector, JsonlConnector, MetricsBridge, OtelConnector},
+    metrics_bridge::{CsvConnector, JsonlConnector, MetricsBridge, OtelConnector},
     network::Network,
     pool::{Pool, PoolConfig, PoolWithAggregateInfo, PoolWithTrainInfo},
     scheduler_config::{Job as SchedulerJob, MetricsConfig},
@@ -297,9 +297,6 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
         .map(
             |cfg: MetricsConfig| -> Box<dyn hypha_scheduler::metrics_bridge::Connector> {
                 match cfg {
-                    MetricsConfig::Aim { endpoint } => {
-                        Box::new(AimConnector::new(endpoint.clone()))
-                    }
                     MetricsConfig::Otel => {
                         let meter = telemetry::metrics::global::meter();
                         Box::new(OtelConnector::new(meter, metrics_job_id.clone()))

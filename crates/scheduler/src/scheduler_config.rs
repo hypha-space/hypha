@@ -8,15 +8,12 @@ use serde::{Deserialize, Serialize};
 /// Metrics configuration for forwarding training metrics.
 ///
 /// Selects where training metrics are forwarded:
-/// * `aim` - Send metrics to an AIM relay endpoint (e.g., "0.0.0.0:61000")
 /// * `otel` - Record metrics via the configured OTEL exporter using gauges.
 /// * `csv` - Append metrics as CSV rows (Trackio compatible).
 /// * `jsonl` - Append metrics as JSON lines (one per record).
 ///
 /// You can provide a single entry or an array to fan out metrics to multiple sinks.
 pub enum MetricsConfig {
-    /// Send metrics to an AIM relay endpoint.
-    Aim { endpoint: String },
     /// Record metrics via the configured OTEL exporter using gauges.
     Otel,
     /// Append metrics as CSV rows to a local file (Trackio-compatible header/columns).
