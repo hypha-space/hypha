@@ -17,9 +17,47 @@ use crate::{connector::ConnectorError, executor::parameter_server::TensorOpError
 #[derive(Debug, Clone, PartialEq)]
 pub enum Status {
     Running,
-    Success,
-    Failed(String),
-    Cancelled,
+    Success {
+        description: Option<String>,
+        out: Option<String>,
+        err: Option<String>,
+    },
+    Failed {
+        description: Option<String>,
+        out: Option<String>,
+        err: Option<String>,
+    },
+    Cancelled {
+        description: Option<String>,
+        out: Option<String>,
+        err: Option<String>,
+    },
+}
+
+impl Status {
+    pub fn success(description: Option<String>) -> Self {
+        Status::Success {
+            description,
+            out: None,
+            err: None,
+        }
+    }
+
+    pub fn failed(description: Option<String>) -> Self {
+        Status::Failed {
+            description,
+            out: None,
+            err: None,
+        }
+    }
+
+    pub fn cancelled(description: Option<String>) -> Self {
+        Status::Cancelled {
+            description,
+            out: None,
+            err: None,
+        }
+    }
 }
 
 #[derive(Error, Debug)]

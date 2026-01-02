@@ -107,18 +107,20 @@ where
                     .find_jobs_where(|job| {
                         matches!(
                             job.status,
-                            Status::Success | Status::Cancelled | Status::Failed(_)
+                            Status::Success { .. }
+                                | Status::Cancelled { .. }
+                                | Status::Failed { .. }
                         )
                     })
                     .await;
 
                 for job in finished_jobs {
                     match job.status {
-                        Status::Failed(reason) => {
+                        Status::Failed { description, .. } => {
                             tracing::warn!(
                                 job_id = %job.id,
                                 lease_id = %job.lease,
-                                reason = %reason,
+                                reason = %description.as_deref().unwrap_or("unknown"),
                                 "Job failed, revoking lease"
                             );
 
