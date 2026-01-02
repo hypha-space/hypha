@@ -97,9 +97,10 @@ class IterableStreamDataSet(IterableDataset):  # type: ignore[type-arg]
                 while cursor + self.batch_size <= num_new:
                     end = cursor + self.batch_size
 
-                    # Yield a CLEAN, CONTIGUOUS copy
-                    # This prevents sending a "View" of the whole file to the worker queue
-                    batch = {k: v[cursor:end].contiguous() for k, v in processed.items()}
+                    # Yield a clean, INDEPENDENT copy using .clone()
+                    # This prevents sending a "View" of the underlying raw_bytes buffer
+                    # which might be gc'ed when the loop iterates.
+                    batch = {k: v[cursor:end].clone() for k, v in processed.items()}
                     yield batch
 
                     cursor = end
