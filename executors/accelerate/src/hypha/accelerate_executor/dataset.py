@@ -56,8 +56,8 @@ class IterableStreamDataSet(IterableDataset):  # type: ignore[type-arg]
                 if processor:
                     proc_inputs = {k: data[k] for k in self.processor_inputs if k in data}
                     proc_out = processor(**proc_inputs)
-                    # Merge processed output (taking index 0 for batch dim)
-                    data.update({k: v[0] for k, v in proc_out.items()})
+                    # Merge processed output (taking index 0 for batch dim) and unwrap list if exits.
+                    data.update({k: v[0] if isinstance(v, list) else v for k, v in proc_out.items()})
 
                 processed = {k: v for k, v in data.items() if k in self.model_inputs}
 
