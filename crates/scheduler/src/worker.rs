@@ -99,7 +99,7 @@ impl Worker {
                     } else {
                         Duration::from_secs(1)
                     };
-                    // NOTE: We want to retry the lease renewal until the remaining time has elapsed
+                    // NOTE: We retry network errors until the remaining time has elapsed.
                     let retry_strategy = FixedInterval::from_millis(200)
                         .map(jitter)
                         .take(remaining_time.as_millis() as usize / 200);
@@ -107,53 +107,21 @@ impl Worker {
                     let result = Retry::spawn(retry_strategy, || {
                         let network = network.clone();
                         async move {
-                            match network
+                            network
                                 .request::<api::Codec>(
                                     peer_id,
                                     api::Request::RenewLease(renew_lease::Request { id: lease_id }),
                                 )
                                 .await
-                            {
-                                Ok(api::Response::RenewLease(renew_lease::Response::Renewed {
-                                    timeout,
-                                    ..
-                                })) => Ok(timeout),
-                                Ok(api::Response::RenewLease(renew_lease::Response::NotFound)) => {
-                                    tracing::error!(%lease_id, %peer_id,
-                                            "Lease renewal failed with lease not found");
-                                    Err(api::Response::RenewLease(renew_lease::Response::NotFound))
-                                }
-                                Ok(api::Response::RenewLease(renew_lease::Response::Failed)) => {
-                                    tracing::error!(%lease_id, %peer_id,
-                                            "Lease renewal failed");
-
-                                    Err(api::Response::RenewLease(renew_lease::Response::NotFound))
-                                }
-                                Ok(api::Response::RenewLease(renew_lease::Response::Forbidden)) => {
-                                    tracing::error!(%lease_id, %peer_id,
-                                            "Lease renewal forbidden");
-
-                                    Err(api::Response::RenewLease(renew_lease::Response::NotFound))
-                                }
-                                Err(error) => {
-                                    tracing::error!(%lease_id, %peer_id, error=%error,
-                                            "Lease renewal request failed");
-
-                                    Err(api::Response::RenewLease(renew_lease::Response::Failed))
-                                }
-                                _ => {
-                                    tracing::error!(%lease_id, %peer_id,
-                                            "Lease renewal with unexpected response");
-
-                                    Err(api::Response::RenewLease(renew_lease::Response::Failed))
-                                }
-                            }
                         }
                     })
                     .await;
 
                     match result {
-                        Ok(timeout) => {
+                        Ok(api::Response::RenewLease(renew_lease::Response::Renewed {
+                            timeout,
+                            ..
+                        })) => {
                             last_timeout = Some(timeout);
                             let duration = timeout
                                 .duration_since(SystemTime::now())
@@ -174,14 +142,44 @@ impl Worker {
 
                             sleep(safe_duration).await;
                         }
+                        Ok(api::Response::RenewLease(renew_lease::Response::NotFound)) => {
+                            tracing::error!(
+                                %lease_id,
+                                %peer_id,
+                                "Lease renewal failed: lease not found"
+                            );
+
+                            return Err(WorkerError::LeaseExpired);
+                        }
+                        Ok(api::Response::RenewLease(renew_lease::Response::Failed)) => {
+                            tracing::error!(%lease_id, %peer_id, "Lease renewal failed");
+
+                            return Err(WorkerError::LeaseExpired);
+                        }
+                        Ok(api::Response::RenewLease(renew_lease::Response::Forbidden)) => {
+                            tracing::error!(%lease_id, %peer_id, "Lease renewal forbidden");
+
+                            return Err(WorkerError::LeaseExpired);
+                        }
+                        Ok(response) => {
+                            tracing::error!(
+                                %lease_id,
+                                %peer_id,
+                                response = ?response,
+                                "Lease renewal returned unexpected response"
+                            );
+
+                            return Err(WorkerError::LeaseExpired);
+                        }
                         Err(error) => {
                             tracing::warn!(
                                 %lease_id,
                                 %peer_id,
-                                error = ?error,
+                                error = %error,
                                 "Lease renewal failed after retries"
                             );
-                            return Err(WorkerError::LeaseExpired);
+
+                            return Err(WorkerError::NetworkError(error));
                         }
                     }
                 }
