@@ -230,7 +230,7 @@ where
                     let (should_update, projected_target, batches) = if update_target <= count {
                         (true, count, 0)
                     } else if !snapshot.is_empty() && stats.iter().all(|&s| s > 0 && s < u64::MAX) {
-                        let (time, cnt, projection, capped) = S::project(
+                        let (time, cnt, projection, _) = S::project(
                             &progress,
                             &batch_sizes,
                             stats,
@@ -242,15 +242,13 @@ where
                             time = %time,
                             count = %cnt,
                             peer = %peer_id,
+                            peer_position,
                             "Simulation with projection {:?} and {:?}",
                             projection,
                             update_target.saturating_sub(count)
                         );
                         (
-                            cnt <= 0
-                                && !capped
-                                && peer_position < projection.len()
-                                && projection[peer_position] == 0,
+                            false,
                             count.saturating_add(cnt.unsigned_abs()),
                             projection[peer_position],
                         )
@@ -422,7 +420,7 @@ where
                     let (should_update, projected_target, batches) = if update_target <= count {
                         (true, count, 0)
                     } else if !snapshot.is_empty() && stats.iter().all(|&s| s > 0 && s < u64::MAX) {
-                        let (time, cnt, projection, capped) = S::project(
+                        let (time, cnt, projection, _) = S::project(
                             &progress,
                             &batch_sizes,
                             stats,
@@ -434,16 +432,13 @@ where
                             time = %time,
                             count = %cnt,
                             peer = %peer_id,
-                            capped,
+                            peer_position,
                             "Simulation with projection {:?} and {:?}",
                             projection,
                             update_target.saturating_sub(count)
                         );
                         (
-                            cnt <= 0
-                                && !capped
-                                && peer_position < projection.len()
-                                && projection[peer_position] == 0,
+                            false,
                             count.saturating_add(cnt.unsigned_abs()),
                             projection[peer_position],
                         )
