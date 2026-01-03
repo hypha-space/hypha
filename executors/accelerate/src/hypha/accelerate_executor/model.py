@@ -1,6 +1,7 @@
 from typing import cast
 
 from torch.nn import Module
+from torch import bfloat16 as bf16
 
 # from torch.optim.lr_scheduler import LRScheduler
 from transformers import (
@@ -51,7 +52,12 @@ def get_model(model_path: str, model_type: str) -> Module:  # noqa: PLR0911, PLR
     if model_type == "pretraining":
         return cast(Module, AutoModelForPreTraining.from_pretrained(model_path, trust_remote_code=True))
     if model_type == "causal-lm":
-        return cast(Module, AutoModelForCausalLM.from_pretrained(model_path, trust_remote_code=True))
+        return cast(
+            Module,
+            AutoModelForCausalLM.from_pretrained(
+                model_path, trust_remote_code=True, attn_implementation="flash_attention_2", dtype=bf16
+            ),
+        )
     if model_type == "masked-lm":
         return cast(Module, AutoModelForMaskedLM.from_pretrained(model_path, trust_remote_code=True))
     if model_type == "mask-generation":

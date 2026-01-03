@@ -57,7 +57,7 @@ def get_adam(optimizer: dict[str, Any], parameters: Iterable[torch.Tensor]) -> O
         return torch.optim.AdamW(parameters, lr=lr, betas=optimizer["betas"])
     if optimizer.get("epsilon"):
         return torch.optim.AdamW(parameters, lr=lr, eps=optimizer["epsilon"])
-    return torch.optim.AdamW(parameters, lr=lr)
+    return torch.optim.AdamW(parameters, lr=lr, weight_decay=0.1)
 
 
 def get_loss_fn(loss_fn: str) -> Module:

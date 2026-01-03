@@ -116,7 +116,13 @@ if __name__ == "__main__":  # noqa: PLR0915, PLR0912
             non_blocking=True,
         )
 
-        accelerator = Accelerator(project_dir=work_dir, dataloader_config=dataloader_config)
+        batch_size = config["batch_size"] * 64
+        gradient_accumulation_steps = 4
+        accelerator = Accelerator(
+            project_dir=work_dir,
+            dataloader_config=dataloader_config,
+            gradient_accumulation_steps=gradient_accumulation_steps,
+        )
 
         prepare_files(config, session)
         local_fetch_path = f"{work_dir}/{FETCH_PATH}"
@@ -125,7 +131,6 @@ if __name__ == "__main__":  # noqa: PLR0915, PLR0912
         model = get_model(local_fetch_path, config["model"]["task"])
         optimizer = get_adam(config["optimizer"], model.parameters())
         scheduler = get_scheduler(config.get("scheduler"), optimizer)
-        batch_size = config["batch_size"]
         data_loader = torch.utils.data.DataLoader(
             IterableStreamDataSet(args.socket, work_dir, local_fetch_path, batch_size, config),
             batch_size=None,
@@ -179,13 +184,15 @@ if __name__ == "__main__":  # noqa: PLR0915, PLR0912
                 local_batches = action.get("batches")
                 logger.info(f"Excecute {local_batches} local batches.")
                 for _ in range(local_batches):
-                    batch = next(training_data_iter)
-                    optimizer.zero_grad(set_to_none=True)
-                    outputs = model(**{k: v.to(accelerator.device, non_blocking=True) for k, v in batch.items()})
-                    loss = outputs if isinstance(outputs, torch.Tensor) else outputs["loss"]
-                    accelerator.backward(loss)
-                    optimizer.step()
-                    scheduler.step()
+                    for i in range(gradient_accumulation_steps):
+                        with accelerator.accumulate(model):
+                            batch = next(training_data_iter)
+                            optimizer.zero_grad(set_to_none=True)
+                            outputs = model(**{k: v.to(accelerator.device, non_blocking=True) for k, v in batch.items()})
+                            loss = outputs if isinstance(outputs, torch.Tensor) else outputs["loss"]
+                            accelerator.backward(loss)
+                            optimizer.step()
+                            scheduler.step()
                     if accelerator.is_main_process:
                         loss_list.append(loss.detach().cpu().numpy())
                 if accelerator.is_main_process:
