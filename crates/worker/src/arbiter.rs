@@ -25,9 +25,9 @@ const WORKER_TOPIC: &str = "hypha/worker";
 // This allows proper handling of multiple schedulers by batching advertisements
 const WINDOW_LIMIT: usize = 100;
 const WINDOW_WAIT: std::time::Duration = std::time::Duration::from_millis(200);
-const OFFER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const OFFER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 const PRUNE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
-const LEASE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+const LEASE_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(3);
 
 #[derive(Debug, Error)]
 #[error("lease error")]
