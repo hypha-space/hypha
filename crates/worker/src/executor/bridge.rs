@@ -404,7 +404,7 @@ async fn send_resource(
     State(state): State<Arc<SockState>>,
     Json(req): Json<SendRequest>,
 ) -> Result<(), Error> {
-    let retry_strategy = FixedInterval::from_millis(50).map(jitter).take(20);
+    let retry_strategy = FixedInterval::from_millis(100).map(jitter).take(20);
 
     Retry::spawn(retry_strategy, || {
         let state = state.clone();

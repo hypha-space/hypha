@@ -449,7 +449,8 @@ pub struct WorkerState {
     pub push_done: bool,
 
     // HACK!
-    pub waiting_for_data: Option<PeerId>,
+    pub sending_to: Option<PeerId>,
+    pub data_available: bool
 }
 
 type LastUpdated = u64;

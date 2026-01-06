@@ -135,6 +135,7 @@ pub mod action {
         Joined,
         Idle,
         GeneratedData,
+        WaitedForReceiver,
         SentData,
         ReceivedAgentState,
         Error(GymnasiumError),
@@ -246,6 +247,8 @@ pub mod action {
         Idle { timeout: SystemTime },
         Generate {},
         Send { target: Reference },
+        WaitForReceiver { timeout: SystemTime },
+        WaitForModel { timeout: SystemTime },
         Update {},
         Terminate,
     }
@@ -268,7 +271,9 @@ pub mod action {
             target: Reference,
         },
         ExecuteBatch {
-            batches: u32,
+            sender: Reference,
+            rl: f32,
+            timeout: SystemTime,
         },
         SendUpdate {
             target: Reference,

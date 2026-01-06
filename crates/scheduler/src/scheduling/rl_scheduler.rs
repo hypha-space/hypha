@@ -8,7 +8,7 @@ use hypha_messages::{
     action::{
         self, AggregateAction, AggregateError, AggregateStatus, ExecutorAction, ExecutorStatus,
         GymnasiumAction, GymnasiumError, GymnasiumStatus, RlTrainAction, RlTrainStatus,
-        TrainAction, TrainError,
+        TrainError,
     },
 };
 use hypha_network::request_response::{RequestResponseError, RequestResponseInterfaceExt};
@@ -116,7 +116,7 @@ async fn schedule<T, S>(
     round_state: Arc<Mutex<RoundState>>,
     training_state: Arc<Mutex<TrainingState>>,
     batch_sizer: BatchSizer,
-    multi_batch_size: u32,
+    _multi_batch_size: u32,
     push_destination: Arc<Option<ModelDestination>>,
     start: std::time::Instant,
     request: (PeerId, action::ActionRequest),
@@ -134,6 +134,7 @@ where
     let short_idle = now + Duration::from_millis(500);
     let wait_model = now + Duration::from_secs(1);
     let long_io = now + Duration::from_secs(60);
+    let short_io = now + Duration::from_secs(10);
     let ps_broadcast_idle = now + Duration::from_secs(5);
 
     let since_start = start.elapsed().as_millis() as u64;
@@ -142,8 +143,6 @@ where
     // NOTE: We rely on Pool::members() being oldest-first ordered by join time.
     let parameter_servers: Vec<_> = parameter_pool.info().iter().map(|w| w.peer_id).collect();
     let primary_ps = parameter_servers.first().copied();
-
-    let trainer_servers: Vec<_> = trainer_pool.info().iter().map(|w| w.peer_id).collect();
 
     let next_action = match status {
         ExecutorStatus::Train(_) => {
@@ -155,12 +154,12 @@ where
             GymnasiumStatus::Joined => {
                 let state = round_state.lock().await;
                 if state.round == 0 {
-                    ExecutorAction::Gymnasium(GymnasiumAction::Idle {
-                        timeout: short_idle,
-                    })
+                    ExecutorAction::Gymnasium(GymnasiumAction::Generate {})
                 } else {
                     gymnasium_pool.update_state(&peer_id, |s| s.waiting_for_model = true);
-                    ExecutorAction::Gymnasium(GymnasiumAction::Generate {})
+                    ExecutorAction::Gymnasium(GymnasiumAction::WaitForModel {
+                        timeout: short_idle,
+                    })
                 }
             }
             GymnasiumStatus::Idle => {
@@ -171,14 +170,33 @@ where
                     ExecutorAction::Gymnasium(GymnasiumAction::Terminate)
                 }
             }
-            GymnasiumStatus::GeneratedData => ExecutorAction::Gymnasium(GymnasiumAction::Send {
-                // TODO: only sent once trainers are ready to receive
-                target: Reference::Peers {
-                    peers: trainer_servers,
-                    strategy: SelectionStrategy::All,
-                    resource: None,
-                },
-            }),
+            GymnasiumStatus::GeneratedData => {
+                gymnasium_pool.update_state(&peer_id, |w| w.data_available = true);
+                ExecutorAction::Gymnasium(GymnasiumAction::WaitForReceiver {
+                    timeout: short_idle,
+                })
+            }
+            GymnasiumStatus::WaitedForReceiver => {
+                if let Some(receiver) = gymnasium_pool
+                    .info()
+                    .iter()
+                    .find(|w| w.peer_id == peer_id)
+                    .and_then(|w| w.state.sending_to)
+                {
+                    gymnasium_pool.update_state(&peer_id, |s| s.sending_to = None);
+                    ExecutorAction::Gymnasium(GymnasiumAction::Send {
+                        target: Reference::Peers {
+                            peers: vec![receiver],
+                            strategy: SelectionStrategy::One,
+                            resource: None,
+                        },
+                    })
+                } else {
+                    ExecutorAction::Gymnasium(GymnasiumAction::WaitForReceiver {
+                        timeout: short_idle,
+                    })
+                }
+            }
             GymnasiumStatus::SentData => ExecutorAction::Gymnasium(GymnasiumAction::Idle {
                 timeout: short_idle,
             }),
@@ -210,12 +228,12 @@ where
             RlTrainStatus::Joined => {
                 let state = round_state.lock().await;
                 if state.round == 0 {
-                    ExecutorAction::Train(TrainAction::Idle {
+                    ExecutorAction::RlTrain(RlTrainAction::Idle {
                         timeout: short_idle,
                     })
                 } else {
                     trainer_pool.update_state(&peer_id, |s| s.waiting_for_model = true);
-                    ExecutorAction::Train(TrainAction::WaitForModel {
+                    ExecutorAction::RlTrain(RlTrainAction::WaitForModel {
                         timeout: wait_model,
                     })
                 }
@@ -283,15 +301,15 @@ where
                         .map(|w| (batch_sizer)(&w.resources))
                         .collect();
 
-                    let (should_update, projected_target, batches) = if update_target <= count {
-                        (true, count, 0)
+                    let (should_update, projected_target) = if update_target <= count {
+                        (true, count)
                     } else if !snapshot.is_empty() && stats.iter().all(|&s| s > 0 && s < u64::MAX) {
                         let (time, cnt, projection, _) = S::project(
                             &progress,
                             &batch_sizes,
                             stats,
                             update_target.saturating_sub(count),
-                            multi_batch_size,
+                            1,
                         );
 
                         tracing::debug!(
@@ -303,21 +321,17 @@ where
                             projection,
                             update_target.saturating_sub(count)
                         );
-                        (
-                            false,
-                            count.saturating_add(cnt.unsigned_abs()),
-                            projection[peer_position],
-                        )
+                        (false, count.saturating_add(cnt.unsigned_abs()))
                     } else {
-                        (false, count, 1)
+                        (false, count)
                     };
 
                     // Check if peer has applied update or sent update
-                    let (has_applied_update, _applied_final_update) = snapshot
+                    let has_applied_update = snapshot
                         .iter()
                         .find(|w| w.peer_id == peer_id)
-                        .map(|w| (w.state.applied_update, w.state.applied_final_update))
-                        .unwrap_or((false, false));
+                        .map(|w| w.state.applied_update)
+                        .unwrap_or(false);
                     let has_sent_update = primary_ps
                         .and_then(|ps| {
                             parameter_pool
@@ -342,7 +356,32 @@ where
                             timeout: short_idle,
                         })
                     } else if !should_update {
-                        ExecutorAction::RlTrain(RlTrainAction::ExecuteBatch { batches })
+                        // check if data is available:
+                        tracing::info!("{:?}", gymnasium_pool.info());
+                        if let Some(sender) = gymnasium_pool
+                            .info()
+                            .iter()
+                            .find(|f| f.state.data_available == true)
+                        {
+                            gymnasium_pool.update_state(&sender.peer_id, |w| {
+                                w.sending_to = Some(peer_id);
+                                w.data_available = false;
+                            });
+                            ExecutorAction::RlTrain(RlTrainAction::ExecuteBatch {
+                                sender: Reference::Peers {
+                                    peers: vec![sender.peer_id],
+                                    strategy: SelectionStrategy::All,
+                                    resource: None,
+                                },
+                                rl: 0.03,
+                                timeout: short_io,
+                            })
+                        } else {
+                            tracing::info!("no sender");
+                            ExecutorAction::RlTrain(RlTrainAction::Idle {
+                                timeout: short_idle,
+                            })
+                        }
                     } else if parameter_servers.is_empty() {
                         // NOTE: If we need to send an update but there are no parameter servers,
                         // we must wait (idle) until one becomes available.
@@ -473,15 +512,15 @@ where
                         .map(|w| (batch_sizer)(&w.resources))
                         .collect();
 
-                    let (should_update, projected_target, batches) = if update_target <= count {
-                        (true, count, 0)
+                    let (should_update, projected_target) = if update_target <= count {
+                        (true, count)
                     } else if !snapshot.is_empty() && stats.iter().all(|&s| s > 0 && s < u64::MAX) {
                         let (time, cnt, projection, _) = S::project(
                             &progress,
                             &batch_sizes,
                             stats,
                             update_target.saturating_sub(count),
-                            multi_batch_size,
+                            1,
                         );
 
                         tracing::debug!(
@@ -493,17 +532,38 @@ where
                             projection,
                             update_target.saturating_sub(count)
                         );
-                        (
-                            false,
-                            count.saturating_add(cnt.unsigned_abs()),
-                            projection[peer_position],
-                        )
+                        (false, count.saturating_add(cnt.unsigned_abs()))
                     } else {
-                        (false, count, 1)
+                        (false, count)
                     };
 
                     if !should_update {
-                        ExecutorAction::RlTrain(RlTrainAction::ExecuteBatch { batches })
+                        // check if data is available:
+                        tracing::info!("{:?}", gymnasium_pool.info());
+                        if let Some(sender) = gymnasium_pool
+                            .info()
+                            .iter()
+                            .find(|f| f.state.data_available == true)
+                        {
+                            gymnasium_pool.update_state(&sender.peer_id, |w| {
+                                w.sending_to = Some(peer_id);
+                                w.data_available = false;
+                            });
+                            ExecutorAction::RlTrain(RlTrainAction::ExecuteBatch {
+                                sender: Reference::Peers {
+                                    peers: vec![sender.peer_id],
+                                    strategy: SelectionStrategy::All,
+                                    resource: None,
+                                },
+                                rl: 0.03,
+                                timeout: short_io,
+                            })
+                        } else {
+                            tracing::info!("no sender");
+                            ExecutorAction::RlTrain(RlTrainAction::Idle {
+                                timeout: short_idle,
+                            })
+                        }
                     } else if parameter_servers.is_empty() {
                         // NOTE: If we need to send an update but there are no parameter servers,
                         // we must wait (idle) until one becomes available.
@@ -615,7 +675,7 @@ where
 
                 if training_complete {
                     ExecutorAction::RlTrain(RlTrainAction::Idle {
-                        timeout: now + Duration::from_millis(500),
+                        timeout: short_idle,
                     })
                 } else {
                     // Find a worker waiting for model
@@ -640,7 +700,32 @@ where
                             },
                         })
                     } else {
-                        ExecutorAction::RlTrain(RlTrainAction::ExecuteBatch { batches: 1 })
+                        // check if data is available:
+                        tracing::info!("{:?}", gymnasium_pool.info());
+                        if let Some(sender) = gymnasium_pool
+                            .info()
+                            .iter()
+                            .find(|f| f.state.data_available == true)
+                        {
+                            gymnasium_pool.update_state(&sender.peer_id, |w| {
+                                w.sending_to = Some(peer_id);
+                                w.data_available = false;
+                            });
+                            ExecutorAction::RlTrain(RlTrainAction::ExecuteBatch {
+                                sender: Reference::Peers {
+                                    peers: vec![sender.peer_id],
+                                    strategy: SelectionStrategy::All,
+                                    resource: None,
+                                },
+                                rl: 0.03,
+                                timeout: short_io,
+                            })
+                        } else {
+                            tracing::info!("no sender");
+                            ExecutorAction::RlTrain(RlTrainAction::Idle {
+                                timeout: short_idle,
+                            })
+                        }
                     }
                 }
             }
