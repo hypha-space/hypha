@@ -1,0 +1,90 @@
+[project]
+name = "hypha-ppo-executor"
+version = "0.0.0"
+license = "Apache-2.0"
+requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.28.1",
+    "safetensors>=0.7.0",
+]
+
+[project.optional-dependencies]
+mps_cu128 = [
+  "torch>=2.9.0",
+]
+cpu = [
+  "torch>=2.9.0",
+]
+cu128 = [
+  "torch>=2.9.0",
+]
+cu130 = [
+  "torch>=2.9.0",
+]
+rocm64 = [
+  "torch>=2.9.0",
+  "pytorch-triton-rocm",
+]
+
+[tool.uv]
+conflicts = [
+  [
+    { extra = "mps_cu128" },
+    { extra = "cpu" },
+    { extra = "cu128" },
+    { extra = "cu130" },
+    { extra = "rocm64" },
+  ],
+]
+
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-cpu", extra = "cpu" },
+  { index = "pytorch-cu128", extra = "cu128" },
+  { index = "pytorch-cu130", extra = "cu130" },
+  { index = "pytorch-rocm64", extra = "rocm64"},
+]
+pytorch-triton-rocm = [
+  { index = "pytorch-rocm64", extra = "rocm64"},
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-rocm64"
+url = "https://download.pytorch.org/whl/rocm6.4"
+explicit = true
+
+[dependency-groups]
+dev = [
+    "ruff>=0.14.9",
+]
+
+[build-system]
+requires = ["uv_build>=0.9.8,<0.10.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "hypha.gym_executor"
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.format]
+docstring-code-format = true
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "SIM", "ARG", "PL"]
