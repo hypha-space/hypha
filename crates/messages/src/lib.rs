@@ -89,6 +89,7 @@ pub mod action {
     pub enum ExecutorStatus {
         Train(TrainStatus),
         Aggregate(AggregateStatus),
+        Gymnasium(GymnasiumStatus),
     }
 
     #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -128,6 +129,17 @@ pub mod action {
     }
 
     #[derive(Clone, Debug, Serialize, Deserialize)]
+    #[serde(tag = "state", rename_all = "kebab-case")]
+    pub enum GymnasiumStatus {
+        Joined,
+        Idle,
+        GeneratedData,
+        SentData,
+        ReceivedAgentState,
+        Error(GymnasiumError),
+    }
+
+    #[derive(Clone, Debug, Serialize, Deserialize)]
     #[serde(tag = "type", rename_all = "kebab-case")]
     pub enum TrainError {
         Connection { message: String },
@@ -137,6 +149,13 @@ pub mod action {
     #[derive(Clone, Debug, Serialize, Deserialize)]
     #[serde(tag = "type", rename_all = "kebab-case")]
     pub enum AggregateError {
+        Connection { message: String },
+        Other { message: String },
+    }
+
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    #[serde(tag = "type", rename_all = "kebab-case")]
+    pub enum GymnasiumError {
         Connection { message: String },
         Other { message: String },
     }
@@ -201,7 +220,7 @@ pub mod action {
     #[serde(tag = "kind", rename_all = "kebab-case")]
     pub enum GymnasiumAction {
         Idle { timeout: SystemTime },
-        Generate { source: Reference },
+        Generate {},
         Send { target: Reference },
         Update {},
         Terminate,

@@ -28,7 +28,9 @@ use hypha_scheduler::{
     network::Network,
     pool::{Pool, PoolConfig, PoolWithAggregateInfo, PoolWithTrainInfo},
     scheduler_config::{Job as SchedulerJob, MetricsConfig},
-    scheduling::{batch_scheduler::BatchScheduler, data_scheduler::DataScheduler},
+    scheduling::{
+        batch_scheduler::BatchScheduler, data_scheduler::DataScheduler, rl_scheduler::RLScheduler,
+    },
     simulation::BasicSimulation,
     statistics::RunningMean,
     task::Task,
@@ -700,12 +702,13 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
                 let network = network.clone();
                 let rl_config = rl_config.clone();
                 let worker_spec = trainer_worker_spec.clone();
+                let gymnasium_worker_handle = gymnasium_worker_handle.clone();
 
                 tokio::spawn(trainer_worker_pool.for_each_concurrent(None, move |worker| {
                     let network = network.clone();
                     let rl_config = rl_config.clone();
                     let worker_spec = worker_spec.clone();
-                    let gymnasium_worker_pool = gymnasium_worker_handle.clone();
+                    let gymnasium_worker_handle = gymnasium_worker_handle.clone();
 
                     async move {
                         match worker {
@@ -722,7 +725,7 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
                                         .into_executor(RlTrainerExecutorConfig {
                                             model: rl_config.model.clone().into(),
                                             data: Fetch::data_peers(
-                                                gymnasium_worker_pool.members().iter().map(|worker| worker.peer_id).collect(),
+                                                gymnasium_worker_handle.members().iter().map(|worker| worker.peer_id).collect(),
                                                 DataSlice {dataset: "foo".to_string(), hash: 0},
                                             ),
                                             batch_size,
@@ -752,9 +755,10 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
                 }))
             };
 
-            let (metrics_rx, batch_scheduler_handle) =
-                BatchScheduler::run::<RunningMean, BasicSimulation>(
+            let (metrics_rx, rl_scheduler_handle) =
+                RLScheduler::run::<RunningMean, BasicSimulation>(
                     network.clone(),
+                    gymnasium_worker_handle.clone(),
                     trainer_worker_handle.clone(),
                     parameter_handle.clone(),
                     job_id,
@@ -763,7 +767,7 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
                     rl_config.rounds.avg_samples_between_updates,
                     rl_config.rounds.update_rounds,
                     rl_config.model_destination.clone(),
-                    batch_sizer.clone(),
+                    batch_sizer,
                     rl_config.rounds.multi_batch_size,
                     token.clone(),
                 )
@@ -780,10 +784,10 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
             });
 
             let abort_future = Box::pin(async move {
-                if !batch_scheduler_handle.is_finished() {
-                    batch_scheduler_handle.abort();
+                if !rl_scheduler_handle.is_finished() {
+                    rl_scheduler_handle.abort();
                 }
-                let _ = batch_scheduler_handle.await;
+                let _ = rl_scheduler_handle.await;
 
                 if !parameter_dispatcher.is_finished() {
                     parameter_dispatcher.abort();

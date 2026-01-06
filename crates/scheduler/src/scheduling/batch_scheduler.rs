@@ -131,7 +131,6 @@ where
     T: RuntimeStatistic + 'static,
     S: Simulation + Send + Sync + 'static,
 {
-    let _ = std::marker::PhantomData::<S>;
     let (peer_id, action::ActionRequest { job_id, status }) = request;
     tracing::debug!(%peer_id, ?status, %job_id, "Received action request");
 
@@ -853,6 +852,11 @@ where
 
             AggregateStatus::Terminated => ExecutorAction::Aggregate(AggregateAction::Terminate),
         },
+        _ => {
+            return Err(BatchSchedulerError::NetworkError(
+                RequestResponseError::Other("unexpected request".to_string()),
+            ));
+        }
     };
 
     tracing::debug!(%peer_id, %job_id, response = ?next_action, "Sending action response");
@@ -886,7 +890,6 @@ impl BatchScheduler {
         T: RuntimeStatistic + 'static,
         S: Simulation + Send + Sync + 'static,
     {
-        let _ = std::marker::PhantomData::<S>;
         let (tx, rx) = mpsc::channel(100);
         let start = std::time::Instant::now();
         let push_destination = Arc::new(push_destination);

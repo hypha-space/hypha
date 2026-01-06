@@ -99,7 +99,7 @@ def gymnasium(socket_path: str, work_dir: str, job_id: str, config) -> None:
 
                         all_observations.append(observations)
 
-                    current_status = {"executor": "gymnasium", "details": {"state": "generate"}}
+                    current_status = {"executor": "gymnasium", "details": {"state": "generated-data"}}
 
                 case "send":
                     target = action.get("target")
@@ -111,11 +111,11 @@ def gymnasium(socket_path: str, work_dir: str, job_id: str, config) -> None:
                         continue
 
                     observations_path = Path(work_dir) / "observations.safetensors"
-                    save_file({"observations": all_observations}, observations_path)
+                    save_file({"observations": np.concatenate(all_observations)}, observations_path)
 
                     try:
                         session.send_resource(target, str(observations_path))
-                        current_status = {"executor": "gymnasium", "details": {"state": "send"}}
+                        current_status = {"executor": "gymnasium", "details": {"state": "sent-data"}}
                     except Exception as exc:
                         current_status = {
                             "executor": "gymnasium",
@@ -131,7 +131,7 @@ def gymnasium(socket_path: str, work_dir: str, job_id: str, config) -> None:
 
                     # agent = PPOAgent(env, model)
                     # TODO: set agent state
-                    current_status = {"executor": "gymnasium", "details": {"state": "update"}}
+                    current_status = {"executor": "gymnasium", "details": {"state": "received-agent-state"}}
 
             elapsed = time.time() * 1000.0 - loop_start_ms
             if elapsed < MIN_LOOP_TIME_MS:
@@ -147,7 +147,7 @@ def main(socket_path: str, work_dir: str, job_json: str) -> None:
     executor = job_spec["executor"]
     assert executor["class"] == "gymnasium"
 
-    gymnasium(socket_path, work_dir, executor["job_id"], executor["config"])
+    gymnasium(socket_path, work_dir, job_spec["job_id"], executor["config"])
 
 
 if __name__ == "__main__":
