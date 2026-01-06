@@ -90,6 +90,7 @@ pub mod action {
         Train(TrainStatus),
         Aggregate(AggregateStatus),
         Gymnasium(GymnasiumStatus),
+        RlTrain(RlTrainStatus),
     }
 
     #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -140,6 +141,28 @@ pub mod action {
     }
 
     #[derive(Clone, Debug, Serialize, Deserialize)]
+    #[serde(tag = "state", rename_all = "kebab-case")]
+    pub enum RlTrainStatus {
+        Joined,
+        Idle,
+        BatchCompleted {
+            batch_size: u32,
+            batches: u32,
+        },
+        SentUpdate {
+            round: u32,
+            metrics: HashMap<String, f32>,
+        },
+        AppliedUpdate,
+        PushedToHub,
+        SentModel,
+        ReceivedModel,
+        WaitedForModel,
+        Terminated,
+        Error(TrainError),
+    }
+
+    #[derive(Clone, Debug, Serialize, Deserialize)]
     #[serde(tag = "type", rename_all = "kebab-case")]
     pub enum TrainError {
         Connection { message: String },
@@ -166,6 +189,7 @@ pub mod action {
         Train(TrainAction),
         Aggregate(AggregateAction),
         Gymnasium(GymnasiumAction),
+        RlTrain(RlTrainAction),
     }
 
     /// Actions targeted at training workers.
@@ -223,6 +247,43 @@ pub mod action {
         Generate {},
         Send { target: Reference },
         Update {},
+        Terminate,
+    }
+
+    /// Actions targeted at training workers.
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    #[serde(tag = "kind", rename_all = "kebab-case")]
+    pub enum RlTrainAction {
+        Idle {
+            timeout: SystemTime,
+        },
+        WaitForModel {
+            timeout: SystemTime,
+        },
+        ReceiveModel {
+            source: Reference,
+            timeout: SystemTime,
+        },
+        SendModel {
+            target: Reference,
+        },
+        ExecuteBatch {
+            batches: u32,
+        },
+        SendUpdate {
+            target: Reference,
+            weight: f32,
+        },
+        ApplyUpdate {
+            source: Reference,
+            timeout: SystemTime,
+        },
+        /// DEPRECATED: Temporary path to push final weights to Hugging Face.
+        /// Prefer dedicated artifact publishing in future revisions.
+        PushToHub {
+            repository: String,
+            token: String,
+        },
         Terminate,
     }
 }
@@ -636,8 +697,10 @@ pub struct GymnasiumExecutorConfig {
 pub struct RlTrainerExecutorConfig {
     // TODO: Add support for additional optimizeres when needed.
     pub model: Model,
-    pub data: Fetch,
+    pub optimizer: Adam,
     pub batch_size: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scheduler: Option<Scheduler>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]

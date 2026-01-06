@@ -7,7 +7,8 @@ use hypha_messages::{
     Reference, SelectionStrategy,
     action::{
         self, AggregateAction, AggregateError, AggregateStatus, ExecutorAction, ExecutorStatus,
-        GymnasiumAction, GymnasiumError, GymnasiumStatus, TrainAction, TrainError, TrainStatus,
+        GymnasiumAction, GymnasiumError, GymnasiumStatus, RlTrainAction, RlTrainStatus,
+        TrainAction, TrainError,
     },
 };
 use hypha_network::request_response::{RequestResponseError, RequestResponseInterfaceExt};
@@ -145,6 +146,11 @@ where
     let trainer_servers: Vec<_> = trainer_pool.info().iter().map(|w| w.peer_id).collect();
 
     let next_action = match status {
+        ExecutorStatus::Train(_) => {
+            return Err(RLSchedulerError::NetworkError(RequestResponseError::Other(
+                "Train status is not supported".to_string(),
+            )));
+        }
         ExecutorStatus::Gymnasium(gymnasium_status) => match gymnasium_status {
             GymnasiumStatus::Joined => {
                 let state = round_state.lock().await;
@@ -166,6 +172,7 @@ where
                 }
             }
             GymnasiumStatus::GeneratedData => ExecutorAction::Gymnasium(GymnasiumAction::Send {
+                // TODO: only sent once trainers are ready to receive
                 target: Reference::Peers {
                     peers: trainer_servers,
                     strategy: SelectionStrategy::All,
@@ -199,8 +206,8 @@ where
                 ExecutorAction::Gymnasium(GymnasiumAction::Terminate)
             }
         },
-        ExecutorStatus::Train(train) => match train {
-            TrainStatus::Joined => {
+        ExecutorStatus::RlTrain(train) => match train {
+            RlTrainStatus::Joined => {
                 let state = round_state.lock().await;
                 if state.round == 0 {
                     ExecutorAction::Train(TrainAction::Idle {
@@ -213,7 +220,7 @@ where
                     })
                 }
             }
-            TrainStatus::WaitedForModel => {
+            RlTrainStatus::WaitedForModel => {
                 let sending_peer = {
                     let snapshot = trainer_pool.info();
                     let worker = snapshot.iter().find(|w| w.peer_id == peer_id);
@@ -222,7 +229,7 @@ where
 
                 if let Some(sending_peer) = sending_peer {
                     trainer_pool.update_state(&peer_id, |s| s.receiving_from = None);
-                    ExecutorAction::Train(TrainAction::ReceiveModel {
+                    ExecutorAction::RlTrain(RlTrainAction::ReceiveModel {
                         source: Reference::Peers {
                             peers: vec![sending_peer],
                             strategy: SelectionStrategy::All,
@@ -231,20 +238,20 @@ where
                         timeout: long_io,
                     })
                 } else {
-                    ExecutorAction::Train(TrainAction::WaitForModel {
+                    ExecutorAction::RlTrain(RlTrainAction::WaitForModel {
                         timeout: wait_model,
                     })
                 }
             }
-            TrainStatus::ReceivedModel => {
+            RlTrainStatus::ReceivedModel => {
                 // Lazy transition to other state
-                ExecutorAction::Train(TrainAction::Idle { timeout: now })
+                ExecutorAction::RlTrain(RlTrainAction::Idle { timeout: now })
             }
-            TrainStatus::SentModel => {
+            RlTrainStatus::SentModel => {
                 // Lazy transition to other state
-                ExecutorAction::Train(TrainAction::Idle { timeout: now })
+                ExecutorAction::RlTrain(RlTrainAction::Idle { timeout: now })
             }
-            TrainStatus::Idle => {
+            RlTrainStatus::Idle => {
                 let mut state = round_state.lock().await;
                 if !state.training_complete {
                     let snapshot = trainer_pool.info();
@@ -322,7 +329,7 @@ where
                         .unwrap_or(false);
 
                     if state.aggregated_updates && !has_applied_update {
-                        ExecutorAction::Train(TrainAction::ApplyUpdate {
+                        ExecutorAction::RlTrain(RlTrainAction::ApplyUpdate {
                             source: Reference::Peers {
                                 peers: parameter_servers,
                                 strategy: SelectionStrategy::All,
@@ -331,19 +338,19 @@ where
                             timeout: now + Duration::from_secs(10),
                         })
                     } else if has_sent_update {
-                        ExecutorAction::Train(TrainAction::Idle {
+                        ExecutorAction::RlTrain(RlTrainAction::Idle {
                             timeout: short_idle,
                         })
                     } else if !should_update {
-                        ExecutorAction::Train(TrainAction::ExecuteBatch { batches })
+                        ExecutorAction::RlTrain(RlTrainAction::ExecuteBatch { batches })
                     } else if parameter_servers.is_empty() {
                         // NOTE: If we need to send an update but there are no parameter servers,
                         // we must wait (idle) until one becomes available.
-                        ExecutorAction::Train(TrainAction::Idle {
+                        ExecutorAction::RlTrain(RlTrainAction::Idle {
                             timeout: short_idle,
                         })
                     } else {
-                        ExecutorAction::Train(TrainAction::SendUpdate {
+                        ExecutorAction::RlTrain(RlTrainAction::SendUpdate {
                             target: Reference::Peers {
                                 // Selecting a single PS to avoid that workers send updates to multiple PS
                                 peers: vec![parameter_servers[0]],
@@ -355,7 +362,7 @@ where
                     }
                 } else if state.push_done {
                     cancel.cancel();
-                    ExecutorAction::Train(TrainAction::Terminate)
+                    ExecutorAction::RlTrain(RlTrainAction::Terminate)
                 } else {
                     let snapshot = trainer_pool.info();
                     let has_push_assignment = snapshot.iter().any(|w| w.state.is_pusher);
@@ -372,7 +379,7 @@ where
                         .unwrap_or((false, false, false));
 
                     if state.aggregated_updates && !has_applied_update {
-                        ExecutorAction::Train(TrainAction::ApplyUpdate {
+                        ExecutorAction::RlTrain(RlTrainAction::ApplyUpdate {
                             source: Reference::Peers {
                                 peers: parameter_servers,
                                 strategy: SelectionStrategy::All,
@@ -385,23 +392,23 @@ where
                         trainer_pool.update_state(&peer_id, |s| s.is_pusher = true);
 
                         if let Some(destination) = push_destination.as_ref().as_ref() {
-                            ExecutorAction::Train(TrainAction::PushToHub {
+                            ExecutorAction::RlTrain(RlTrainAction::PushToHub {
                                 repository: destination.repository.clone(),
                                 token: destination.token.clone(),
                             })
                         } else {
                             // Should not occur due to guard above.
                             state.push_done = true;
-                            ExecutorAction::Train(TrainAction::Terminate)
+                            ExecutorAction::RlTrain(RlTrainAction::Terminate)
                         }
                     } else {
-                        ExecutorAction::Train(TrainAction::Idle {
+                        ExecutorAction::RlTrain(RlTrainAction::Idle {
                             timeout: short_idle,
                         })
                     }
                 }
             }
-            TrainStatus::BatchCompleted {
+            RlTrainStatus::BatchCompleted {
                 batch_size,
                 batches,
             } => {
@@ -451,7 +458,7 @@ where
                 };
 
                 if training_complete || sent_update {
-                    ExecutorAction::Train(TrainAction::Idle {
+                    ExecutorAction::RlTrain(RlTrainAction::Idle {
                         timeout: short_idle,
                     })
                 } else {
@@ -496,15 +503,15 @@ where
                     };
 
                     if !should_update {
-                        ExecutorAction::Train(TrainAction::ExecuteBatch { batches })
+                        ExecutorAction::RlTrain(RlTrainAction::ExecuteBatch { batches })
                     } else if parameter_servers.is_empty() {
                         // NOTE: If we need to send an update but there are no parameter servers,
                         // we must wait (idle) until one becomes available.
-                        ExecutorAction::Train(TrainAction::Idle {
+                        ExecutorAction::RlTrain(RlTrainAction::Idle {
                             timeout: short_idle,
                         })
                     } else {
-                        ExecutorAction::Train(TrainAction::SendUpdate {
+                        ExecutorAction::RlTrain(RlTrainAction::SendUpdate {
                             target: Reference::Peers {
                                 // Selecting a single PS to avoid that workers send updates to multiple PS
                                 peers: vec![parameter_servers[0]],
@@ -516,7 +523,7 @@ where
                     }
                 }
             }
-            TrainStatus::SentUpdate { mut metrics, .. } => {
+            RlTrainStatus::SentUpdate { mut metrics, .. } => {
                 let snapshot = trainer_pool.info();
                 let worker_samples = snapshot
                     .iter()
@@ -582,11 +589,11 @@ where
                     "Worker reported SentUpdate; recorded for round"
                 );
 
-                ExecutorAction::Train(TrainAction::Idle {
+                ExecutorAction::RlTrain(RlTrainAction::Idle {
                     timeout: short_idle,
                 })
             }
-            TrainStatus::AppliedUpdate => {
+            RlTrainStatus::AppliedUpdate => {
                 let training_complete = {
                     trainer_pool.update_state(&peer_id, |s| s.applied_update = true);
 
@@ -607,7 +614,7 @@ where
                 };
 
                 if training_complete {
-                    ExecutorAction::Train(TrainAction::Idle {
+                    ExecutorAction::RlTrain(RlTrainAction::Idle {
                         timeout: now + Duration::from_millis(500),
                     })
                 } else {
@@ -625,7 +632,7 @@ where
                             s.receiving_from = Some(peer_id);
                         });
 
-                        ExecutorAction::Train(TrainAction::SendModel {
+                        ExecutorAction::RlTrain(RlTrainAction::SendModel {
                             target: Reference::Peers {
                                 peers: vec![update_worker],
                                 strategy: SelectionStrategy::One,
@@ -633,11 +640,11 @@ where
                             },
                         })
                     } else {
-                        ExecutorAction::Train(TrainAction::ExecuteBatch { batches: 1 })
+                        ExecutorAction::RlTrain(RlTrainAction::ExecuteBatch { batches: 1 })
                     }
                 }
             }
-            TrainStatus::PushedToHub => {
+            RlTrainStatus::PushedToHub => {
                 let is_pusher = trainer_pool
                     .info()
                     .iter()
@@ -650,9 +657,9 @@ where
                     state.push_done = true;
                 }
 
-                ExecutorAction::Train(TrainAction::Terminate)
+                ExecutorAction::RlTrain(RlTrainAction::Terminate)
             }
-            TrainStatus::Error(TrainError::Connection { message }) => {
+            RlTrainStatus::Error(TrainError::Connection { message }) => {
                 tracing::warn!(%peer_id, message = %message, "Worker reported connection error");
 
                 trainer_pool.update_state(&peer_id, |s| {
@@ -661,20 +668,20 @@ where
                     }
                 });
 
-                ExecutorAction::Train(TrainAction::Idle {
+                ExecutorAction::RlTrain(RlTrainAction::Idle {
                     timeout: short_idle,
                 })
             }
-            TrainStatus::Error(TrainError::Other { message }) => {
+            RlTrainStatus::Error(TrainError::Other { message }) => {
                 tracing::warn!(%peer_id, message = %message, "Worker reported error");
                 trainer_pool.update_state(&peer_id, |s| {
                     if s.is_pusher {
                         s.is_pusher = false;
                     }
                 });
-                ExecutorAction::Train(TrainAction::Terminate)
+                ExecutorAction::RlTrain(RlTrainAction::Terminate)
             }
-            TrainStatus::Terminated => ExecutorAction::Train(TrainAction::Terminate),
+            RlTrainStatus::Terminated => ExecutorAction::RlTrain(RlTrainAction::Terminate),
         },
         ExecutorStatus::Aggregate(aggregate_status) => match aggregate_status {
             AggregateStatus::Idle => {

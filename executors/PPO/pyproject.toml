@@ -4,8 +4,11 @@ version = "0.0.0"
 license = "Apache-2.0"
 requires-python = ">=3.12"
 dependencies = [
+    "gymnasium[mujoco]>=1.2.3",
     "httpx>=0.28.1",
+    "numpy>=2.4.0",
     "safetensors>=0.7.0",
+    "transformers>=4.57.3",
 ]
 
 [project.optional-dependencies]
@@ -78,7 +81,7 @@ requires = ["uv_build>=0.9.8,<0.10.0"]
 build-backend = "uv_build"
 
 [tool.uv.build-backend]
-module-name = "hypha.gym_executor"
+module-name = "hypha.ppo_executor"
 
 [tool.ruff]
 line-length = 120

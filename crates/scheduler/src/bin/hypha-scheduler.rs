@@ -10,7 +10,7 @@ use figment::{
 use futures_util::{StreamExt, future::join_all};
 use hypha_config::{ConfigWithMetadata, ConfigWithMetadataTLSExt, builder, to_toml};
 use hypha_messages::{
-    AggregateExecutorConfig, AggregateExecutorDescriptor, DataRecord, DataSlice, Fetch,
+    AggregateExecutorConfig, AggregateExecutorDescriptor, DataRecord, Fetch,
     GymnasiumExecutorConfig, GymnasiumExecutorDescriptor, JobSpec, RlTrainerExecutorConfig,
     RlTrainerExecutorDescriptor, TrainExecutorConfig, TrainExecutorDescriptor, WorkerSpec,
     data_record, health,
@@ -678,8 +678,8 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
 
                                 match Task::try_new(network, job_spec, &[worker.peer_id]).await {
                                     Ok(task) => {
-                                        tracing::debug!(%job_id, peer_id = %worker.peer_id,
-                                            "Dispatched worker job");
+                                        tracing::info!(%job_id, peer_id = %worker.peer_id,
+                                            "Dispatched gymnasium job");
                                         tokio::spawn(task.for_each(|_| async {}));
                                     }
                                     Err(e) => {
@@ -687,12 +687,12 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
                                             error = %e,
                                             %job_id,
                                             peer_id = %worker.peer_id,
-                                            "Failed to dispatch worker job"
+                                            "Failed to dispatch gymnasium job"
                                         );
                                     }
                                 }
                             }
-                            Err(e) => tracing::error!(error=?e, "💥 Worker failed"),
+                            Err(e) => tracing::error!(error=?e, "💥 Gym failed"),
                         }
                     }
                 }))
@@ -702,13 +702,11 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
                 let network = network.clone();
                 let rl_config = rl_config.clone();
                 let worker_spec = trainer_worker_spec.clone();
-                let gymnasium_worker_handle = gymnasium_worker_handle.clone();
 
                 tokio::spawn(trainer_worker_pool.for_each_concurrent(None, move |worker| {
                     let network = network.clone();
                     let rl_config = rl_config.clone();
                     let worker_spec = worker_spec.clone();
-                    let gymnasium_worker_handle = gymnasium_worker_handle.clone();
 
                     async move {
                         match worker {
@@ -724,18 +722,16 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
                                     executor: RlTrainerExecutorDescriptor::new(RL_TRAINER_EXECUTOR_NAME)
                                         .into_executor(RlTrainerExecutorConfig {
                                             model: rl_config.model.clone().into(),
-                                            data: Fetch::data_peers(
-                                                gymnasium_worker_handle.members().iter().map(|worker| worker.peer_id).collect(),
-                                                DataSlice {dataset: "foo".to_string(), hash: 0},
-                                            ),
+                                            optimizer: rl_config.inner_optimizer.clone(),
                                             batch_size,
+                                            scheduler: None,
                                         })
                                         .into(),
                                 };
 
                                 match Task::try_new(network, job_spec, &[worker.peer_id]).await {
                                     Ok(task) => {
-                                        tracing::debug!(%job_id, peer_id = %worker.peer_id,
+                                        tracing::info!(%job_id, peer_id = %worker.peer_id,
                                             "Dispatched worker job");
                                         tokio::spawn(task.for_each(|_| async {}));
                                     }
