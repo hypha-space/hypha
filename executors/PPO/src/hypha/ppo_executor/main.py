@@ -2,10 +2,21 @@ import argparse
 import json
 import logging
 import os
+import sys
 import shutil
 import time
 import uuid
 from pathlib import Path
+from opentelemetry import metrics
+from opentelemetry._logs import set_logger_provider
+from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
+from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
+from opentelemetry.instrumentation.system_metrics import SystemMetricsInstrumentor
+from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
+from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
+from opentelemetry.sdk.resources import OTELResourceDetector, get_aggregated_resources
 
 import gymnasium as gym
 import numpy as np
@@ -20,6 +31,42 @@ from .utils import extract_gradients, get_adam, merge_models, prepare_files
 FETCH_PATH = "artifacts"
 CURRENT_MODEL_NAME = "global_weights.pt"
 MIN_LOOP_TIME_MS = 100
+
+# NOTE: Set the root logger level to NOTSET to ensure all messages are captured
+# and attach console and OTEL (if configured) handlers to root logger
+logging.getLogger().setLevel(logging.NOTSET)
+
+# NOTE: Set level for httpx and httpcore to WARNING to reduce noise
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+console_handler = logging.StreamHandler(sys.stdout)
+console_handler.setLevel(logging.INFO)
+console_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+logging.getLogger().addHandler(console_handler)
+
+
+# NOTE: Only configure OTEL exporters if endpoint is defined.
+# If no endpoint is configured, skip exporters.
+otel_endpoint = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
+if otel_endpoint:
+    resource = get_aggregated_resources([OTELResourceDetector()])
+
+    exporter = OTLPLogExporter()
+    logger_provider = LoggerProvider(resource=resource)
+    logger_provider.add_log_record_processor(BatchLogRecordProcessor(exporter))
+    set_logger_provider(logger_provider)
+
+    otel_handler = LoggingHandler(level=logging.NOTSET, logger_provider=logger_provider)
+    logging.getLogger().addHandler(otel_handler)
+
+    metric_exporter = OTLPMetricExporter()
+    metric_reader = PeriodicExportingMetricReader(metric_exporter)
+    meter_provider = MeterProvider(resource=resource, metric_readers=[metric_reader])
+    metrics.set_meter_provider(meter_provider)
+
+    SystemMetricsInstrumentor().instrument(meter_provider=meter_provider)
+
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +150,7 @@ def ppo_trainer(socket_path: str, work_dir: str, job_id: str, config) -> None:  
         loss_list = []
 
         current_status = {
-            "executor": "train",
+            "executor": "rl-train",
             "details": {"state": "joined"},
         }
 
@@ -112,7 +159,7 @@ def ppo_trainer(socket_path: str, work_dir: str, job_id: str, config) -> None:  
             action_resp = session.send_action({"job_id": job_id, "status": current_status})
             next_action = action_resp.get("next", {})
 
-            if next_action.get("executor") != "train":
+            if next_action.get("executor") != "rl-train":
                 raise RuntimeError(f"Unexpected executor action: {next_action}")
 
             action = next_action.get("action", {})
@@ -130,7 +177,7 @@ def ppo_trainer(socket_path: str, work_dir: str, job_id: str, config) -> None:  
                     if timeout_ms is not None:
                         sleep_until_epoch_ms(timeout_ms)
 
-                    current_status = {"executor": "train", "details": {"state": "idle"}}
+                    current_status = {"executor": "rl-train", "details": {"state": "idle"}}
 
                 case "execute-batch":
                     # ALGO Logic: Storage setup
@@ -142,11 +189,19 @@ def ppo_trainer(socket_path: str, work_dir: str, job_id: str, config) -> None:  
                     # dones = torch.zeros((num_steps, num_envs)).to(device)
                     # values = torch.zeros((num_steps, num_envs)).to(device)
 
-                    receive_path = str(Path(work_dir) / str(uuid.uuid4()))
-                    training_data_json = session.receive(config["source"], receive_path)
+                    receive_path = f"incoming-{uuid.uuid4()}"
+                    pointers = session.receive(action.get("sender"), receive_path, timeout=action.get("timeout"))
 
-                    file_path = Path(work_dir) / training_data_json[0]["path"]
-                    training_data = load_file(file_path)
+                    logger.info(f"Received {pointers}")
+
+                    incomming = pointers[-1] if isinstance(pointers, list) else pointers
+                    if incomming:
+                        rel_path = incomming.get("path")
+                        file_path = Path(work_dir) / rel_path
+                        training_data = load_file(file_path)
+                        shutil.rmtree(f"{work_dir}/{receive_path}")
+                    else:
+                        raise IOError("Received data can't be read")
 
                     obs = training_data["obs"]
                     actions = training_data["actions"]
@@ -247,7 +302,7 @@ def ppo_trainer(socket_path: str, work_dir: str, job_id: str, config) -> None:  
                     update += 1
 
                     current_status = {
-                        "executor": "train",
+                        "executor": "rl-train",
                         "details": {"state": "batch-completed", "batch_size": "", "batches": ""},
                     }
 
@@ -255,7 +310,7 @@ def ppo_trainer(socket_path: str, work_dir: str, job_id: str, config) -> None:  
                     target = action.get("target")
                     if target is None:
                         current_status = {
-                            "executor": "train",
+                            "executor": "rl-train",
                             "details": {
                                 "state": "error",
                                 "type": "other",
@@ -277,7 +332,7 @@ def ppo_trainer(socket_path: str, work_dir: str, job_id: str, config) -> None:  
 
                     if last_gradient is None:
                         current_status = {
-                            "executor": "train",
+                            "executor": "rl-train",
                             "details": {
                                 "state": "error",
                                 "type": "other",
@@ -289,7 +344,7 @@ def ppo_trainer(socket_path: str, work_dir: str, job_id: str, config) -> None:  
                     try:
                         session.send_resource(target, last_gradient)
                         current_status = {
-                            "executor": "train",
+                            "executor": "rl-train",
                             "details": {
                                 "state": "sent-update",
                                 "metrics": last_metrics,
@@ -298,7 +353,7 @@ def ppo_trainer(socket_path: str, work_dir: str, job_id: str, config) -> None:  
                         }
                     except Exception as exc:  # noqa: BLE001
                         current_status = {
-                            "executor": "train",
+                            "executor": "rl-train",
                             "details": {
                                 "state": "error",
                                 "type": "connection",
@@ -313,7 +368,7 @@ def ppo_trainer(socket_path: str, work_dir: str, job_id: str, config) -> None:  
                     source = action.get("source")
                     if source is None:
                         current_status = {
-                            "executor": "train",
+                            "executor": "rl-train",
                             "details": {
                                 "state": "error",
                                 "type": "other",
@@ -344,7 +399,7 @@ def ppo_trainer(socket_path: str, work_dir: str, job_id: str, config) -> None:  
                                 os.remove(path)
                         else:
                             current_status = {
-                                "executor": "train",
+                                "executor": "rl-train",
                                 "details": {
                                     "state": "error",
                                     "type": "connection",
@@ -353,7 +408,7 @@ def ppo_trainer(socket_path: str, work_dir: str, job_id: str, config) -> None:  
                             }
                     except Exception as exc:
                         current_status = {
-                            "executor": "train",
+                            "executor": "rl-train",
                             "details": {"state": "error", "type": "connection", "message": str(exc)},
                         }
                         continue
@@ -363,7 +418,7 @@ def ppo_trainer(socket_path: str, work_dir: str, job_id: str, config) -> None:  
                     token = action.get("token")
                     if repository is None or token is None:
                         current_status = {
-                            "executor": "train",
+                            "executor": "rl-train",
                             "details": {
                                 "state": "error",
                                 "type": "other",
@@ -376,7 +431,7 @@ def ppo_trainer(socket_path: str, work_dir: str, job_id: str, config) -> None:  
                     target = action.get("target")
                     if target is None:
                         current_status = {
-                            "executor": "train",
+                            "executor": "rl-train",
                             "details": {
                                 "state": "error",
                                 "type": "other",
@@ -388,12 +443,12 @@ def ppo_trainer(socket_path: str, work_dir: str, job_id: str, config) -> None:  
                     try:
                         session.send_resource(target, CURRENT_MODEL_NAME, remove_file=False)
                         current_status = {
-                            "executor": "train",
+                            "executor": "rl-train",
                             "details": {"state": "sent-model"},
                         }
                     except Exception as exc:  # noqa: BLE001
                         current_status = {
-                            "executor": "train",
+                            "executor": "rl-train",
                             "details": {
                                 "state": "error",
                                 "type": "connection",
@@ -404,7 +459,7 @@ def ppo_trainer(socket_path: str, work_dir: str, job_id: str, config) -> None:  
                     source = action.get("source")
                     if source is None:
                         current_status = {
-                            "executor": "train",
+                            "executor": "rl-train",
                             "details": {
                                 "state": "error",
                                 "type": "other",
@@ -427,7 +482,7 @@ def ppo_trainer(socket_path: str, work_dir: str, job_id: str, config) -> None:  
                                 os.remove(path)
                         else:
                             current_status = {
-                                "executor": "train",
+                                "executor": "rl-train",
                                 "details": {
                                     "state": "error",
                                     "type": "connection",
@@ -437,7 +492,7 @@ def ppo_trainer(socket_path: str, work_dir: str, job_id: str, config) -> None:  
                             continue
                     except Exception as exc:  # noqa: BLE001
                         current_status = {
-                            "executor": "train",
+                            "executor": "rl-train",
                             "details": {
                                 "state": "error",
                                 "type": "connection",
@@ -450,7 +505,7 @@ def ppo_trainer(socket_path: str, work_dir: str, job_id: str, config) -> None:  
                     timeout_ms = system_time_to_epoch_ms(action.get("timeout"))
                     if timeout_ms is not None:
                         sleep_until_epoch_ms(timeout_ms)
-                    current_status = {"executor": "train", "details": {"state": "waited-for-model"}}
+                    current_status = {"executor": "rl-train", "details": {"state": "waited-for-model"}}
 
             elapsed = time.time() * 1000.0 - loop_start_ms
             if elapsed < MIN_LOOP_TIME_MS:

@@ -2,8 +2,20 @@ import argparse
 import json
 import logging
 import time
+import sys
+import os
 from collections import deque
 from pathlib import Path
+from opentelemetry import metrics
+from opentelemetry._logs import set_logger_provider
+from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
+from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
+from opentelemetry.instrumentation.system_metrics import SystemMetricsInstrumentor
+from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
+from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
+from opentelemetry.sdk.resources import OTELResourceDetector, get_aggregated_resources
 
 import gymnasium as gym
 import numpy as np
@@ -12,6 +24,42 @@ from safetensors.numpy import save_file
 from .api import Session
 
 MIN_LOOP_TIME_MS = 100
+
+# NOTE: Set the root logger level to NOTSET to ensure all messages are captured
+# and attach console and OTEL (if configured) handlers to root logger
+logging.getLogger().setLevel(logging.NOTSET)
+
+# NOTE: Set level for httpx and httpcore to WARNING to reduce noise
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+console_handler = logging.StreamHandler(sys.stdout)
+console_handler.setLevel(logging.INFO)
+console_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+logging.getLogger().addHandler(console_handler)
+
+
+# NOTE: Only configure OTEL exporters if endpoint is defined.
+# If no endpoint is configured, skip exporters.
+otel_endpoint = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
+if otel_endpoint:
+    resource = get_aggregated_resources([OTELResourceDetector()])
+
+    exporter = OTLPLogExporter()
+    logger_provider = LoggerProvider(resource=resource)
+    logger_provider.add_log_record_processor(BatchLogRecordProcessor(exporter))
+    set_logger_provider(logger_provider)
+
+    otel_handler = LoggingHandler(level=logging.NOTSET, logger_provider=logger_provider)
+    logging.getLogger().addHandler(otel_handler)
+
+    metric_exporter = OTLPMetricExporter()
+    metric_reader = PeriodicExportingMetricReader(metric_exporter)
+    meter_provider = MeterProvider(resource=resource, metric_readers=[metric_reader])
+    metrics.set_meter_provider(meter_provider)
+
+    SystemMetricsInstrumentor().instrument(meter_provider=meter_provider)
+
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +89,7 @@ def gymnasium(socket_path: str, work_dir: str, job_id: str, config) -> None:
         replay_buffer = deque(maxlen=100)
         episode_start = np.zeros(envs.num_envs, dtype=bool)
 
-        num_local_rounds = 1
+        num_local_rounds = 100
         observations, infos = envs.reset()
 
         all_observations = []
@@ -101,20 +149,22 @@ def gymnasium(socket_path: str, work_dir: str, job_id: str, config) -> None:
 
                     current_status = {"executor": "gymnasium", "details": {"state": "generated-data"}}
 
+                case "wait-for-receiver":
+                    timeout_ms = system_time_to_epoch_ms(action.get("timeout"))
+                    if timeout_ms is not None:
+                        sleep_until_epoch_ms(timeout_ms)
+
+                    current_status = {"executor": "gymnasium", "details": {"state": "waited-for-receiver"}}
+
                 case "send":
                     target = action.get("target")
-                    if target is None:
-                        current_status = {
-                            "executor": "gymnasium",
-                            "details": {"state": "error", "type": "other", "message": "Send missing target reference"},
-                        }
-                        continue
 
-                    observations_path = Path(work_dir) / "observations.safetensors"
+                    observations_file = "observations.safetensors"
+                    observations_path = Path(work_dir) / observations_file
                     save_file({"observations": np.concatenate(all_observations)}, observations_path)
 
                     try:
-                        session.send_resource(target, str(observations_path))
+                        session.send_resource(target, observations_file, remove_file=True)
                         current_status = {"executor": "gymnasium", "details": {"state": "sent-data"}}
                     except Exception as exc:
                         current_status = {
@@ -132,6 +182,7 @@ def gymnasium(socket_path: str, work_dir: str, job_id: str, config) -> None:
                     # agent = PPOAgent(env, model)
                     # TODO: set agent state
                     current_status = {"executor": "gymnasium", "details": {"state": "received-agent-state"}}
+
 
             elapsed = time.time() * 1000.0 - loop_start_ms
             if elapsed < MIN_LOOP_TIME_MS:
