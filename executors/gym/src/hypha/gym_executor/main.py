@@ -1,11 +1,16 @@
 import argparse
 import json
 import logging
-import time
-import sys
 import os
-from collections import deque
+import shutil
+import sys
+import time
+import uuid
 from pathlib import Path
+
+import gymnasium as gym
+import numpy as np
+import torch
 from opentelemetry import metrics
 from opentelemetry._logs import set_logger_provider
 from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
@@ -16,15 +21,13 @@ from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.sdk.resources import OTELResourceDetector, get_aggregated_resources
-
-import gymnasium as gym
-import numpy as np
-from safetensors.torch import save_file
-import torch
+from safetensors.torch import load_model, save_file, save_model
 from transformers import AutoModel
 
 from .api import Session
 
+FETCH_PATH = "artifacts"
+CURRENT_MODEL_NAME = "global_weights.pt"
 MIN_LOOP_TIME_MS = 100
 FETCH_PATH = "artifacts"
 
@@ -121,7 +124,7 @@ def sleep_until_epoch_ms(target_ms: int) -> None:
         time.sleep((target_ms - now_ms) / 1000.0)
 
 
-def make_env(gym_id, normalize_reward = True):
+def make_env(gym_id, normalize_reward=True):
     def thunk():
         env = gym.make(gym_id)
         env = gym.wrappers.RecordEpisodeStatistics(env)
@@ -129,35 +132,36 @@ def make_env(gym_id, normalize_reward = True):
         env = gym.wrappers.NormalizeObservation(env)
         env = gym.wrappers.TransformObservation(env, lambda obs: np.clip(obs, -10, 10), env.observation_space)
         if normalize_reward:
-          env = gym.wrappers.NormalizeReward(env)
-          env = gym.wrappers.TransformReward(env, lambda reward: np.clip(reward, -10, 10))
+            env = gym.wrappers.NormalizeReward(env)
+            env = gym.wrappers.TransformReward(env, lambda reward: np.clip(reward, -10, 10))
         return env
 
     return thunk
 
 
-def gymnasium(socket_path: str, work_dir: str, job_id: str, config) -> None:
+def gymnasium(socket_path: str, work_dir: str, job_id: str, config) -> None:  # noqa: PLR0912, PLR0915
     with Session(socket_path) as session:
         device = "cpu"
         num_envs = 4
         # env setup
-        envs = gym.vector.SyncVectorEnv(
-            [make_env(config["environment"]) for i in range(num_envs)]
-        )
+        envs = gym.vector.SyncVectorEnv([make_env(config["environment"]) for i in range(num_envs)])
 
         session.fetch(config["model"]["artifact"])
         local_fetch_path = str(Path(work_dir) / FETCH_PATH)
         logger.info("Fetched artifacts: %s", os.listdir(local_fetch_path))
         agent = AutoModel.from_pretrained(local_fetch_path, trust_remote_code=True).to(device)
 
+        # Serialize the model to disk
+        previous_model_path = str(Path(work_dir) / CURRENT_MODEL_NAME)
+        # model = accelerator.unwrap_model(model)
+        save_model(agent, previous_model_path)
+
         # Do Config
         num_steps = 2048
         gamma = 0.99
         gae_lambda = 0.95
 
-
         global_step = 0
-        start_time = time.time()
         first_obs, _ = envs.reset()
         next_obs = torch.Tensor(first_obs).to(device)
         next_done = torch.zeros(num_envs).to(device)
@@ -193,7 +197,6 @@ def gymnasium(socket_path: str, work_dir: str, job_id: str, config) -> None:
                     current_status = {"executor": "gymnasium", "details": {"state": "idle"}}
 
                 case "generate":
-
                     obs = torch.zeros((num_steps, num_envs) + envs.single_observation_space.shape).to(device)
                     actions = torch.zeros((num_steps, num_envs) + envs.single_action_space.shape).to(device)
                     logprobs = torch.zeros((num_steps, num_envs)).to(device)
@@ -216,8 +219,10 @@ def gymnasium(socket_path: str, work_dir: str, job_id: str, config) -> None:
                         # TRY NOT TO MODIFY: execute the game and log data.
                         next_obs, reward, terminated, truncated, _ = envs.step(action.cpu().numpy())
                         rewards[step] = torch.tensor(reward).to(device).view(-1)
-                        next_obs, next_done = torch.Tensor(next_obs).to(device), torch.Tensor(np.logical_or(terminated, truncated)).to(device)
-
+                        next_obs, next_done = (
+                            torch.Tensor(next_obs).to(device),
+                            torch.Tensor(np.logical_or(terminated, truncated)).to(device),
+                        )
 
                     # bootstrap value if not done
                     with torch.no_grad():
@@ -272,23 +277,67 @@ def gymnasium(socket_path: str, work_dir: str, job_id: str, config) -> None:
                         }
                         continue
 
-                case "update":
+                case "wait-for-model":
+                    timeout_ms = system_time_to_epoch_ms(action.get("timeout"))
+                    if timeout_ms is not None:
+                        sleep_until_epoch_ms(timeout_ms)
+                    current_status = {"executor": "gymnasium", "details": {"state": "waited-for-model"}}
+
+                case "receive-model":
                     # TODO: load current model state and setup agent
                     # model_state = session.fetch(config["model"]["artifact"])
                     # model_state = os.path.join(work_dir, model_state[0]["path"])
                     # model = load_from_safetensor(model_state)
+                    source = action.get("source")
+                    if source is None:
+                        current_status = {
+                            "executor": "gymnasium",
+                            "details": {
+                                "state": "error",
+                                "type": "other",
+                                "message": "ReceiveModel missing source reference",
+                            },
+                        }
+                        continue
 
-                    # agent = PPOAgent(env, model)
-                    # TODO: set agent state
-                    current_status = {"executor": "gymnasium", "details": {"state": "received-agent-state"}}
+                    try:
+                        receive_path = f"incoming-{uuid.uuid4()}"
+                        pointers = session.receive(source, receive_path, timeout=action.get("timeout"))
+                        if pointers:
+                            incomming = pointers[-1] if isinstance(pointers, list) else pointers
+                            rel_path = incomming.get("path")
+                            if isinstance(rel_path, str):
+                                path = os.path.join(work_dir, rel_path)
+                                load_model(agent, path)
+                                os.remove(previous_model_path)
+                                shutil.copy(path, previous_model_path)
+                                os.remove(path)
+                        else:
+                            current_status = {
+                                "executor": "gymnasium",
+                                "details": {
+                                    "state": "error",
+                                    "type": "connection",
+                                    "message": "No model received before timeout.",
+                                },
+                            }
+                            continue
+                    except Exception as exc:
+                        current_status = {
+                            "executor": "gymnasium",
+                            "details": {
+                                "state": "error",
+                                "type": "connection",
+                                "message": str(exc),
+                            },
+                        }
+                        continue
 
+                    current_status = {"executor": "gymnasium", "details": {"state": "received-model"}}
 
             elapsed = time.time() * 1000.0 - loop_start_ms
             if elapsed < MIN_LOOP_TIME_MS:
                 time.sleep((MIN_LOOP_TIME_MS - elapsed) / 1000.0)
-
-        envs.close()
-        logger.info("Environment closed")
 
 
 def main(socket_path: str, work_dir: str, job_json: str) -> None:

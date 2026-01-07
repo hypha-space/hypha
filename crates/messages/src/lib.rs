@@ -137,7 +137,8 @@ pub mod action {
         GeneratedData,
         WaitedForReceiver,
         SentData,
-        ReceivedAgentState,
+        WaitedForModel,
+        ReceivedModel,
         Error(GymnasiumError),
     }
 
@@ -244,12 +245,23 @@ pub mod action {
     #[derive(Clone, Debug, Serialize, Deserialize)]
     #[serde(tag = "kind", rename_all = "kebab-case")]
     pub enum GymnasiumAction {
-        Idle { timeout: SystemTime },
+        Idle {
+            timeout: SystemTime,
+        },
         Generate {},
-        Send { target: Reference },
-        WaitForReceiver { timeout: SystemTime },
-        WaitForModel { timeout: SystemTime },
-        Update {},
+        Send {
+            target: Reference,
+        },
+        WaitForReceiver {
+            timeout: SystemTime,
+        },
+        WaitForModel {
+            timeout: SystemTime,
+        },
+        ReceiveModel {
+            source: Reference,
+            timeout: SystemTime,
+        },
         Terminate,
     }
 

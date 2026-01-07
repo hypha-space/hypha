@@ -7,8 +7,7 @@ use hypha_messages::{
     Reference, SelectionStrategy,
     action::{
         self, AggregateAction, AggregateError, AggregateStatus, ExecutorAction, ExecutorStatus,
-        GymnasiumAction, GymnasiumError, GymnasiumStatus, RlTrainAction, RlTrainStatus,
-        TrainError,
+        GymnasiumAction, GymnasiumError, GymnasiumStatus, RlTrainAction, RlTrainStatus, TrainError,
     },
 };
 use hypha_network::request_response::{RequestResponseError, RequestResponseInterfaceExt};
@@ -165,31 +164,33 @@ where
             GymnasiumStatus::Idle => {
                 let state = round_state.lock().await;
                 if !state.training_complete {
-                    ExecutorAction::Gymnasium(GymnasiumAction::Generate {})
+                    if state.aggregated_updates {
+                        ExecutorAction::Gymnasium(GymnasiumAction::ReceiveModel {
+                            source: Reference::Peers {
+                                peers: vec![primary_ps.unwrap()],
+                                strategy: SelectionStrategy::All,
+                                resource: None,
+                            },
+                            timeout: long_io,
+                        })
+                    } else {
+                        ExecutorAction::Gymnasium(GymnasiumAction::Generate {})
+                    }
                 } else {
                     ExecutorAction::Gymnasium(GymnasiumAction::Terminate)
                 }
             }
             GymnasiumStatus::GeneratedData => {
                 gymnasium_pool.update_state(&peer_id, |w| w.data_available = true);
-                ExecutorAction::Gymnasium(GymnasiumAction::WaitForReceiver {
-                    timeout: short_idle,
-                })
-            }
-            GymnasiumStatus::WaitedForReceiver => {
-                if let Some(receiver) = gymnasium_pool
-                    .info()
-                    .iter()
-                    .find(|w| w.peer_id == peer_id)
-                    .and_then(|w| w.state.sending_to)
-                {
-                    gymnasium_pool.update_state(&peer_id, |s| s.sending_to = None);
-                    ExecutorAction::Gymnasium(GymnasiumAction::Send {
-                        target: Reference::Peers {
-                            peers: vec![receiver],
-                            strategy: SelectionStrategy::One,
+                let state = round_state.lock().await;
+                if state.aggregated_updates {
+                    ExecutorAction::Gymnasium(GymnasiumAction::ReceiveModel {
+                        source: Reference::Peers {
+                            peers: vec![primary_ps.unwrap()],
+                            strategy: SelectionStrategy::All,
                             resource: None,
                         },
+                        timeout: long_io,
                     })
                 } else {
                     ExecutorAction::Gymnasium(GymnasiumAction::WaitForReceiver {
@@ -197,14 +198,69 @@ where
                     })
                 }
             }
+            GymnasiumStatus::WaitedForReceiver => {
+                gymnasium_pool.update_state(&peer_id, |w| w.data_available = true);
+                let state = round_state.lock().await;
+                if state.aggregated_updates {
+                    ExecutorAction::Gymnasium(GymnasiumAction::ReceiveModel {
+                        source: Reference::Peers {
+                            peers: vec![primary_ps.unwrap()],
+                            strategy: SelectionStrategy::All,
+                            resource: None,
+                        },
+                        timeout: long_io,
+                    })
+                } else {
+                    if let Some(receiver) = gymnasium_pool
+                        .info()
+                        .iter()
+                        .find(|w| w.peer_id == peer_id)
+                        .and_then(|w| w.state.sending_to)
+                    {
+                        gymnasium_pool.update_state(&peer_id, |s| s.sending_to = None);
+                        ExecutorAction::Gymnasium(GymnasiumAction::Send {
+                            target: Reference::Peers {
+                                peers: vec![receiver],
+                                strategy: SelectionStrategy::One,
+                                resource: None,
+                            },
+                        })
+                    } else {
+                        ExecutorAction::Gymnasium(GymnasiumAction::WaitForReceiver {
+                            timeout: short_idle,
+                        })
+                    }
+                }
+            }
             GymnasiumStatus::SentData => ExecutorAction::Gymnasium(GymnasiumAction::Idle {
                 timeout: short_idle,
             }),
-            GymnasiumStatus::ReceivedAgentState => {
-                ExecutorAction::Gymnasium(GymnasiumAction::Idle {
-                    timeout: short_idle,
-                })
+            GymnasiumStatus::WaitedForModel => {
+                let sending_peer = {
+                    let snapshot = gymnasium_pool.info();
+                    let worker = snapshot.iter().find(|w| w.peer_id == peer_id);
+                    worker.and_then(|w| w.state.receiving_from)
+                };
+
+                if let Some(sending_peer) = sending_peer {
+                    gymnasium_pool.update_state(&peer_id, |s| s.receiving_from = None);
+                    ExecutorAction::Gymnasium(GymnasiumAction::ReceiveModel {
+                        source: Reference::Peers {
+                            peers: vec![sending_peer],
+                            strategy: SelectionStrategy::All,
+                            resource: None,
+                        },
+                        timeout: long_io,
+                    })
+                } else {
+                    ExecutorAction::Gymnasium(GymnasiumAction::WaitForModel {
+                        timeout: wait_model,
+                    })
+                }
             }
+            GymnasiumStatus::ReceivedModel => ExecutorAction::Gymnasium(GymnasiumAction::Idle {
+                timeout: short_idle,
+            }),
             GymnasiumStatus::Error(GymnasiumError::Connection { message }) => {
                 tracing::warn!(%peer_id, message = %message, "Gymnasium reported connection error");
                 {
@@ -857,8 +913,13 @@ where
                         timeout: ps_broadcast_idle,
                     })
                 } else {
-                    let workers: Vec<_> =
-                        trainer_pool.info().into_iter().map(|w| w.peer_id).collect();
+                    // Both trainers and gyms needs the update
+                    let workers: Vec<_> = trainer_pool
+                        .info()
+                        .into_iter()
+                        .map(|w| w.peer_id)
+                        .chain(gymnasium_pool.info().into_iter().map(|w| w.peer_id))
+                        .collect();
 
                     if workers.is_empty() {
                         ExecutorAction::Aggregate(AggregateAction::Idle {

@@ -2,11 +2,14 @@ import argparse
 import json
 import logging
 import os
-import sys
 import shutil
+import sys
 import time
 import uuid
 from pathlib import Path
+
+import numpy as np
+import torch
 from opentelemetry import metrics
 from opentelemetry._logs import set_logger_provider
 from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
@@ -17,10 +20,6 @@ from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.sdk.resources import OTELResourceDetector, get_aggregated_resources
-
-import gymnasium as gym
-import numpy as np
-import torch
 from safetensors.torch import load_file, load_model, save_file, save_model
 from torch import nn
 from transformers import AutoModel
@@ -87,21 +86,6 @@ def sleep_until_epoch_ms(target_ms: int) -> None:
     now_ms = time.time() * 1000.0
     if target_ms > now_ms:
         time.sleep((target_ms - now_ms) / 1000.0)
-
-
-def make_env(gym_id, normalize_reward=True):
-    def thunk():
-        env = gym.make(gym_id)
-        env = gym.wrappers.RecordEpisodeStatistics(env)
-        env = gym.wrappers.ClipAction(env)
-        env = gym.wrappers.NormalizeObservation(env)
-        env = gym.wrappers.TransformObservation(env, lambda obs: np.clip(obs, -10, 10), env.observation_space)
-        if normalize_reward:
-            env = gym.wrappers.NormalizeReward(env)
-            env = gym.wrappers.TransformReward(env, lambda reward: np.clip(reward, -10, 10))
-        return env
-
-    return thunk
 
 
 def ppo_trainer(socket_path: str, work_dir: str, job_id: str, config) -> None:  # noqa: PLR0912, PLR0915
