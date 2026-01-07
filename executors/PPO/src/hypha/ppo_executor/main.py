@@ -106,16 +106,16 @@ def make_env(gym_id, normalize_reward=True):
 
 def ppo_trainer(socket_path: str, work_dir: str, job_id: str, config) -> None:  # noqa: PLR0912, PLR0915
     with Session(socket_path) as session:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
         prepare_files(config, session)
         local_fetch_path = str(Path(work_dir) / FETCH_PATH)
         logger.info("Fetched artifacts: %s", os.listdir(local_fetch_path))
+        agent = AutoModel.from_pretrained(local_fetch_path, trust_remote_code=True).to(device)
 
         ######### Parameters #########
         gym_id = "HalfCheetah-v5"
         lr = 3e-4
-        seed = 1
         total_timesteps = 2000000
-        capture_video = False
         num_envs = 1
         num_steps = 2048
         gamma = 0.99
@@ -127,19 +127,16 @@ def ppo_trainer(socket_path: str, work_dir: str, job_id: str, config) -> None:  
         vf_coef = 0.5
         max_grad_norm = 0.5
         target_kl = None
-        batch_size = int(num_envs * num_steps)
+        batch_size = int(num_envs * num_steps) # config["batch_size"]
         minibatch_size = int(batch_size // num_minibatches)
-        cuda = False
         num_updates = total_timesteps // batch_size
         ######### Parameters #########
         update = 0
 
-        agent = AutoModel.from_pretrained(local_fetch_path, trust_remote_code=True).to("cpu")
-
-        # model = get_model(local_fetch_path, config["model"]["task"])
         optimizer = get_adam(config["optimizer"], agent.parameters())
         # scheduler = get_scheduler(config.get("scheduler"), optimizer)
-        batch_size = config["batch_size"]
+
+        assert batch_size > 1, "batch_size must be greater than 1."
 
         previous_model_path = str(Path(work_dir) / CURRENT_MODEL_NAME)
         save_model(agent, previous_model_path)
@@ -192,8 +189,6 @@ def ppo_trainer(socket_path: str, work_dir: str, job_id: str, config) -> None:  
                     receive_path = f"incoming-{uuid.uuid4()}"
                     pointers = session.receive(action.get("sender"), receive_path, timeout=action.get("timeout"))
 
-                    logger.info(f"Received {pointers}")
-
                     incomming = pointers[-1] if isinstance(pointers, list) else pointers
                     if incomming:
                         rel_path = incomming.get("path")
@@ -203,48 +198,20 @@ def ppo_trainer(socket_path: str, work_dir: str, job_id: str, config) -> None:  
                     else:
                         raise IOError("Received data can't be read")
 
-                    obs = training_data["obs"]
-                    actions = training_data["actions"]
-                    logprobs = training_data["logprobs"]
-                    rewards = training_data["rewards"]
-                    dones = training_data["dones"]
-                    values = training_data["values"]
-
-                    # first_obs, _ = envs.reset()
-                    # next_obs = torch.Tensor(first_obs)
-                    next_done = torch.zeros(num_envs)
-                    num_updates = total_timesteps // batch_size
-
-                    # Annealing the rate if instructed to do so.
-                    frac = 1.0 - (update - 1.0) / num_updates
-                    lrnow = frac * lr
-                    optimizer.param_groups[0]["lr"] = lrnow
-
-                    # bootstrap value if not done
-                    with torch.no_grad():
-                        # next_value = agent.get_value(next_obs).reshape(1, -1)
-                        next_value = obs.reshape(1, -1)
-
-                        advantages = torch.zeros_like(rewards)
-                        lastgaelam = 0
-                        for t in reversed(range(num_steps)):
-                            if t == num_steps - 1:
-                                nextnonterminal = 1.0 - next_done
-                                nextvalues = next_value
-                            else:
-                                nextnonterminal = 1.0 - dones[t + 1]
-                                nextvalues = values[t + 1]
-                            delta = rewards[t] + gamma * nextvalues * nextnonterminal - values[t]
-                            advantages[t] = lastgaelam = delta + gamma * gae_lambda * nextnonterminal * lastgaelam
-                        returns = advantages + values
-
                     # flatten the batch
-                    b_obs = obs.reshape((-1,) + agent.config.observation_space)
-                    b_logprobs = logprobs.reshape(-1)
-                    b_actions = actions.reshape((-1,) + agent.config.action_space)
-                    b_advantages = advantages.reshape(-1)
-                    b_returns = returns.reshape(-1)
-                    b_values = values.reshape(-1)
+                    b_obs = training_data["obs"].to(device)
+                    b_logprobs = training_data["logprobs"].to(device)
+                    b_actions = training_data["actions"].to(device)
+                    b_advantages = training_data["advantages"].to(device)
+                    b_returns = training_data["returns"].to(device)
+                    b_values = training_data["values"].to(device)
+
+
+                    ## TODO
+                    # Annealing the rate if instructed to do so.
+                    # frac = 1.0 - (update - 1.0) / num_updates
+                    # lrnow = frac * lr
+                    # optimizer.param_groups[0]["lr"] = lrnow
 
                     # Optimizing the policy and value network
                     b_inds = np.arange(batch_size)
@@ -303,8 +270,9 @@ def ppo_trainer(socket_path: str, work_dir: str, job_id: str, config) -> None:  
 
                     current_status = {
                         "executor": "rl-train",
-                        "details": {"state": "batch-completed", "batch_size": "", "batches": ""},
+                        "details": {"state": "batch-completed", "batch_size": 1, "batches": 1},
                     }
+                    logger.info(f"Current status {current_status}")
 
                 case "send-update":
                     target = action.get("target")

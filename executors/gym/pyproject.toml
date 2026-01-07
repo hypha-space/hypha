@@ -4,9 +4,11 @@ version = "0.0.0"
 license = "Apache-2.0"
 requires-python = ">=3.12"
 dependencies = [
+    "torch",
     "gymnasium[mujoco]>=1.2.3",
     "httpx>=0.28.1",
     "safetensors>=0.7.0",
+    "transformers>=4.57.3",
     "opentelemetry-instrumentation-system-metrics>=0.60b1",
     "opentelemetry-exporter-otlp>=1.39.1",
     "opentelemetry-instrumentation-logging>=0.60b1",

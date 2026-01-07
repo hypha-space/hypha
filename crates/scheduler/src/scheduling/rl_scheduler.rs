@@ -8,7 +8,7 @@ use hypha_messages::{
     action::{
         self, AggregateAction, AggregateError, AggregateStatus, ExecutorAction, ExecutorStatus,
         GymnasiumAction, GymnasiumError, GymnasiumStatus, RlTrainAction, RlTrainStatus,
-        TrainAction, TrainError,
+        TrainError,
     },
 };
 use hypha_network::request_response::{RequestResponseError, RequestResponseInterfaceExt};
@@ -116,7 +116,7 @@ async fn schedule<T, S>(
     round_state: Arc<Mutex<RoundState>>,
     training_state: Arc<Mutex<TrainingState>>,
     batch_sizer: BatchSizer,
-    multi_batch_size: u32,
+    _multi_batch_size: u32,
     push_destination: Arc<Option<ModelDestination>>,
     start: std::time::Instant,
     request: (PeerId, action::ActionRequest),
