@@ -138,12 +138,12 @@ if __name__ == "__main__":  # noqa: PLR0915, PLR0912
         envs = gym.vector.SyncVectorEnv([make_env(gym_id) for i in range(num_envs)])
         eval_env = make_env(gym_id, normalize_reward=False)()
 
-        num_steps = 2048
+        num_steps = 1024 #2048
         gamma = 0.99
         gae_lambda = 0.95
         lr = 3e-4
         # total_timesteps = 2000000
-        num_minibatches = 32
+        num_minibatches = 16
         update_epochs = 10
         clip_coef = 0.2
         ent_coef = 0.0
