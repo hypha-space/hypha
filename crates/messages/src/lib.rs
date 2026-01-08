@@ -166,7 +166,7 @@ pub mod action {
             target: Reference,
         },
         ExecuteBatch {
-            batches: u32,
+            lr_multiplier: f32,
         },
         SendUpdate {
             target: Reference,

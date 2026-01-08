@@ -227,7 +227,7 @@ where
                         .map(|w| (batch_sizer)(&w.resources))
                         .collect();
 
-                    let (should_update, projected_target, batches) = if update_target <= count {
+                    let (should_update, projected_target, _batches) = if update_target <= count {
                         (true, count, 0)
                     } else if !snapshot.is_empty() && stats.iter().all(|&s| s > 0 && s < u64::MAX) {
                         let (time, cnt, projection, _) = S::project(
@@ -286,7 +286,8 @@ where
                             timeout: short_idle,
                         })
                     } else if !should_update {
-                        ExecutorAction::Train(TrainAction::ExecuteBatch { batches })
+                        let lr_multiplier = state.round as f32 / state.update_rounds as f32;
+                        ExecutorAction::Train(TrainAction::ExecuteBatch { lr_multiplier })
                     } else if parameter_servers.is_empty() {
                         // NOTE: If we need to send an update but there are no parameter servers,
                         // we must wait (idle) until one becomes available.
@@ -417,7 +418,7 @@ where
                         .map(|w| (batch_sizer)(&w.resources))
                         .collect();
 
-                    let (should_update, projected_target, batches) = if update_target <= count {
+                    let (should_update, projected_target, _batches) = if update_target <= count {
                         (true, count, 0)
                     } else if !snapshot.is_empty() && stats.iter().all(|&s| s > 0 && s < u64::MAX) {
                         let (time, cnt, projection, _) = S::project(
@@ -447,7 +448,11 @@ where
                     };
 
                     if !should_update {
-                        ExecutorAction::Train(TrainAction::ExecuteBatch { batches })
+                        let lr_multiplier = {
+                            let state = round_state.lock().await;
+                            state.round as f32 / state.update_rounds as f32
+                        };
+                        ExecutorAction::Train(TrainAction::ExecuteBatch { lr_multiplier })
                     } else if parameter_servers.is_empty() {
                         // NOTE: If we need to send an update but there are no parameter servers,
                         // we must wait (idle) until one becomes available.
@@ -584,7 +589,11 @@ where
                             },
                         })
                     } else {
-                        ExecutorAction::Train(TrainAction::ExecuteBatch { batches: 1 })
+                        let lr_multiplier = {
+                            let state = round_state.lock().await;
+                            state.round as f32 / state.update_rounds as f32
+                        };
+                        ExecutorAction::Train(TrainAction::ExecuteBatch { lr_multiplier })
                     }
                 }
             }
