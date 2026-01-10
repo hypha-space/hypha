@@ -75,6 +75,7 @@ def get_loss_fn(loss_fn: str) -> Module:
 
 
 def get_scheduler(scheduler_config: dict[str, Any], optimizer: Optimizer) -> torch.optim.lr_scheduler.LambdaLR:
+    return get_linear_schedule_with_warmup(optimizer, 500, int(140*30))
     if not scheduler_config or not scheduler_config.get("type"):
         return get_constant_schedule(optimizer)  # type: ignore[no-any-return]
     else:

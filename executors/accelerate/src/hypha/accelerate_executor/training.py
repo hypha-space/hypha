@@ -152,7 +152,7 @@ if __name__ == "__main__":  # noqa: PLR0915, PLR0912
             "executor": "train",
             "details": {"state": "joined"},
         }
-
+        zero_batch_counter = 0
         while True:
             loop_start_ms = time.time() * 1000.0
             action_resp = session.send_action({"job_id": job_id, "status": current_status})
@@ -178,16 +178,24 @@ if __name__ == "__main__":  # noqa: PLR0915, PLR0912
             elif kind == "execute-batch":
                 local_batches = action.get("batches")
                 logger.info(f"Excecute {local_batches} local batches.")
+                if local_batches == 0 and zero_batch_counter >= 130 + np.random.randint(0, 15):
+                    ocal_batches=1
                 for _ in range(local_batches):
                     batch = next(training_data_iter)
                     optimizer.zero_grad(set_to_none=True)
                     outputs = model(**{k: v.to(accelerator.device, non_blocking=True) for k, v in batch.items()})
                     loss = outputs if isinstance(outputs, torch.Tensor) else outputs["loss"]
                     accelerator.backward(loss)
+                    if accelerator.sync_gradients:
+                        accelerator.clip_grad_norm_(model.parameters(), 1)
                     optimizer.step()
                     scheduler.step()
                     if accelerator.is_main_process:
                         loss_list.append(loss.detach().cpu().numpy())
+                if local_batches == 0:
+                    zero_batch_counter +=1
+                else:
+                    zero_batch_counter = 0
                 if accelerator.is_main_process:
                     current_status = {
                         "executor": "train",
@@ -307,6 +315,7 @@ if __name__ == "__main__":  # noqa: PLR0915, PLR0912
                     "details": {"state": "applied-update"},
                 }
                 epoch_counter += 1
+                zero_batch_counter
             elif kind == "push-to-hub":
                 repository = action.get("repository")
                 token = action.get("token")

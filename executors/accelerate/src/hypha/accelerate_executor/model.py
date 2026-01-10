@@ -101,7 +101,9 @@ def get_model(model_path: str, model_type: str) -> Module:  # noqa: PLR0911, PLR
     if model_type == "audio-frame-classification":
         return cast(Module, AutoModelForAudioFrameClassification.from_pretrained(model_path, trust_remote_code=True))
     if model_type == "ctc":
-        return cast(Module, AutoModelForCTC.from_pretrained(model_path, trust_remote_code=True))
+        model = AutoModelForCTC.from_pretrained(model_path, trust_remote_code=True, ctc_loss_reduction="mean")
+        model.freeze_feature_encoder()
+        return cast(Module, model)
     if model_type == "speech-seq-2-seq":
         return cast(Module, AutoModelForSpeechSeq2Seq.from_pretrained(model_path, trust_remote_code=True))
     if model_type == "audio-x-vector":
