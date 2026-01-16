@@ -1,6 +1,6 @@
 //! Scheduler binary.
 
-use std::{collections::HashSet, fs, path::PathBuf, sync::Arc, time::Duration};
+use std::{fs, path::PathBuf, sync::Arc, time::Duration};
 
 use clap::Parser;
 use figment::{
@@ -10,8 +10,8 @@ use figment::{
 use futures_util::{StreamExt, future::join_all};
 use hypha_config::{ConfigWithMetadata, ConfigWithMetadataTLSExt, builder, to_toml};
 use hypha_messages::{
-    AggregateExecutorConfig, AggregateExecutorDescriptor, DataRecord, Fetch, JobSpec,
-    TrainExecutorConfig, TrainExecutorDescriptor, WorkerSpec, data_record, health,
+    AggregateExecutorConfig, AggregateExecutorDescriptor, Fetch, JobSpec, TrainExecutorConfig,
+    TrainExecutorDescriptor, WorkerSpec, health,
 };
 use hypha_network::{
     cert::identity_from_private_key, dial::DialInterface,
@@ -26,13 +26,13 @@ use hypha_scheduler::{
     network::Network,
     pool::{Pool, PoolConfig, PoolWithAggregateInfo, PoolWithTrainInfo},
     scheduler_config::{Job as SchedulerJob, MetricsConfig},
-    scheduling::{batch_scheduler::BatchScheduler, data_scheduler::DataScheduler},
+    scheduling::batch_scheduler::BatchScheduler,
     simulation::BasicSimulation,
     statistics::RunningMean,
     task::Task,
 };
 use hypha_telemetry as telemetry;
-use libp2p::{Multiaddr, PeerId, multiaddr::Protocol};
+use libp2p::{Multiaddr, multiaddr::Protocol};
 use miette::{IntoDiagnostic, Result};
 use serde_json::Value;
 use tokio_retry::{
@@ -252,21 +252,21 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
     let parameter_handle = parameter_pool.handle();
 
     let dataset = diloco_config.dataset.dataset.clone();
-    let (data_providers, dataset_record) = get_data_providers(&network, dataset.as_str()).await?;
+    // let (data_providers, dataset_record) = get_data_providers(&network, dataset.as_str()).await?;
 
-    let data_scheduler = DataScheduler::new(
-        network.clone(),
-        data_providers,
-        dataset.clone(),
-        dataset_record.slice_hashes,
-    );
+    // let data_scheduler = DataScheduler::new(
+    //     network.clone(),
+    //     data_providers,
+    //     dataset.clone(),
+    //     dataset_record.slice_hashes,
+    // );
 
-    let tracker_task = tokio::spawn(
-        data_scheduler
-            .run(token.clone())
-            .await
-            .expect("network ready"),
-    );
+    // let tracker_task = tokio::spawn(
+    //     data_scheduler
+    //         .run(token.clone())
+    //         .await
+    //         .expect("network ready"),
+    // );
 
     let job_id = Uuid::new_v4();
     let metrics_job_id = job_id.to_string();
@@ -491,10 +491,10 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
     }
     let _ = status_handle.await;
 
-    if !tracker_task.is_finished() {
-        tracker_task.abort();
-    }
-    let _ = tracker_task.await;
+    // if !tracker_task.is_finished() {
+    //     tracker_task.abort();
+    // }
+    // let _ = tracker_task.await;
     drop(network);
     if !driver_task.is_finished() {
         driver_task.abort();
@@ -505,51 +505,6 @@ async fn run(config: ConfigWithMetadata<Config>) -> Result<()> {
     tracing.shutdown().into_diagnostic()?;
     logging.shutdown().into_diagnostic()?;
     Ok(())
-}
-
-// Find the data provider for the requested dataset
-async fn get_data_providers(
-    network: &Network,
-    dataset: &str,
-) -> miette::Result<(HashSet<PeerId>, DataRecord)> {
-    let providers = network.find_provider(dataset).await.map_err(|e| {
-        miette::miette!("No data provider found for dataset \"{}\": {}", dataset, e)
-    })?;
-
-    if providers.is_empty() {
-        return Err(miette::miette!(
-            "No data provider found for dataset \"{}\"",
-            dataset
-        ));
-    }
-
-    // If there are multiple data providers for the same dataset, request
-    // its data record from the first one.
-    match network
-        .request::<data_record::Codec>(
-            *providers.iter().next().expect("a data provider"),
-            data_record::Request {
-                dataset: dataset.to_string(),
-            },
-        )
-        .await
-    {
-        Ok(data_record::Response::Success { data_record }) => Ok((providers, data_record)),
-        Ok(data_record::Response::NotFound) => Err(miette::miette!(
-            "No data record found for dataset \"{}\"",
-            dataset
-        )),
-        Err(e) => Err(miette::miette!(
-            "Failed to request data record for dataset \"{}\": {}",
-            dataset,
-            e
-        )),
-        Ok(response) => Err(miette::miette!(
-            "Unexpected response to data record request for dataset \"{}\": {:?}",
-            dataset,
-            response
-        )),
-    }
 }
 
 #[tokio::main]

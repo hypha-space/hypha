@@ -154,6 +154,9 @@ where
             TrainStatus::Joined => {
                 let state = round_state.lock().await;
                 if state.round == 0 {
+                    worker_pool.update_statistics(&peer_id, |_, last_updated| {
+                        *last_updated = since_start;
+                    });
                     ExecutorAction::Train(TrainAction::Idle {
                         timeout: short_idle,
                     })
@@ -189,6 +192,9 @@ where
             }
             TrainStatus::ReceivedModel => {
                 // Lazy transition to other state
+                worker_pool.update_statistics(&peer_id, |_, last_updated| {
+                    *last_updated = since_start;
+                });
                 ExecutorAction::Train(TrainAction::Idle { timeout: now })
             }
             TrainStatus::SentModel => {
