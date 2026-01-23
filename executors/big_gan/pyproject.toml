@@ -1,0 +1,129 @@
+[project]
+name = "hypha-gan-executor"
+version = "0.0.0"
+license = "Apache-2.0"
+requires-python = ">=3.12"
+dependencies = [
+    "accelerate==1.10.1",
+    "httpx>=0.28.1",
+    "pillow>=11.3.0",
+    "python-snappy>=0.7.3",
+    "requests>=2.32.3",
+    "safetensors>=0.5.3",
+    "tqdm>=4.67.1",
+    "transformers[torch]==4.56.2",
+    "torchvision>=0.22.0",
+    "opentelemetry-instrumentation-system-metrics>=0.60b1",
+    "opentelemetry-exporter-otlp>=1.39.1",
+    "opentelemetry-instrumentation-logging>=0.60b1",
+    "opentelemetry-api>=1.39.1",
+    "opentelemetry-sdk>=1.39.1",
+    "torchmetrics>=1.8.2",
+    "torch-fidelity>=0.3.0",
+]
+
+[project.optional-dependencies]
+mps_cu128 = [
+  "torch>=2.8.0",
+  "torchvision>=0.23.0",
+]
+cpu = [
+  "torch>=2.8.0",
+  "torchvision>=0.23.0",
+]
+cu126 = [
+  "torch>=2.8.0",
+  "torchvision>=0.23.0",
+]
+cu129 = [
+  "torch>=2.8.0",
+  "torchvision>=0.23.0",
+]
+rocm64 = [
+  "torch>=2.8.0",
+  "torchvision>=0.23.0",
+  "pytorch-triton-rocm",
+]
+
+[tool.uv]
+conflicts = [
+  [
+    { extra = "mps_cu128" },
+    { extra = "cpu" },
+    { extra = "cu126" },
+    { extra = "cu129" },
+    { extra = "rocm64" },
+  ],
+]
+
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-cpu", extra = "cpu" },
+  { index = "pytorch-cu126", extra = "cu126" },
+  { index = "pytorch-cu129", extra = "cu129" },
+  { index = "pytorch-rocm64", extra = "rocm64"},
+]
+torchvision = [
+  { index = "pytorch-cpu", extra = "cpu" },
+  { index = "pytorch-cu126", extra = "cu126" },
+  { index = "pytorch-cu129", extra = "cu129" },
+  { index = "pytorch-rocm64", extra = "rocm64"},
+]
+pytorch-triton-rocm = [
+  { index = "pytorch-rocm64", extra = "rocm64"},
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu129"
+url = "https://download.pytorch.org/whl/cu129"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-rocm64"
+url = "https://download.pytorch.org/whl/rocm6.4"
+explicit = true
+
+[dependency-groups]
+dev = [
+    "mypy>=1.17.0",
+    "ruff>=0.11.9",
+    "ty>=0.0.1a21",
+    "types-tqdm>=4.67.0.20250516",
+]
+
+[build-system]
+requires = ["uv_build>=0.9.8,<0.10.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "hypha.gan_executor"
+
+[tool.mypy]
+strict = true
+
+[[tool.mypy.overrides]]
+module = "accelerate"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "snappy"
+ignore_missing_imports = true
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.format]
+docstring-code-format = true
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "SIM", "ARG", "PL"]
