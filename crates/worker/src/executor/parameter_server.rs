@@ -87,10 +87,10 @@ impl JobExecutor for ParameterServerExecutor {
         &self,
         job: hypha_messages::JobSpec,
         cancel: CancellationToken,
-        job_id: Uuid,
         scheduler_id: PeerId,
     ) -> Result<ParameterServerExecution, Error> {
         tracing::info!(job_spec = ?job, "Executing parameter server job");
+        let job_id = job.job_id;
 
         // NOTE: Retry for a second, please note that this needs to align with
         // the batch scheduler timings
